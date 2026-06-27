@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmartBank - Secure Banking Portal</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="auth-page">
+    <div class="background-decor">
+        <div class="circle circle-1"></div>
+        <div class="circle circle-2"></div>
+    </div>
+    
+    <!-- Mock SMS Toast Notification -->
+    <div id="mock-sms-toast" class="mock-sms-toast hidden">
+        <div class="sms-icon">💬</div>
+        <div class="sms-content">
+            <div class="sms-header">
+                <span class="sms-app-name">SMARTBANK SMS</span>
+                <span class="sms-time" id="sms-time-label">just now</span>
+            </div>
+            <p id="sms-text" class="sms-text">Verification code: 123456</p>
+        </div>
+    </div>
+
+    <!-- Header & Language Toggle -->
+    <header class="main-header">
+        <div class="logo">
+            <span class="logo-icon">❖</span> SmartBank
+        </div>
+        <button id="lang-toggle" class="btn btn-secondary">TR</button>
+    </header>
+
+    <main class="auth-container">
+        <div class="auth-wrapper-split">
+            <div class="auth-forms-column">
+                <!-- Login Card -->
+                <div id="login-card" class="card glassmorphism auth-card">
+                    <h2 id="login-title">Sign In</h2>
+                    <p id="login-subtitle" class="text-muted">Access your financial dashboard</p>
+
+                    <form id="login-form" novalidate>
+                        <div class="form-group">
+                            <label id="lbl-username-login" for="login-tckn">T.C. Kimlik Numarası</label>
+                            <input type="text" id="login-tckn" class="form-control" required maxlength="11" pattern="\d*" placeholder="Enter T.C. Kimlik Numarası">
+                        </div>
+                        <div class="form-group">
+                            <label id="lbl-password-login" for="login-password">Password</label>
+                            <input type="password" id="login-password" class="form-control" required maxlength="6" pattern="\d*" placeholder="Enter 6-digit password">
+                            <div style="text-align: right; margin-top: 0.5rem;">
+                                <a href="#" id="link-to-forgot" class="link-highlight" style="font-size: 0.8rem;">Forgot Password?</a>
+                            </div>
+                        </div>
+                        <div id="login-2fa-group" class="form-group hidden">
+                            <label id="lbl-2fa-login" for="login-2fa-code">2FA Doğrulama Kodu</label>
+                            <input type="text" id="login-2fa-code" class="form-control" maxlength="6" pattern="\d*" placeholder="6 haneli kodu girin">
+                            <p class="text-muted" style="font-size: 0.75rem; margin-top: 0.25rem;">E-posta adresinize gönderilen veya üstteki SMS bildirimindeki kodu girin.</p>
+                        </div>
+                        <button type="submit" id="btn-login-submit" class="btn btn-primary btn-block">Login</button>
+                    </form>
+
+                    <div id="login-error" class="alert alert-danger hidden"></div>
+
+                    <div class="card-footer">
+                        <span id="txt-no-account">Don't have an account?</span> 
+                        <a href="#" id="link-to-register" class="link-highlight">Register here</a>
+                    </div>
+                </div>
+
+                <!-- Register Card -->
+                <div id="register-card" class="card glassmorphism auth-card hidden">
+                    <h2 id="register-title">Create Account</h2>
+                    <p id="register-subtitle" class="text-muted">Start your smart banking journey today</p>
+
+                    <form id="register-form" novalidate>
+                        <div class="form-row-flex">
+                            <div class="form-group flex-1">
+                                <label id="lbl-firstname" for="reg-firstname">First Name</label>
+                                <input type="text" id="reg-firstname" class="form-control" required pattern="[a-zA-ZçğışöüÇĞİŞÖÜ\s]*" placeholder="Enter first name">
+                            </div>
+                            <div class="form-group flex-1">
+                                <label id="lbl-lastname" for="reg-lastname">Last Name</label>
+                                <input type="text" id="reg-lastname" class="form-control" required pattern="[a-zA-ZçğışöüÇĞİŞÖÜ]*" placeholder="Enter last name">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label id="lbl-username-reg" for="reg-username">Username</label>
+                            <input type="text" id="reg-username" class="form-control" required placeholder="Create username">
+                        </div>
+                        <div class="form-group">
+                            <label id="lbl-reg-email" for="reg-email">Email Address</label>
+                            <input type="email" id="reg-email" class="form-control" required placeholder="Enter your email address">
+                        </div>
+                        <div class="form-group">
+                            <label id="lbl-reg-tckn" for="reg-tckn">T.C. Kimlik Numarası</label>
+                            <input type="text" id="reg-tckn" class="form-control" required maxlength="11" pattern="\d*" placeholder="Enter your T.C. Kimlik Numarası">
+                        </div>
+                        <div class="form-group">
+                            <label id="lbl-password-reg" for="reg-password">Password</label>
+                            <input type="password" id="reg-password" class="form-control" required maxlength="6" pattern="\d*" placeholder="Create 6-digit password">
+                        </div>
+                        <button type="submit" id="btn-register-submit" class="btn btn-primary btn-block">Register</button>
+                    </form>
+
+                    <div id="register-error" class="alert alert-danger hidden"></div>
+
+                    <div class="card-footer">
+                        <span id="txt-has-account">Already have an account?</span> 
+                        <a href="#" id="link-to-login" class="link-highlight">Sign In</a>
+                    </div>
+                </div>
+
+                <!-- Forgot Password Card -->
+                <div id="forgot-card" class="card glassmorphism auth-card hidden">
+                    <h2 id="forgot-title">Reset Password</h2>
+                    <p id="forgot-subtitle" class="text-muted">Enter email to reset password</p>
+
+                    <form id="forgot-form" novalidate>
+                        <div class="form-group">
+                            <label id="lbl-email-forgot" for="forgot-tckn">T.C. Kimlik Numarası</label>
+                            <input type="text" id="forgot-tckn" class="form-control" required maxlength="11" pattern="\d*" placeholder="Enter registered T.C. Kimlik Numarası">
+                        </div>
+                        <div class="form-group">
+                            <label id="lbl-new-password" for="forgot-new-password">New Password</label>
+                            <input type="password" id="forgot-new-password" class="form-control" required maxlength="6" pattern="\d*" placeholder="Enter new 6-digit password">
+                        </div>
+                        <button type="submit" id="btn-forgot-submit" class="btn btn-primary btn-block">Reset Password</button>
+                    </form>
+
+                    <div id="forgot-error" class="alert alert-danger hidden"></div>
+                    <div id="forgot-success" class="alert alert-success hidden"></div>
+
+                    <div class="card-footer">
+                        <a href="#" id="link-forgot-to-login" class="link-highlight">Back to Sign In</a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Market Rates Column -->
+            <div class="market-rates-column card glassmorphism">
+                <div class="market-header">
+                    <h3 id="title-market-rates">Canlı Piyasalar</h3>
+                    <span class="live-indicator"><span class="live-dot animate-pulse-slow"></span>LIVE</span>
+                </div>
+                <div id="market-rates-list" class="market-rates-list">
+                    <div class="loading-spinner">Yükleniyor...</div>
+                </div>
+                <div class="market-footer">
+                    <span id="txt-rates-updated">Son Güncelleme: --:--:--</span>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Core App JS -->
+    <script src="app.js"></script>
+</body>
+</html>

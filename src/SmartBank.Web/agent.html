@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmartBank - Support Center Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="agent-page">
+    <div class="background-decor">
+        <div class="circle circle-1"></div>
+        <div class="circle circle-2"></div>
+    </div>
+
+    <!-- Header -->
+    <header class="main-header">
+        <div class="logo">
+            <span class="logo-icon">❖</span> SmartBank <span class="badge-role">Support Center</span>
+        </div>
+        <div class="header-actions">
+            <span id="user-display" class="user-badge">Loading...</span>
+            <button id="lang-toggle" class="btn btn-secondary">TR</button>
+            <button id="btn-logout" class="btn btn-danger">Logout</button>
+        </div>
+    </header>
+
+    <main class="agent-container-wrapper">
+        <!-- Agent Metrics Row -->
+        <div class="agent-metrics-grid">
+            <div class="metric-card glassmorphism">
+                <span class="metric-icon resolved">💬</span>
+                <div class="metric-details">
+                    <h5 id="lbl-metric-resolved">Resolved Chats</h5>
+                    <span class="metric-value" id="val-metric-resolved">0</span>
+                </div>
+            </div>
+            <div class="metric-card glassmorphism">
+                <span class="metric-icon time">⏱️</span>
+                <div class="metric-details">
+                    <h5 id="lbl-metric-time">Avg Response Time</h5>
+                    <span class="metric-value" id="val-metric-time">12s</span>
+                </div>
+            </div>
+            <div class="metric-card glassmorphism">
+                <span class="metric-icon csat">⭐</span>
+                <div class="metric-details">
+                    <h5 id="lbl-metric-csat">CSAT Score</h5>
+                    <span class="metric-value" id="val-metric-csat">95%</span>
+                </div>
+            </div>
+            <div class="metric-card glassmorphism status-card">
+                <span class="status-dot online" id="status-indicator-dot"></span>
+                <div class="metric-details">
+                    <h5 id="lbl-metric-status">Your Status</h5>
+                    <select id="agent-status-select" class="metric-status-select">
+                        <option value="Active" id="opt-status-active">Active</option>
+                        <option value="Busy" id="opt-status-busy">Busy</option>
+                        <option value="Break" id="opt-status-break">Break</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="agent-container">
+            <!-- Sidebar - Active Support Sessions -->
+            <aside class="agent-sidebar card glassmorphism">
+                <div class="sidebar-header">
+                    <h3 id="title-active-chats">Active Support Chats</h3>
+                    <button id="btn-refresh-sessions" class="btn btn-secondary btn-sm">↺</button>
+                </div>
+                <div id="active-sessions-list" class="sessions-list">
+                    <!-- Active sessions injected dynamically -->
+                    <div class="text-muted text-center py-4" id="txt-no-active-chats">No active chats at the moment</div>
+                </div>
+            </aside>
+
+            <!-- Main Chat Area -->
+            <section class="agent-chat-area card glassmorphism">
+                <div id="agent-chat-header" class="agent-chat-header hidden">
+                    <div class="chat-info">
+                        <h4 id="agent-chat-title">Chatting with Guest</h4>
+                        <p id="agent-chat-session-id" class="text-muted text-xs">Session ID: -</p>
+                    </div>
+                    <div class="chat-header-actions">
+                        <!-- Department Transfer Selector -->
+                        <div class="transfer-control">
+                            <select id="select-transfer-dept" class="transfer-dept-select">
+                                <option value="" id="opt-transfer-select">Transfer to...</option>
+                                <option value="Genel Destek" id="opt-dept-general">Genel Destek</option>
+                                <option value="Kredi Departmanı" id="opt-dept-loans">Kredi Departmanı</option>
+                                <option value="Kart Hizmetleri" id="opt-dept-cards">Kart Hizmetleri</option>
+                                <option value="Yatırım Danışmanlığı" id="opt-dept-investments">Yatırım Danışmanlığı</option>
+                            </select>
+                            <button id="btn-transfer-chat" class="btn btn-secondary btn-xs">OK</button>
+                        </div>
+                        <button id="btn-close-session" class="btn btn-danger btn-sm">Close Session</button>
+                    </div>
+                </div>
+
+                <!-- Chat Message log -->
+                <div id="agent-chat-messages" class="agent-messages-container">
+                    <div class="agent-chat-placeholder" id="agent-placeholder">
+                        <span class="chat-placeholder-icon">📥</span>
+                        <h3 id="txt-select-chat">Select a Support Session</h3>
+                        <p id="txt-select-chat-desc" class="text-muted">Click on a chat session on the left sidebar to start helping customers.</p>
+                    </div>
+                </div>
+
+                <!-- AI Co-Pilot Suggestion Box -->
+                <div id="ai-copilot-container" class="ai-copilot-container hidden">
+                    <div class="copilot-header">
+                        <span class="copilot-title" id="lbl-copilot-title">✨ AI Co-Pilot Recommendation</span>
+                        <button type="button" id="btn-regenerate-suggestion" class="btn btn-secondary btn-xs">🔄</button>
+                    </div>
+                    <div id="ai-suggestion-text" class="ai-suggestion-text">
+                        Generating smart suggestions...
+                    </div>
+                    <div class="copilot-actions">
+                        <button type="button" id="btn-use-suggestion" class="btn btn-secondary btn-xs">✍️ Use Recommendation</button>
+                    </div>
+                </div>
+
+                <!-- Message Input Area -->
+                <form id="agent-chat-form" class="agent-chat-input-area hidden">
+                    <input type="text" id="agent-chat-input" required placeholder="Type support message...">
+                    <button type="submit" id="agent-chat-send-btn" class="btn btn-primary">Send</button>
+                </form>
+            </section>
+        </div>
+    </main>
+
+    <!-- SignalR CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
+    <!-- App & Chat logic -->
+    <script src="app.js"></script>
+    <script src="chat.js"></script>
+</body>
+</html>
