@@ -1,0 +1,61 @@
+## Ignore Visual Studio / VS Code temporary files and build outputs
+[Db]
+*.msf
+*.db
+*.localdb
+
+# User-specific files
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+x64/
+x86/
+[Aa]rm/
+[Aa]rm64/
+bbin/
+obj/
+bin/
+[Log]s/
+[Tt]emp/
+
+# Roslyn cache directories
+*.副本
+
+# Visual Studio 2015/2017 cache directory
+.vs/
+
+# Visual Studio Code
+.vscode/
+
+# Rider
+.idea/
+
+# Local databases (SQL Server Express / LocalDB)
+*.mdf
+*.ldf
+*.ndf
+
+# Local Configuration files (Sensitive data)
+appsettings.Local.json
+appsettings.Development.json
+
+# Gemini / Antigravity AI Logs and Cache
+.gemini/
+brain/
+scratch/
+walkthrough.md
+implementation_plan.md
+task.md
+
+# OS files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
