@@ -1,0 +1,13 @@
+C:\Users\samet\Desktop\Fintech\src\SmartBank.Core\bin\Debug\net10.0\SmartBank.Core.deps.json
+C:\Users\samet\Desktop\Fintech\src\SmartBank.Core\bin\Debug\net10.0\SmartBank.Core.dll
+C:\Users\samet\Desktop\Fintech\src\SmartBank.Core\bin\Debug\net10.0\SmartBank.Core.pdb
+C:\Users\samet\Desktop\Fintech\src\SmartBank.Core\obj\Debug\net10.0\SmartBank.Core.csproj.AssemblyReference.cache
+C:\Users\samet\Desktop\Fintech\src\SmartBank.Core\obj\Debug\net10.0\SmartBank.Core.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\samet\Desktop\Fintech\src\SmartBank.Core\obj\Debug\net10.0\SmartBank.Core.AssemblyInfoInputs.cache
+C:\Users\samet\Desktop\Fintech\src\SmartBank.Core\obj\Debug\net10.0\SmartBank.Core.AssemblyInfo.cs
+C:\Users\samet\Desktop\Fintech\src\SmartBank.Core\obj\Debug\net10.0\SmartBank.Core.csproj.CoreCompileInputs.cache
+C:\Users\samet\Desktop\Fintech\src\SmartBank.Core\obj\Debug\net10.0\SmartBank.Core.sourcelink.json
+C:\Users\samet\Desktop\Fintech\src\SmartBank.Core\obj\Debug\net10.0\SmartBank.Core.dll
+C:\Users\samet\Desktop\Fintech\src\SmartBank.Core\obj\Debug\net10.0\refint\SmartBank.Core.dll
+C:\Users\samet\Desktop\Fintech\src\SmartBank.Core\obj\Debug\net10.0\SmartBank.Core.pdb
+C:\Users\samet\Desktop\Fintech\src\SmartBank.Core\obj\Debug\net10.0\ref\SmartBank.Core.dll

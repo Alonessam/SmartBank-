@@ -397,7 +397,7 @@ document.addEventListener("DOMContentLoaded", () => {
         initAgentStatusControl();
         initCoPilotEvents();
         initTransferControlEvents();
-    } else if (path.includes("index.html") || path === "/" || path.endsWith("Web/")) {
+    } else {
         if (currentToken && currentUser) {
             redirectByUserRole();
         }

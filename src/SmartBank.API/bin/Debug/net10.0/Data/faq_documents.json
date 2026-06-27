@@ -1,0 +1,32 @@
+[
+  {
+    "id": 1,
+    "keywords": ["kartı", "kayboldu", "kayıp", "çalıntı", "kaybettim", "çalındı", "lost", "stolen", "card"],
+    "question": "Banka veya Kredi Kartımı Kaybettim, Ne Yapmalıyım?",
+    "answer": "Kartınızın kaybolması veya çalınması durumunda, güvenliğiniz için derhal uygulamadaki 'Kart ve Güvenlik Paneli' üzerinden kartınızı kapatmalı veya Canlı Destek Temsilcimiz ile görüşmelisiniz. Ayrıca +90 850 000 0000 numaralı SmartBank Müşteri Hizmetleri hattını 7/24 arayarak kartınızı iptal ettirebilirsiniz."
+  },
+  {
+    "id": 2,
+    "keywords": ["ücret", "aidat", "komisyon", "kesinti", "hesap işletim", "fee", "charge", "commission"],
+    "question": "SmartBank Hesap İşletim Ücreti veya Kart Aidatı Alıyor Mu?",
+    "answer": "SmartBank tamamen ücretsiz bankacılık sunar. Vadesiz TL, USD veya EUR hesaplarınız için aylık hesap işletim ücreti alınmaz. Standart SmartSavings kartlarımız için de yıllık kart aidatı veya üyelik ücreti bulunmamaktadır."
+  },
+  {
+    "id": 3,
+    "keywords": ["faiz", "kredi", "oranı", "interest", "loan", "rate", "başvuru"],
+    "question": "Güncel Kredi Faiz Oranları ve Başvuru Şartları Nelerdir?",
+    "answer": "Güncel tüketici kredisi faiz oranımız aylık %1.89'dur. Taşıt kredilerinde %1.59, konut kredilerinde ise %1.29 faiz oranları uygulanmaktadır. Kredi başvurusu yapmak için sohbet robotumuza 'kredi başvurusu yapmak istiyorum' yazarak ön onay sürecini başlatabilir veya doğrudan şubelerimize başvurabilirsiniz."
+  },
+  {
+    "id": 4,
+    "keywords": ["2fa", "iki aşamalı", "güvenlik", "otp", "doğrulama", "verification", "kod"],
+    "question": "2FA (İki Aşamalı Güvenlik) Nedir ve Nasıl Aktif Edilir?",
+    "answer": "2FA (İki Aşamalı Doğrulama), para transferlerinizin güvenliğini sağlamak için kullanılan ek bir katmandır. Kart ve Güvenlik Panelindeki '2FA Güvenliği' seçeneğini aktif ettiğinizde, 1000 TRY üzerindeki transferlerinizde sistem size 6 haneli bir OTP (Tek Kullanımlık Kod) gönderir. Kod doğrulanmadan transfer tamamlanmaz."
+  },
+  {
+    "id": 5,
+    "keywords": ["limit", "günlük", "transfer", "para gönderme", "limiti", "limitleri"],
+    "question": "Günlük Para Transfer Limitleri Nedir?",
+    "answer": "SmartBank hesaplarında standart günlük para transfer limiti 50.000 TRY'dir. Yeni açılan hesaplarda güvenlik önlemleri sebebiyle tek seferlik transfer limiti 2.000 TRY ile sınırlandırılmıştır. Limitlerinizi yükseltmek için canlı temsilcimizle görüşebilir veya şubelerimize gelebilirsiniz."
+  }
+]
