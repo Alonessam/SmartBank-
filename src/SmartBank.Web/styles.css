@@ -2488,3 +2488,290 @@ h1, h2, h3, h4, h5, h6, .logo {
     from { opacity: 0; transform: scale(0.95); }
     to { opacity: 1; transform: scale(1); }
 }
+
+/* ==========================================================================
+   MOBILE RESPONSIVE — Kapsamlı Mobil Uyumluluk
+   ========================================================================== */
+
+/* --- Tablet (max 768px) --- */
+@media (max-width: 768px) {
+
+    /* Header */
+    .main-header {
+        padding: 0.9rem 4%;
+        flex-wrap: nowrap;
+        gap: 0.5rem;
+    }
+
+    .logo {
+        font-size: 1.15rem;
+    }
+
+    .logo-icon {
+        font-size: 1.4rem;
+    }
+
+    .header-actions {
+        gap: 0.4rem;
+    }
+
+    .user-badge {
+        display: none; /* Mobilde kullanıcı adını gizle, boşluk kazan */
+    }
+
+    .btn {
+        padding: 0.5rem 0.85rem;
+        font-size: 0.8rem;
+    }
+
+    /* Dashboard ana container */
+    .dashboard-container {
+        padding: 1rem 4%;
+    }
+
+    /* Tab Navigasyon Barı */
+    .tabs-nav-bar {
+        gap: 0.3rem !important;
+        padding-bottom: 0.5rem !important;
+    }
+
+    .tab-btn {
+        padding: 0.5rem 0.7rem !important;
+        font-size: 0.72rem !important;
+        border-radius: 6px;
+        white-space: nowrap;
+    }
+
+    /* Hesap Kartları Grid */
+    .accounts-grid {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+    }
+
+    .account-balance {
+        font-size: 1.6rem;
+    }
+
+    /* Workspace Grid (Transfer + Form yan yana) */
+    .workspace-grid {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+    }
+
+    /* Dashboard Section başlıkları */
+    .dashboard-section h3 {
+        font-size: 1.15rem;
+    }
+
+    .section-header-flex {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.75rem;
+    }
+
+    /* Modal */
+    .modal-content {
+        width: 95% !important;
+        max-width: 95% !important;
+        padding: 1.5rem 1.25rem !important;
+        border-radius: 12px;
+        margin: 0 auto;
+    }
+
+    .statement-modal-content {
+        width: 95%;
+        max-width: 95%;
+    }
+
+    /* Statement summary grid: 2 kolon */
+    .statement-summary-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    /* Kredi Kartı Önizleme - taşmaması için ölçekle */
+    .debit-card-wrapper {
+        width: 100%;
+        max-width: 300px;
+        height: 175px;
+    }
+
+    /* Forex / Alım Satım Workspace */
+    .analytics-grid {
+        grid-template-columns: 1fr;
+    }
+
+    /* Auth Sayfası */
+    .auth-card h2 {
+        font-size: 1.6rem;
+    }
+
+    /* Chat widget */
+    .chat-widget {
+        bottom: 1rem;
+        right: 1rem;
+    }
+
+    .chat-toggle {
+        padding: 0.6rem 1rem;
+        font-size: 0.85rem;
+    }
+
+    .chat-box {
+        position: fixed;
+        bottom: 0;
+        right: 0;
+        width: 100%;
+        height: 92dvh;
+        border-radius: 16px 16px 0 0;
+    }
+
+    /* Tablo: yatay kaydırma */
+    .table-scroll {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .table {
+        font-size: 0.8rem;
+        min-width: 480px;
+    }
+
+    .table th, .table td {
+        padding: 0.5rem 0.6rem;
+    }
+
+    /* Form row yan yana → alt alta */
+    .form-row-flex {
+        flex-direction: column;
+        gap: 0;
+    }
+
+    /* Agent Container */
+    .agent-container {
+        grid-template-columns: 1fr;
+    }
+
+    .agent-sidebar {
+        height: auto;
+        max-height: 35vh;
+    }
+
+    .agent-chat-area {
+        height: calc(100vh - 300px);
+    }
+
+    /* Genel card padding küçült */
+    .card {
+        padding: 1.25rem;
+    }
+
+    /* Mock SMS Toast */
+    .mock-sms-toast {
+        left: 1rem;
+        right: 1rem;
+        top: 1rem;
+        max-width: calc(100% - 2rem);
+    }
+}
+
+/* --- Küçük Telefon (max 480px) --- */
+@media (max-width: 480px) {
+
+    body {
+        font-size: 0.9rem;
+    }
+
+    .main-header {
+        padding: 0.75rem 3.5%;
+    }
+
+    .logo {
+        font-size: 1rem;
+    }
+
+    .btn {
+        padding: 0.45rem 0.7rem;
+        font-size: 0.75rem;
+    }
+
+    /* Tab butonlarını daha da küçült */
+    .tab-btn {
+        padding: 0.4rem 0.5rem !important;
+        font-size: 0.65rem !important;
+    }
+
+    .dashboard-container {
+        padding: 0.75rem 3.5%;
+    }
+
+    .account-balance {
+        font-size: 1.35rem;
+    }
+
+    .account-card {
+        padding: 1.1rem;
+    }
+
+    .dashboard-section h3 {
+        font-size: 1rem;
+    }
+
+    /* Auth card */
+    .auth-card {
+        padding: 1.5rem 1rem;
+    }
+
+    .auth-card h2 {
+        font-size: 1.4rem;
+    }
+
+    /* Kredi kartı önizleme: küçük telefonda tam genişlik */
+    .debit-card-wrapper {
+        width: 100%;
+        max-width: 270px;
+        height: 160px;
+    }
+
+    .card-number {
+        font-size: 0.95rem;
+        letter-spacing: 1.5px;
+    }
+
+    /* Tablo daha kompakt */
+    .table {
+        font-size: 0.72rem;
+        min-width: 400px;
+    }
+
+    /* Statement grid: tek kolon */
+    .statement-summary-grid {
+        grid-template-columns: 1fr 1fr;
+        gap: 0.6rem;
+    }
+
+    .summary-value {
+        font-size: 0.9rem;
+    }
+
+    /* Modal daha kompakt */
+    .modal-content {
+        padding: 1.1rem 1rem !important;
+    }
+
+    /* Workspace bölümü margin'lerini küçült */
+    .workspace-item p {
+        margin-bottom: 1rem;
+    }
+
+    /* Charts container */
+    .charts-container {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .chart-wrapper {
+        min-width: unset;
+        width: 100%;
+    }
+}
+
