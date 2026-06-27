@@ -1,8 +1,0 @@
-<Solution>
-  <Folder Name="/src/">
-    <Project Path="src/SmartBank.API/SmartBank.API.csproj" />
-    <Project Path="src/SmartBank.Core/SmartBank.Core.csproj" />
-    <Project Path="src/SmartBank.Infrastructure/SmartBank.Infrastructure.csproj" />
-    <Project Path="src/SmartBank.Tests/SmartBank.Tests.csproj" />
-  </Folder>
-</Solution>
