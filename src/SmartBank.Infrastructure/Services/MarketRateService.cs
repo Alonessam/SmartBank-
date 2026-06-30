@@ -34,15 +34,48 @@ namespace SmartBank.Infrastructure.Services
 
         public async Task<IReadOnlyList<MarketRateDto>> GetRatesAsync()
         {
-            string? html = null;
+            decimal usdSpot = 0m;
+            decimal usdChange = 0m;
+            decimal eurSpot = 0m;
+            decimal eurChange = 0m;
+            decimal goldSpot = 0m;
+            decimal goldChange = 0m;
+            decimal silverSpot = 0m;
+            decimal silverChange = 0m;
 
             try
             {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-                var response = await _httpClient.GetAsync("https://www.doviz.com/", cts.Token);
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                var response = await _httpClient.GetAsync("https://finans.truncgil.com/today.json", cts.Token);
                 if (response.IsSuccessStatusCode)
                 {
-                    html = await response.Content.ReadAsStringAsync();
+                    var json = await response.Content.ReadAsStringAsync();
+                    using var doc = System.Text.Json.JsonDocument.Parse(json);
+                    var root = doc.RootElement;
+
+                    if (root.TryGetProperty("USD", out var usdProp))
+                    {
+                        usdSpot = ParseDecimalString(usdProp.GetProperty("Satış").GetString());
+                        usdChange = ParsePercentString(usdProp.GetProperty("Değişim").GetString());
+                    }
+
+                    if (root.TryGetProperty("EUR", out var eurProp))
+                    {
+                        eurSpot = ParseDecimalString(eurProp.GetProperty("Satış").GetString());
+                        eurChange = ParsePercentString(eurProp.GetProperty("Değişim").GetString());
+                    }
+
+                    if (root.TryGetProperty("gram-altin", out var goldProp))
+                    {
+                        goldSpot = ParseDecimalString(goldProp.GetProperty("Satış").GetString());
+                        goldChange = ParsePercentString(goldProp.GetProperty("Değişim").GetString());
+                    }
+
+                    if (root.TryGetProperty("gumus", out var silverProp))
+                    {
+                        silverSpot = ParseDecimalString(silverProp.GetProperty("Satış").GetString());
+                        silverChange = ParsePercentString(silverProp.GetProperty("Değişim").GetString());
+                    }
                 }
             }
             catch
@@ -50,37 +83,29 @@ namespace SmartBank.Infrastructure.Services
                 // Fallback will be used if request times out or fails
             }
 
-            var usdSpot = ParseRate(html, "USD");
             if (usdSpot == 0m)
             {
                 _fallbackUsd += (decimal)(_random.NextDouble() * 0.04 - 0.02);
                 usdSpot = Math.Round(_fallbackUsd, 4);
             }
-            var usdChange = ParseChange(html, "USD");
 
-            var eurSpot = ParseRate(html, "EUR");
             if (eurSpot == 0m)
             {
                 _fallbackEur += (decimal)(_random.NextDouble() * 0.04 - 0.02);
                 eurSpot = Math.Round(_fallbackEur, 4);
             }
-            var eurChange = ParseChange(html, "EUR");
 
-            var goldSpot = ParseRate(html, "gram-altin");
             if (goldSpot == 0m)
             {
                 _fallbackGold += (decimal)(_random.NextDouble() * 2.0 - 1.0);
                 goldSpot = Math.Round(_fallbackGold, 2);
             }
-            var goldChange = ParseChange(html, "gram-altin");
 
-            var silverSpot = ParseRate(html, "gumus");
             if (silverSpot == 0m)
             {
                 _fallbackSilver += (decimal)(_random.NextDouble() * 0.1 - 0.05);
                 silverSpot = Math.Round(_fallbackSilver, 2);
             }
-            var silverChange = ParseChange(html, "gumus");
 
             return new List<MarketRateDto>
             {
@@ -129,85 +154,33 @@ namespace SmartBank.Infrastructure.Services
             return rates.FirstOrDefault(r => r.Code.Equals(code, StringComparison.OrdinalIgnoreCase));
         }
 
-        private static decimal ParseRate(string? html, string socketKey)
+        private static decimal ParseDecimalString(string? value)
         {
-            if (string.IsNullOrEmpty(html)) return 0m;
+            if (string.IsNullOrEmpty(value)) return 0m;
             try
             {
-                var pattern = $"data-socket-key=\"{socketKey}\"[^>]*data-socket-attr=\"s\"[^>]*>([^<]+)<";
-                var match = Regex.Match(html, pattern, RegexOptions.IgnoreCase);
-                if (!match.Success)
+                var cleaned = value.Replace(".", "").Replace(",", ".");
+                if (decimal.TryParse(cleaned, NumberStyles.Any, CultureInfo.InvariantCulture, out var result))
                 {
-                    pattern = $"data-socket-attr=\"s\"[^>]*data-socket-key=\"{socketKey}\"[^>]*>([^<]+)<";
-                    match = Regex.Match(html, pattern, RegexOptions.IgnoreCase);
-                }
-
-                if (!match.Success)
-                {
-                    pattern = $"data-socket-key=\"{socketKey}\"[^>]*>([^<]+)<";
-                    match = Regex.Match(html, pattern, RegexOptions.IgnoreCase);
-                }
-
-                if (match.Success)
-                {
-                    var valStr = match.Groups[1].Value.Trim().Replace("$", "");
-                    if (valStr.Contains(".") && valStr.Contains(","))
-                    {
-                        valStr = valStr.Replace(".", "").Replace(",", ".");
-                    }
-                    else if (valStr.Contains(","))
-                    {
-                        valStr = valStr.Replace(",", ".");
-                    }
-
-                    if (decimal.TryParse(valStr, NumberStyles.Any, CultureInfo.InvariantCulture, out var result))
-                    {
-                        return result;
-                    }
+                    return result;
                 }
             }
-            catch
-            {
-                // Ignore
-            }
+            catch {}
             return 0m;
         }
 
-        private static decimal ParseChange(string? html, string socketKey)
+        private static decimal ParsePercentString(string? value)
         {
-            if (string.IsNullOrEmpty(html)) return 0m;
+            if (string.IsNullOrEmpty(value)) return 0m;
             try
             {
-                var pattern = $"data-socket-key=\"{socketKey}\"[^>]*data-socket-attr=\"c\"[^>]*>([^<]+)<";
-                var match = Regex.Match(html, pattern, RegexOptions.IgnoreCase);
-                if (!match.Success)
+                var cleaned = value.Replace("%", "").Replace(" ", "").Replace(",", ".");
+                if (decimal.TryParse(cleaned, NumberStyles.Any, CultureInfo.InvariantCulture, out var result))
                 {
-                    pattern = $"data-socket-attr=\"c\"[^>]*data-socket-key=\"{socketKey}\"[^>]*>([^<]+)<";
-                    match = Regex.Match(html, pattern, RegexOptions.IgnoreCase);
-                }
-
-                if (match.Success)
-                {
-                    var valStr = match.Groups[1].Value.Trim().Replace("%", "").Replace(" ", "");
-                    if (valStr.Contains(",") && valStr.Contains("."))
-                    {
-                        valStr = valStr.Replace(".", "").Replace(",", ".");
-                    }
-                    else if (valStr.Contains(","))
-                    {
-                        valStr = valStr.Replace(",", ".");
-                    }
-
-                    if (decimal.TryParse(valStr, NumberStyles.Any, CultureInfo.InvariantCulture, out var result))
-                    {
-                        return result;
-                    }
+                    return result;
                 }
             }
-            catch
-            {
-                // Ignore
-            }
+            catch {}
             return 0m;
         }
     }
