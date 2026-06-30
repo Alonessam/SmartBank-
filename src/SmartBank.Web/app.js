@@ -1637,7 +1637,7 @@ function init2FASettings() {
                     "Content-Type": "application/json",
                     "Authorization": `Bearer ${currentToken}`
                 },
-                body: JSON.stringify({ enable })
+                body: JSON.stringify({ Enable: enable })
             });
 
             if (!response.ok) {
