@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
@@ -10,6 +10,7 @@ using SmartBank.Core.Common;
 using SmartBank.Core.DTOs;
 using SmartBank.Core.Entities;
 using SmartBank.Core.Interfaces;
+using SmartBank.Core.Security;
 using SmartBank.Infrastructure.Data;
 using SmartBank.Infrastructure.Security;
 
@@ -17,14 +18,20 @@ namespace SmartBank.Infrastructure.Services
 {
     public class AuthService : IAuthService
     {
+        // BCrypt hash used when the T.C. number is unknown, so that case costs as much time as a wrong PIN
+        // and response time does not reveal which T.C. numbers are registered.
+        private static readonly string DummyPasswordHash = BCrypt.Net.BCrypt.HashPassword("timing-equaliser-not-a-real-pin");
+
+        private static readonly TimeSpan PasswordResetCooldown = TimeSpan.FromSeconds(60);
+
         private readonly SmartBankDbContext _context;
-        private readonly IConfiguration _configuration;
+        private readonly IOtpDelivery _otpDelivery;
         private readonly JwtSettings _jwtSettings;
 
-        public AuthService(SmartBankDbContext context, IConfiguration configuration)
+        public AuthService(SmartBankDbContext context, IConfiguration configuration, IOtpDelivery otpDelivery)
         {
             _context = context;
-            _configuration = configuration;
+            _otpDelivery = otpDelivery;
             _jwtSettings = JwtSettings.From(configuration);
         }
 
@@ -156,96 +163,109 @@ namespace SmartBank.Infrastructure.Services
             return ServiceResult<AuthResponseDto>.Success(response);
         }
 
-        public async Task<ServiceResult<AuthResponseDto>> LoginAsync(LoginDto loginDto)
+        public async Task<ServiceResult<AuthResponseDto>> LoginAsync(LoginDto loginDto, string? ipAddress = null)
         {
-            var user = await _context.Users
-                .FirstOrDefaultAsync(u => u.Tckn == loginDto.Tckn);
+            var now = DateTime.UtcNow;
+            var user = await _context.Users.FirstOrDefaultAsync(u => u.Tckn == loginDto.Tckn);
 
-            if (user == null || !BCrypt.Net.BCrypt.Verify(loginDto.Password, user.PasswordHash))
+            // A locked account is rejected before the PIN is even checked, so guessing during a lockout is pointless
+            // and a lockout is not extended by further attempts.
+            if (user != null && LoginLockout.IsLocked(user, now))
             {
-                return ServiceResult<AuthResponseDto>.Failure("InvalidCredentials", "Invalid T.C. Kimlik Numarası or password.");
+                var minutes = (int)Math.Ceiling(LoginLockout.Remaining(user, now).TotalMinutes);
+                return ServiceResult<AuthResponseDto>.Failure("AccountLocked",
+                    $"Too many failed attempts. The account is locked for about {minutes} more minute(s).");
             }
 
-            // Check if 2FA is enabled for this user
+            // Always run exactly one BCrypt verification, even for an unknown T.C. number, so response time
+            // does not reveal which numbers are registered.
+            var pinMatches = BCrypt.Net.BCrypt.Verify(loginDto.Password, user?.PasswordHash ?? DummyPasswordHash);
+
+            if (user == null || !pinMatches)
+            {
+                if (user != null)
+                {
+                    LoginLockout.RegisterFailure(user, now);
+                    var lockedNow = LoginLockout.IsLocked(user, now);
+                    _context.AuditLogs.Add(NewAuditLog(user.Id, lockedNow ? "AccountLocked" : "LoginFailed",
+                        lockedNow ? $"Account locked after {LoginLockout.MaxFailedAttempts} failed logins." : "Wrong PIN.", ipAddress));
+                    await _context.SaveChangesAsync();
+                }
+
+                // Identical answer for "no such T.C. number" and "wrong PIN".
+                return ServiceResult<AuthResponseDto>.Failure("InvalidCredentials", "Invalid T.C. Kimlik NumarasÄ± or password.");
+            }
+
+            LoginLockout.Reset(user);
+
             if (user.TwoFactorEnabled)
             {
-                var otp = SecureRandom.Next(100000, 1000000).ToString();
-                
-                user.TwoFactorSecret = otp;
-                user.TwoFactorExpiry = DateTime.UtcNow.AddMinutes(5);
-
-                _context.Users.Update(user);
+                var code = OtpManager.Issue(user, OtpPurpose.Login, now);
                 await _context.SaveChangesAsync();
 
-                // Send 2FA email in background
-                _ = Task.Run(async () => {
-                    await SendAuth2FaEmailAsync(user.Email, user.FullName, otp);
-                });
+                _otpDelivery.Send(user, code, OtpPurpose.Login);
 
-                Console.WriteLine($"[SmartBank Login 2FA] Generated OTP: {otp} for user {user.Username}");
+                var message = "Ä°ki aÅŸamalÄ± doÄŸrulama gerekiyor.";
+                if (_otpDelivery.ExposeCodeInResponse)
+                {
+                    message += $"|OTP:{code}"; // demo mode only, see IOtpDelivery.ExposeCodeInResponse
+                }
 
-                // Return failure with Requires2FA key and simulated OTP inside message
-                return ServiceResult<AuthResponseDto>.Failure("Requires2FA", $"İki aşamalı doğrulama gerekiyor.|OTP:{otp}");
+                return ServiceResult<AuthResponseDto>.Failure("Requires2FA", message);
             }
 
-            var token = GenerateJwtToken(user);
-
-            // Write Audit Log
-            var audit = new AuditLog
-            {
-                Id = Guid.NewGuid(),
-                UserId = user.Id,
-                Action = "UserLoggedIn",
-                Details = $"User logged in. Username: {user.Username}",
-                IpAddress = "127.0.0.1",
-                CreatedAt = DateTime.UtcNow
-            };
-            _context.AuditLogs.Add(audit);
+            _context.AuditLogs.Add(NewAuditLog(user.Id, "UserLoggedIn", $"User logged in. Username: {user.Username}", ipAddress));
             await _context.SaveChangesAsync();
 
-            var response = new AuthResponseDto
-            {
-                Token = token,
-                UserId = user.Id,
-                Username = user.Username,
-                Tckn = user.Tckn,
-                FullName = user.FullName
-            };
-
-            return ServiceResult<AuthResponseDto>.Success(response);
+            return ServiceResult<AuthResponseDto>.Success(ToAuthResponse(user));
         }
 
-        public async Task<ServiceResult<bool>> ForgotPasswordAsync(ForgotPasswordDto forgotPasswordDto)
+        public async Task<ServiceResult<bool>> RequestPasswordResetAsync(ForgotPasswordDto forgotPasswordDto, string? ipAddress = null)
         {
+            var now = DateTime.UtcNow;
             var user = await _context.Users.FirstOrDefaultAsync(u => u.Tckn == forgotPasswordDto.Tckn);
-            if (user == null)
+
+            // Nothing in the answer depends on whether the T.C. number exists. The cooldown stops this public
+            // endpoint from being used to flood somebody's mailbox with codes.
+            if (user != null && !OtpManager.IsCoolingDown(user, OtpPurpose.PasswordReset, now, PasswordResetCooldown))
             {
-                return ServiceResult<bool>.Failure("TcknNotFound", "T.C. Kimlik Numarası is not registered.");
+                var code = OtpManager.Issue(user, OtpPurpose.PasswordReset, now);
+                _context.AuditLogs.Add(NewAuditLog(user.Id, "PasswordResetRequested", "A password reset code was issued.", ipAddress));
+                await _context.SaveChangesAsync();
+
+                _otpDelivery.Send(user, code, OtpPurpose.PasswordReset);
             }
-
-            var passwordHash = BCrypt.Net.BCrypt.HashPassword(forgotPasswordDto.NewPassword);
-            user.PasswordHash = passwordHash;
-
-            _context.Users.Update(user);
-            await _context.SaveChangesAsync();
-
-            // Write Audit Log
-            var audit = new AuditLog
-            {
-                Id = Guid.NewGuid(),
-                UserId = user.Id,
-                Action = "PasswordReset",
-                Details = $"User password reset. Username: {user.Username}",
-                IpAddress = "127.0.0.1",
-                CreatedAt = DateTime.UtcNow
-            };
-            _context.AuditLogs.Add(audit);
-            await _context.SaveChangesAsync();
 
             return ServiceResult<bool>.Success(true);
         }
 
-        public async Task<ServiceResult<bool>> Toggle2FaAsync(Guid userId, bool enable)
+        public async Task<ServiceResult<bool>> ResetPasswordAsync(ResetPasswordDto resetPasswordDto, string? ipAddress = null)
+        {
+            var now = DateTime.UtcNow;
+            var user = await _context.Users.FirstOrDefaultAsync(u => u.Tckn == resetPasswordDto.Tckn);
+
+            if (user == null)
+            {
+                BCrypt.Net.BCrypt.Verify(resetPasswordDto.NewPassword, DummyPasswordHash); // keep timing similar
+                return ServiceResult<bool>.Failure("InvalidOrExpiredCode", "GeÃ§ersiz veya sÃ¼resi dolmuÅŸ doÄŸrulama kodu.");
+            }
+
+            var check = OtpManager.Verify(user, OtpPurpose.PasswordReset, resetPasswordDto.Code, now);
+            if (check != OtpCheckResult.Valid)
+            {
+                await _context.SaveChangesAsync(); // persists the failed-attempt counter or the destroyed code
+                return OtpFailure<bool>(check);
+            }
+
+            user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(resetPasswordDto.NewPassword);
+            LoginLockout.Reset(user); // proving control of the mailbox also lifts a lockout
+
+            _context.AuditLogs.Add(NewAuditLog(user.Id, "PasswordReset", $"User password reset. Username: {user.Username}", ipAddress));
+            await _context.SaveChangesAsync();
+
+            return ServiceResult<bool>.Success(true);
+        }
+public async Task<ServiceResult<bool>> Toggle2FaAsync(Guid userId, bool enable)
         {
             var user = await _context.Users.FindAsync(userId);
             if (user == null)
@@ -271,98 +291,59 @@ namespace SmartBank.Infrastructure.Services
             return ServiceResult<bool>.Success(user.TwoFactorEnabled);
         }
 
-        public async Task<ServiceResult<AuthResponseDto>> Verify2FaAsync(Verify2FaDto verify2FaDto)
+        public async Task<ServiceResult<AuthResponseDto>> Verify2FaAsync(Verify2FaDto verify2FaDto, string? ipAddress = null)
         {
+            var now = DateTime.UtcNow;
             var user = await _context.Users.FirstOrDefaultAsync(u => u.Tckn == verify2FaDto.Tckn);
+
+            // Same answer for an unknown T.C. number and a wrong code.
             if (user == null)
             {
-                return ServiceResult<AuthResponseDto>.Failure("UserNotFound", "Kullanıcı bulunamadı.");
+                return ServiceResult<AuthResponseDto>.Failure("InvalidOrExpiredCode", "GeÃ§ersiz veya sÃ¼resi dolmuÅŸ doÄŸrulama kodu.");
             }
 
-            if (string.IsNullOrEmpty(user.TwoFactorSecret) || 
-                user.TwoFactorSecret != verify2FaDto.Code || 
-                !user.TwoFactorExpiry.HasValue || 
-                user.TwoFactorExpiry.Value < DateTime.UtcNow)
+            if (LoginLockout.IsLocked(user, now))
             {
-                return ServiceResult<AuthResponseDto>.Failure("InvalidOrExpiredCode", "Geçersiz veya süresi dolmuş doğrulama kodu.");
+                return ServiceResult<AuthResponseDto>.Failure("AccountLocked", "The account is temporarily locked.");
             }
 
-            // Clear OTP after success
-            user.TwoFactorSecret = null;
-            user.TwoFactorExpiry = null;
-            _context.Users.Update(user);
+            var check = OtpManager.Verify(user, OtpPurpose.Login, verify2FaDto.Code, now);
+            await _context.SaveChangesAsync(); // persists the failed-attempt counter, or the cleared code on success
+
+            if (check != OtpCheckResult.Valid)
+            {
+                return OtpFailure<AuthResponseDto>(check);
+            }
+
+            _context.AuditLogs.Add(NewAuditLog(user.Id, "UserLoggedIn", $"User logged in with 2FA. Username: {user.Username}", ipAddress));
             await _context.SaveChangesAsync();
 
-            var token = GenerateJwtToken(user);
-
-            var response = new AuthResponseDto
-            {
-                Token = token,
-                UserId = user.Id,
-                Username = user.Username,
-                Tckn = user.Tckn,
-                FullName = user.FullName
-            };
-
-            return ServiceResult<AuthResponseDto>.Success(response);
+            return ServiceResult<AuthResponseDto>.Success(ToAuthResponse(user));
         }
 
-        private async Task SendAuth2FaEmailAsync(string emailAddress, string username, string otpCode)
+        private static ServiceResult<T> OtpFailure<T>(OtpCheckResult check) => check == OtpCheckResult.TooManyAttempts
+            ? ServiceResult<T>.Failure("TooManyOtpAttempts", "Too many wrong codes. Request a new code and try again.")
+            : ServiceResult<T>.Failure("InvalidOrExpiredCode", "GeÃ§ersiz veya sÃ¼resi dolmuÅŸ doÄŸrulama kodu.");
+
+        private static AuditLog NewAuditLog(Guid userId, string action, string details, string? ipAddress) => new()
         {
-            try
-            {
-                var smtpHost = _configuration["SmtpSettings:Host"] ?? "localhost";
-                var smtpPortStr = _configuration["SmtpSettings:Port"] ?? "25";
-                int.TryParse(smtpPortStr, out var smtpPort);
-                var smtpUsername = _configuration["SmtpSettings:Username"] ?? "";
-                var smtpPassword = _configuration["SmtpSettings:Password"] ?? "";
-                var enableSsl = bool.Parse(_configuration["SmtpSettings:EnableSsl"] ?? "false");
-                var fromAddress = _configuration["SmtpSettings:FromAddress"] ?? "no-reply@smartbank.com";
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            Action = action,
+            Details = details,
+            IpAddress = string.IsNullOrWhiteSpace(ipAddress) ? "unknown" : ipAddress,
+            CreatedAt = DateTime.UtcNow
+        };
 
-                using (var mail = new System.Net.Mail.MailMessage())
-                {
-                    mail.From = new System.Net.Mail.MailAddress(fromAddress, "SmartBank Güvenlik");
-                    mail.To.Add(emailAddress);
-                    mail.Subject = "SmartBank Giriş Doğrulama Kodu";
-                    
-                    mail.Body = $@"
-                    <html>
-                    <body style='font-family: Arial, sans-serif; background-color: #0d1b2a; color: #e0e1dd; padding: 2rem;'>
-                        <div style='max-width: 600px; margin: 0 auto; background-color: #1b263b; border-radius: 12px; border: 1px solid #415a77; padding: 2rem;'>
-                            <h2 style='color: #00f260; text-align: center; font-size: 1.8rem; margin-top: 0;'>❖ SmartBank Giriş Doğrulaması</h2>
-                            <p style='font-size: 1.1rem;'>Merhaba <strong>{username}</strong>,</p>
-                            <p style='font-size: 1.1rem; line-height: 1.6;'>SmartBank hesabınıza güvenli giriş yapmak için aşağıdaki 6 haneli doğrulama kodunu kullanın:</p>
-                            <div style='text-align: center; margin: 2rem 0;'>
-                                <span style='font-size: 2.2rem; font-weight: bold; background-color: #0d1b2a; color: #00f260; padding: 0.75rem 2rem; border-radius: 8px; letter-spacing: 5px; border: 1px solid #415a77;'>{otpCode}</span>
-                            </div>
-                            <p style='color: #a3b18a; font-size: 0.9rem; line-height: 1.6;'>Bu kod 5 dakika boyunca geçerlidir. Giriş talebi size ait değilse lütfen hemen müşteri hizmetlerimizle iletişime geçiniz.</p>
-                            <hr style='border: 0; border-top: 1px solid #415a77; margin: 2rem 0;' />
-                            <p style='font-size: 0.8rem; text-align: center; color: #a3b18a;'>SmartBank A.Ş. &copy; {DateTime.UtcNow.Year}</p>
-                        </div>
-                    </body>
-                    </html>";
-                    mail.IsBodyHtml = true;
-
-                    using (var smtp = new System.Net.Mail.SmtpClient(smtpHost, smtpPort))
-                    {
-                        if (!string.IsNullOrEmpty(smtpUsername))
-                        {
-                            smtp.Credentials = new System.Net.NetworkCredential(smtpUsername, smtpPassword);
-                        }
-                        smtp.EnableSsl = enableSsl;
-                        
-                        await smtp.SendMailAsync(mail);
-                    }
-                }
-                Console.WriteLine($"[SmartBank Login 2FA Email] Real verification email successfully sent to {emailAddress}.");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[SmartBank Login 2FA Email Error] Failed to send email to {emailAddress}: {ex.Message}");
-            }
-        }
-
-        private string GenerateJwtToken(User user)
+        private AuthResponseDto ToAuthResponse(User user) => new()
+        {
+            Token = GenerateJwtToken(user),
+            UserId = user.Id,
+            Username = user.Username,
+            Tckn = user.Tckn,
+            FullName = user.FullName
+        };
+private string GenerateJwtToken(User user)
         {
             var tokenHandler = new JwtSecurityTokenHandler();
 
