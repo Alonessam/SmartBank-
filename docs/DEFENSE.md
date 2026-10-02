@@ -78,3 +78,40 @@ Mülakatta bu dosyadaki cümleleri **kendi kelimelerinle** anlatabilmen hedeflen
 - `Random` ile `RandomNumberGenerator` arasındaki fark nedir, ne zaman hangisi?
 - Modulo bias nedir?
 - OTP'yi tahmin edilebilir üretmek 2FA'ya ne yapar? Ek olarak hangi önlem lazım? (T5: deneme sınırı, kilit.)
+
+---
+
+## T4 — Kart verisi ve şifreleme
+
+**Sorun.**
+1. Şifreleme AES-CBC + **sabit IV** idi: aynı kart numarası her zaman aynı şifreli metni verir. Saldırgan veritabanında aynı şifreli değerleri görüp "bu iki hesap aynı kart" diyebilir, bilinen bir düz metni şifreleyip eşleştirebilir. Üstelik CBC veriyi *doğrulamaz*: bozulmuş veri, hata yerine sessizce çöp metin verebilir.
+2. Kart tekrarı kontrolü (`BankingService`) tam da bu deterministik şifrelemeye yaslanıyordu: yeni numarayı şifreleyip veritabanında arıyordu.
+3. CVV saklanıyor ve her okumada istemciye geri dönüyordu.
+4. `Decrypt` hata olunca `"[Decryption Error]"` metnini *döndürüyordu*. Bu metin kart numarası olarak ekrana basılabilirdi.
+5. `StandingOrderDto.CreditCardNumber` alanı aslında kartın **şifreli metnini** istemciye veriyordu (frontend kullanmıyordu).
+
+**Ne yaptım.**
+- **AES-256-GCM**: her şifrelemede rastgele 12 baytlık nonce. Çıktı biçimi `v1:` + base64(nonce | etiket | şifreli metin). GCM'in doğrulama etiketi sayesinde kurcalanmış veri veya yanlış anahtar **hata fırlatır**, çöp döndürmez. `v1:` öneki ek doğrulanmış veri (AAD) olarak da bağlandı; biçim ileride değişebilir.
+- **Anahtar ayrımı**: tek ana anahtardan (`Encryption:Key`) **HKDF** ile şifreleme anahtarı ve hash anahtarı türetilir. Bir kullanımdaki zayıflık diğerini sızdırmaz.
+- **Tekrar kontrolü** artık `CardNumberHash` (HMAC-SHA256, hex 64 karakter, unique indeks) ile. Düz SHA-256 yetmezdi: 16 haneli, ilk hanesi sabit bir numaranın arama uzayı küçük, hash'i kaba kuvvetle çözülür. **Anahtarlı** HMAC anahtar olmadan çözülemez.
+- **CVV hiç saklanmıyor.** Kart oluşturulurken yanıtta bir kez dönüyor, sonra yok (`CardCvv` boş). Kart saklayan sistemlerde doğrulama kodunun yetkilendirmeden sonra saklanması yasaktır (PCI DSS). Frontend CVV yoksa `•••` gösteriyor.
+- `TryDecrypt` ile görüntüleme yolları artık bozuk/eski bir satır yüzünden çökmüyor, boş döner. `CardMasking.LastFour` ile son 4 hane maskeleme tek yerde.
+- `StandingOrderDto` artık `CreditCardLast4` döndürüyor (şifreli metin sızıntısı kapandı).
+- EF migration `HardenCardData` (CVV sütunları düştü, `CardNumberHash` + filtreli unique indeks) ve üretim için PostgreSQL karşılığı `docs/deploy/v1.1-postgres-upgrade.sql`.
+
+**Neden bu seçimler.**
+- *AES-CBC + HMAC (encrypt-then-MAC) yerine GCM:* tek ilkel hem gizlilik hem bütünlük sağlıyor, yanlış birleştirme riski yok, .NET'te `AesGcm` hazır.
+- *Rastgele nonce:* GCM'de aynı anahtar+nonce çifti tekrar kullanılırsa güvenlik çöker. 96 bitlik rastgele nonce, bu uygulamanın ölçeğinde çakışma ihtimalini ihmal edilebilir kılar. (Çok büyük hacimde sayaç tabanlı nonce gerekir.)
+- *Sütun uzunluğu:* 16 haneli numara için çıktı 60 karakter (`HasMaxLength(100)` içinde). Test, bu sınırı korur.
+- *Eski veriyi taşımak yerine sıfırlamak:* eski anahtar zaten T1'de sızmış sayıldı ve değişti, dolayısıyla eski şifreli veriler zaten okunamaz. Veriler demo, taşıma çabası değer katmaz.
+
+**Bilinen sınırlamalar.** Kredi kartı numarası API'den hâlâ tam olarak dönüyor (frontend maskeliyor). Gerçek bir sistemde sunucu tarafında maskelemek gerekir. Anahtar döndürme (rotation) için `v1:` öneki hazır, ama çoklu anahtar desteği yok.
+
+**Nasıl kanıtladım.** 53 birim test (rastgele nonce, kurcalama, yanlış anahtar, bozuk girdi, hash anahtara bağlı, sütun uzunluğu, servis akışları, eski satır). LocalDB'de geçici bir veritabanında **tüm migration'ları** uyguladım, API'yi çalıştırdım: kayıt, giriş, hesap/kart okuma (CVV boş), yeni hesap açılışında CVV bir kez dönüyor, tekrar okununca boş. Veritabanında CVV sütunu yok, kart şifreli metinleri `v1:` ile başlıyor, kredi kartında hash dolu. Test veritabanı sonra silindi. **Doğrulanmayan:** PostgreSQL betiğini gerçek bir PostgreSQL'de çalıştırmadım.
+
+**Mülakat soruları.**
+- Sabit IV neden kötü? CBC ile GCM farkı nedir?
+- GCM'de nonce tekrar kullanılırsa ne olur?
+- Neden düz SHA-256 değil HMAC? Anahtar ayrımı (HKDF) neden?
+- CVV neden saklanmaz? Şifreli de olsa neden saklanmaz?
+- Bozuk bir şifreli değeri okurken neden hata fırlatıp, görüntüleme yolunda yakalıyoruz?
