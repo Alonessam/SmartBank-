@@ -144,6 +144,15 @@ dotnet test SmartBank.slnx
 
 CI runs them against a PostgreSQL 16 service container, the production database.
 
+### 6. Create a Support Agent
+
+Support-agent access is a **role** stored on the user (`Role`: 0 = Customer, 1 = Agent) and carried in the JWT. Nothing in the API can grant it: registration always creates a customer, and a username such as `agent_smith` has no special meaning. An administrator promotes an account directly in the database, then the person signs in again to get a token that carries the role:
+
+```sql
+UPDATE "Users" SET "Role" = 1 WHERE "Username" = 'agent1';   -- PostgreSQL
+UPDATE Users   SET Role   = 1 WHERE Username   = 'agent1';   -- SQL Server
+```
+
 ---
 
 ## 🧪 Testing Credentials (Fresh Database Setup)
@@ -295,6 +304,15 @@ dotnet test SmartBank.slnx
 ```
 
 CI bu testleri üretim veritabanı olan PostgreSQL 16 servis kapsayıcısına karşı çalıştırır.
+
+### 6. Destek Temsilcisi Oluşturun
+
+Destek temsilcisi erişimi, kullanıcı üzerinde saklanan ve JWT içinde taşınan bir **roldür** (`Role`: 0 = Müşteri, 1 = Temsilci). API içinden bu rol verilemez: kayıt her zaman müşteri oluşturur ve `agent_smith` gibi bir kullanıcı adının özel bir anlamı yoktur. Yönetici bir hesabı doğrudan veritabanında terfi ettirir, ardından kişi yeniden giriş yaparak rolü taşıyan bir token alır:
+
+```sql
+UPDATE "Users" SET "Role" = 1 WHERE "Username" = 'agent1';   -- PostgreSQL
+UPDATE Users   SET Role   = 1 WHERE Username   = 'agent1';   -- SQL Server
+```
 
 ---
 Developed with premium design aesthetics and enterprise-ready C# practices. © 2026 SmartBank Team.
