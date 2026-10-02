@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -37,7 +37,7 @@ namespace SmartBank.API.Controllers
                 });
             }
 
-            var result = await _authService.RegisterAsync(registerDto);
+            var result = await _authService.RegisterAsync(registerDto, ClientIp());
 
             if (!result.IsSuccess)
             {
