@@ -90,21 +90,23 @@ Before running the API, verify your connection string in `appsettings.json` (def
 dotnet ef database update --project src/SmartBank.Infrastructure --startup-project src/SmartBank.API
 ```
 
-### 2. Configure API Keys
-Open `src/SmartBank.API/appsettings.json` and customize the configuration keys:
-```json
-{
-  "ConnectionStrings": {
-    "DefaultConnection": "Server=(localdb)\\mssqllocaldb;Database=SmartBankDb;..."
-  },
-  "JwtSettings": {
-    "Key": "YOUR_SUPER_SECRET_JWT_KEY_HERE"
-  },
-  "GeminiSettings": {
-    "ApiKey": "YOUR_GEMINI_API_KEY_HERE"
-  }
-}
+### 2. Configure Secrets
+Secrets are **never** stored in `appsettings.json`. The API refuses to start without a JWT signing key and an encryption key.
+
+**Local development** (uses .NET user-secrets, nothing is written to the repository):
+```powershell
+./scripts/dev-secrets.ps1
 ```
+This generates random values for `JwtSettings:Key` and `Encryption:Key`. To add a Gemini key: `dotnet user-secrets set GeminiSettings:ApiKey <your-key> --project src/SmartBank.API`.
+
+**Production** (e.g. Render): set these environment variables.
+
+| Variable | Description |
+|---|---|
+| `JwtSettings__Key` | JWT signing key, at least 32 bytes (e.g. 48 random bytes, base64) |
+| `Encryption__Key` | AES-256 key, base64 of exactly 32 random bytes |
+| `ConnectionStrings__DefaultConnection` | Database connection string |
+| `GeminiSettings__ApiKey` | Optional, Gemini API key |
 
 ### 3. Run the Backend API
 ```bash
@@ -213,21 +215,23 @@ API sunucusunu çalıştırmadan önce `appsettings.json` içindeki bağlantı d
 dotnet ef database update --project src/SmartBank.Infrastructure --startup-project src/SmartBank.API
 ```
 
-### 2. API Anahtarlarını Yapılandırın
-`src/SmartBank.API/appsettings.json` dosyasını açarak ilgili anahtarları yerleştirin:
-```json
-{
-  "ConnectionStrings": {
-    "DefaultConnection": "Server=(localdb)\\mssqllocaldb;Database=SmartBankDb;..."
-  },
-  "JwtSettings": {
-    "Key": "YOUR_SUPER_SECRET_JWT_KEY_HERE"
-  },
-  "GeminiSettings": {
-    "ApiKey": "YOUR_GEMINI_API_KEY_HERE"
-  }
-}
+### 2. Gizli Anahtarları Yapılandırın
+Gizli anahtarlar `appsettings.json` içinde **tutulmaz**. JWT imza anahtarı ve şifreleme anahtarı olmadan API başlamaz.
+
+**Yerel geliştirme** (.NET user-secrets kullanır, depoya hiçbir şey yazılmaz):
+```powershell
+./scripts/dev-secrets.ps1
 ```
+Bu betik `JwtSettings:Key` ve `Encryption:Key` için rastgele değerler üretir. Gemini anahtarı için: `dotnet user-secrets set GeminiSettings:ApiKey <anahtar> --project src/SmartBank.API`.
+
+**Üretim** (örn. Render): şu ortam değişkenlerini tanımlayın.
+
+| Değişken | Açıklama |
+|---|---|
+| `JwtSettings__Key` | JWT imza anahtarı, en az 32 bayt (örn. 48 rastgele bayt, base64) |
+| `Encryption__Key` | AES-256 anahtarı, tam 32 rastgele baytın base64 hâli |
+| `ConnectionStrings__DefaultConnection` | Veritabanı bağlantı dizesi |
+| `GeminiSettings__ApiKey` | İsteğe bağlı, Gemini API anahtarı |
 
 ### 3. API Sunucusunu Başlatın
 ```bash
