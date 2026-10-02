@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using SmartBank.Infrastructure.Data;
 
@@ -11,9 +12,11 @@ using SmartBank.Infrastructure.Data;
 namespace SmartBank.Infrastructure.Migrations
 {
     [DbContext(typeof(SmartBankDbContext))]
-    partial class SmartBankDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261002144644_SetInterestRatePrecision")]
+    partial class SetInterestRatePrecision
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
