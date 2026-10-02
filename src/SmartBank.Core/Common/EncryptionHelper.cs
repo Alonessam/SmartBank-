@@ -7,23 +7,52 @@ namespace SmartBank.Core.Common
 {
     public static class EncryptionHelper
     {
-        private static readonly byte[] Key;
-        private static readonly byte[] Iv;
+        private const int KeyBytes = 32;
 
-        static EncryptionHelper()
+        private static byte[]? _key;
+        private static byte[]? _iv;
+
+        private static byte[] Key => _key ?? throw NotConfigured();
+        private static byte[] Iv => _iv ?? throw NotConfigured();
+
+        /// <summary>
+        /// Sets the AES-256 key. Must be called once at startup with a base64 string of exactly 32 bytes
+        /// coming from user-secrets or the Encryption__Key environment variable.
+        /// </summary>
+        public static void Configure(string? base64Key)
         {
-            // Ensure Key is exactly 32 bytes (256 bits)
-            var keyBytes = new byte[32];
-            var tempKey = Encoding.UTF8.GetBytes("SmartBankEncryptionKeySecret2026!");
-            Array.Copy(tempKey, keyBytes, Math.Min(tempKey.Length, 32));
-            Key = keyBytes;
+            if (string.IsNullOrWhiteSpace(base64Key))
+            {
+                throw new InvalidOperationException(
+                    "Encryption:Key is not configured. Set it with user-secrets " +
+                    "(scripts/dev-secrets.ps1) or the Encryption__Key environment variable.");
+            }
 
-            // Ensure IV is exactly 16 bytes (128 bits)
-            var ivBytes = new byte[16];
-            var tempIv = Encoding.UTF8.GetBytes("SmartBankIvVectorVector2026!");
-            Array.Copy(tempIv, ivBytes, Math.Min(tempIv.Length, 16));
-            Iv = ivBytes;
+            byte[] key;
+            try
+            {
+                key = Convert.FromBase64String(base64Key);
+            }
+            catch (FormatException)
+            {
+                throw new InvalidOperationException("Encryption:Key must be a base64 string.");
+            }
+
+            if (key.Length != KeyBytes)
+            {
+                throw new InvalidOperationException($"Encryption:Key must decode to exactly {KeyBytes} bytes.");
+            }
+
+            _key = key;
+
+            // Transitional: the IV is derived from the key so no constant lives in the source.
+            // It is still deterministic (same plaintext -> same ciphertext); the card-data rework replaces
+            // this whole construct with AES-GCM and a random nonce per message.
+            _iv = HMACSHA256.HashData(key, Encoding.UTF8.GetBytes("smartbank:aes-iv:v1"))[..16];
         }
+
+        private static InvalidOperationException NotConfigured() =>
+            new("EncryptionHelper is not configured. Call EncryptionHelper.Configure(...) at startup.");
 
         public static string Encrypt(string plainText)
         {
@@ -67,7 +96,7 @@ namespace SmartBank.Core.Common
                     }
                 }
             }
-            catch
+            catch (Exception ex) when (ex is CryptographicException or FormatException)
             {
                 return "[Decryption Error]";
             }
