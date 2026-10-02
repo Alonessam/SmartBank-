@@ -1,6 +1,9 @@
 @SmartBank.API_HostAddress = http://localhost:5038
 
-GET {{SmartBank.API_HostAddress}}/weatherforecast/
-Accept: application/json
+### Liveness: the process is up (answers Healthy, touches nothing)
+GET {{SmartBank.API_HostAddress}}/health
+
+### Readiness: the database is reachable (answers Healthy or Unhealthy)
+GET {{SmartBank.API_HostAddress}}/health/ready
 
 ###

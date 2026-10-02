@@ -8,6 +8,8 @@ using SmartBank.Core.DTOs;
 using SmartBank.Core.Entities;
 using SmartBank.Core.Interfaces;
 using SmartBank.Infrastructure.Data;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using SmartBank.Core.Security;
 
 namespace SmartBank.Infrastructure.Services
@@ -16,12 +18,17 @@ namespace SmartBank.Infrastructure.Services
     {
         private readonly SmartBankDbContext _context;
         private readonly IOtpDelivery _otpDelivery;
+        private readonly IClientInfo? _clientInfo;
+        private readonly ILogger<BankingService> _logger;
         private readonly IMarketRateService _marketRateService;
 
-        public BankingService(SmartBankDbContext context, IOtpDelivery otpDelivery, IMarketRateService marketRateService)
+        public BankingService(SmartBankDbContext context, IOtpDelivery otpDelivery, IMarketRateService marketRateService,
+            IClientInfo? clientInfo = null, ILogger<BankingService>? logger = null)
         {
             _context = context;
             _otpDelivery = otpDelivery;
+            _clientInfo = clientInfo;
+            _logger = logger ?? NullLogger<BankingService>.Instance;
             _marketRateService = marketRateService;
         }
 
@@ -318,7 +325,7 @@ namespace SmartBank.Infrastructure.Services
                     UserId = userId,
                     Action = "TransferMoney",
                     Details = $"Transferred {transferRequest.Amount} TRY from {sourceAccount.AccountNumber} to {destinationAccount.AccountNumber}",
-                    IpAddress = "127.0.0.1",
+                    IpAddress = ClientIp,
                     CreatedAt = DateTime.UtcNow
                 };
                 _context.AuditLogs.Add(audit);
@@ -353,7 +360,8 @@ namespace SmartBank.Infrastructure.Services
             {
                 // Rollback EF transaction changes on general exceptions
                 await dbTransaction.RollbackAsync();
-                return ServiceResult<TransactionDto>.Failure("TransactionFailed", $"An error occurred during transaction: {ex.Message}");
+                _logger.LogError(ex, "Transfer failed.");
+                return ServiceResult<TransactionDto>.Failure("TransactionFailed", "The transfer could not be completed. Please try again.");
             }
         }
         public async Task<ServiceResult<AccountDto>> CreateAccountAsync(Guid userId, string currency, string accountType = "DemandDeposit")
@@ -576,7 +584,8 @@ namespace SmartBank.Infrastructure.Services
             catch (Exception ex)
             {
                 await dbTransaction.RollbackAsync();
-                return ServiceResult<bool>.Failure("PaymentFailed", $"Payment failed: {ex.Message}");
+                _logger.LogError(ex, "Credit card payment failed.");
+                return ServiceResult<bool>.Failure("PaymentFailed", "The payment could not be completed. Please try again.");
             }
         }
 
@@ -621,7 +630,7 @@ namespace SmartBank.Infrastructure.Services
                     UserId = userId,
                     Action = "CreditCardCharge",
                     Details = $"Kredi kartından harcama yapıldı. Tutar: {amount} TRY, İşyeri: {ccTx.Description}",
-                    IpAddress = "127.0.0.1",
+                    IpAddress = ClientIp,
                     CreatedAt = DateTime.UtcNow
                 };
                 _context.AuditLogs.Add(auditLog);
@@ -650,7 +659,8 @@ namespace SmartBank.Infrastructure.Services
             catch (Exception ex)
             {
                 await dbTransaction.RollbackAsync();
-                return ServiceResult<CreditCardDto>.Failure("ChargeFailed", $"Charge failed: {ex.Message}");
+                _logger.LogError(ex, "Credit card charge failed.");
+                return ServiceResult<CreditCardDto>.Failure("ChargeFailed", "The charge could not be completed. Please try again.");
             }
         }
 
@@ -862,6 +872,8 @@ namespace SmartBank.Infrastructure.Services
                 }
             }
         }
+        private string ClientIp => _clientInfo?.IpAddress ?? "unknown";
+
         // Display paths must not fail because one stored card cannot be decrypted (e.g. legacy rows from before v1.1).
         private static string SafeDecrypt(string? cipherText) =>
             EncryptionHelper.TryDecrypt(cipherText, out var plain) ? plain : string.Empty;
@@ -965,7 +977,7 @@ namespace SmartBank.Infrastructure.Services
                 UserId = userId,
                 Action = "DeleteAccount",
                 Details = $"Deleted account ID: {accountId}. AccountNumber: {account.AccountNumber}",
-                IpAddress = "127.0.0.1",
+                IpAddress = ClientIp,
                 CreatedAt = DateTime.UtcNow
             };
             _context.AuditLogs.Add(audit);
@@ -1251,7 +1263,7 @@ namespace SmartBank.Infrastructure.Services
                 Details = isBuy 
                     ? $"Bought {exchangeDto.Amount} {asset} with {tryCost} TRY. Rate: {rate}"
                     : $"Sold {exchangeDto.Amount} {asset} for {tryCost} TRY. Rate: {rate}",
-                IpAddress = "127.0.0.1",
+                IpAddress = ClientIp,
                 CreatedAt = DateTime.UtcNow
             };
             _context.AuditLogs.Add(audit);

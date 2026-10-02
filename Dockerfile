@@ -19,9 +19,11 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app
 COPY --from=build-env /app/out .
 
-# Expose ports
-EXPOSE 80
-EXPOSE 443
+# Run as the unprivileged "app" user that the official .NET images provide (not root), on port 8080
+# (ports below 1024 would need root).
+ENV ASPNETCORE_HTTP_PORTS=8080
+EXPOSE 8080
+USER $APP_UID
 
 # Render (like most PaaS hosts) terminates TLS in a reverse proxy. Trust X-Forwarded-For/Proto so the app sees the
 # real client IP: the per-IP rate limit and the audit log depend on it. Do not expose this container directly.

@@ -29,9 +29,12 @@ ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "PendingOtpBinding" varchar(64);   
 ALTER TABLE "Accounts"    ADD COLUMN IF NOT EXISTS "Version" integer NOT NULL DEFAULT 0;
 ALTER TABLE "CreditCards" ADD COLUMN IF NOT EXISTS "Version" integer NOT NULL DEFAULT 0;
 
+-- 5) Explicit precision for the interest rate (EF migration ..._SetInterestRatePrecision). An annual rate such as 52.50.
+ALTER TABLE "Accounts" ALTER COLUMN "InterestRate" TYPE numeric(5,2);
+
 COMMIT;
 
--- 5) OPTIONAL, recommended for the demo database.
+-- 6) OPTIONAL, recommended for the demo database.
 --    Existing card numbers were encrypted with the OLD key and the OLD format (AES-CBC, fixed IV), so v1.1
 --    cannot decrypt them: the API returns an empty card number for those rows. All data in the demo
 --    database is fake. For a clean start, delete it (this removes ALL users, accounts, cards and
