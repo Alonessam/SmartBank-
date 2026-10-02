@@ -10,9 +10,14 @@ using SmartBank.Infrastructure.BackgroundServices;
 using SmartBank.API.Middlewares;
 using FluentValidation;
 using SmartBank.Core.Validators;
+using SmartBank.Core.Common;
 using SmartBank.Core.Entities;
+using SmartBank.Infrastructure.Security;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Card-data encryption key (base64, 32 bytes) comes from user-secrets / Encryption__Key, never from the repo.
+EncryptionHelper.Configure(builder.Configuration["Encryption:Key"]);
 
 // Add DbContext (Supports local SQL Server and Cloud PostgreSQL)
 builder.Services.AddDbContext<SmartBankDbContext>(options =>
@@ -31,8 +36,9 @@ builder.Services.AddDbContext<SmartBankDbContext>(options =>
 });
 
 // Add JWT Authentication
-var jwtKey = builder.Configuration["JwtSettings:Key"] ?? "SuperSecretKeyForDevelopmentSmartBankSupportMesh2026";
-var key = Encoding.ASCII.GetBytes(jwtKey);
+// The signing key has no default on purpose: JwtSettings.From throws at startup if it is missing or weak.
+var jwtSettings = JwtSettings.From(builder.Configuration);
+var key = jwtSettings.KeyBytes;
 
 builder.Services.AddAuthentication(options =>
 {
@@ -48,9 +54,9 @@ builder.Services.AddAuthentication(options =>
         ValidateIssuerSigningKey = true,
         IssuerSigningKey = new SymmetricSecurityKey(key),
         ValidateIssuer = true,
-        ValidIssuer = builder.Configuration["JwtSettings:Issuer"] ?? "SmartBankAPI",
+        ValidIssuer = jwtSettings.Issuer,
         ValidateAudience = true,
-        ValidAudience = builder.Configuration["JwtSettings:Audience"] ?? "SmartBankApp",
+        ValidAudience = jwtSettings.Audience,
         ValidateLifetime = true,
         ClockSkew = TimeSpan.Zero
     };
