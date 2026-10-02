@@ -35,7 +35,7 @@ namespace SmartBank.Infrastructure.Services
             _jwtSettings = JwtSettings.From(configuration);
         }
 
-        public async Task<ServiceResult<AuthResponseDto>> RegisterAsync(RegisterDto registerDto)
+        public async Task<ServiceResult<AuthResponseDto>> RegisterAsync(RegisterDto registerDto, string? ipAddress = null)
         {
             // Check if username already exists
             if (await _context.Users.AnyAsync(u => u.Username == registerDto.Username))
@@ -143,7 +143,7 @@ namespace SmartBank.Infrastructure.Services
                 UserId = user.Id,
                 Action = "UserRegistered",
                 Details = $"User registered with Username: {user.Username}, Tckn: {user.Tckn}",
-                IpAddress = "127.0.0.1",
+                IpAddress = string.IsNullOrWhiteSpace(ipAddress) ? "unknown" : ipAddress,
                 CreatedAt = DateTime.UtcNow
             };
             _context.AuditLogs.Add(audit);
