@@ -17,4 +17,9 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- Lets the tests run one pass of the standing-order worker without waiting for its 30-second timer. -->
+    <InternalsVisibleTo Include="SmartBank.Tests" />
+  </ItemGroup>
+
 </Project>
