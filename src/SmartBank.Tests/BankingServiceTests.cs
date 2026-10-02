@@ -14,12 +14,11 @@ namespace SmartBank.Tests
 {
     public class BankingServiceTests
     {
-        private readonly Mock<IConfiguration> _configMock;
+        private readonly FakeOtpDelivery _otp = new();
         private readonly Mock<IMarketRateService> _marketRateMock;
 
         public BankingServiceTests()
         {
-            _configMock = new Mock<IConfiguration>();
             _marketRateMock = new Mock<IMarketRateService>();
         }
 
@@ -86,7 +85,7 @@ namespace SmartBank.Tests
             context.Accounts.Add(destinationAccount);
             await context.SaveChangesAsync();
 
-            var service = new BankingService(context, _configMock.Object, _marketRateMock.Object);
+            var service = new BankingService(context, _otp, _marketRateMock.Object);
 
             var request = new TransferRequestDto
             {
@@ -164,7 +163,7 @@ namespace SmartBank.Tests
             context.Accounts.Add(destinationAccount);
             await context.SaveChangesAsync();
 
-            var service = new BankingService(context, _configMock.Object, _marketRateMock.Object);
+            var service = new BankingService(context, _otp, _marketRateMock.Object);
 
             var request = new TransferRequestDto
             {
@@ -213,7 +212,7 @@ namespace SmartBank.Tests
             context.Accounts.Add(account);
             await context.SaveChangesAsync();
 
-            var service = new BankingService(context, _configMock.Object, _marketRateMock.Object);
+            var service = new BankingService(context, _otp, _marketRateMock.Object);
 
             var request = new TransferRequestDto
             {
