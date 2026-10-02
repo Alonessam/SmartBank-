@@ -11,6 +11,7 @@ using SmartBank.Core.DTOs;
 using SmartBank.Core.Entities;
 using SmartBank.Core.Interfaces;
 using SmartBank.Infrastructure.Data;
+using SmartBank.Infrastructure.Security;
 
 namespace SmartBank.Infrastructure.Services
 {
@@ -18,11 +19,13 @@ namespace SmartBank.Infrastructure.Services
     {
         private readonly SmartBankDbContext _context;
         private readonly IConfiguration _configuration;
+        private readonly JwtSettings _jwtSettings;
 
         public AuthService(SmartBankDbContext context, IConfiguration configuration)
         {
             _context = context;
             _configuration = configuration;
+            _jwtSettings = JwtSettings.From(configuration);
         }
 
         public async Task<ServiceResult<AuthResponseDto>> RegisterAsync(RegisterDto registerDto)
@@ -365,14 +368,6 @@ namespace SmartBank.Infrastructure.Services
         private string GenerateJwtToken(User user)
         {
             var tokenHandler = new JwtSecurityTokenHandler();
-            
-            var keyString = _configuration["JwtSettings:Key"];
-            if (string.IsNullOrEmpty(keyString))
-            {
-                // Fallback key for development if not configured
-                keyString = "SuperSecretKeyForDevelopmentSmartBankSupportMesh2026";
-            }
-            var key = Encoding.ASCII.GetBytes(keyString);
 
             var claims = new[]
             {
@@ -385,9 +380,9 @@ namespace SmartBank.Infrastructure.Services
             {
                 Subject = new ClaimsIdentity(claims),
                 Expires = DateTime.UtcNow.AddDays(7),
-                Issuer = _configuration["JwtSettings:Issuer"] ?? "SmartBankAPI",
-                Audience = _configuration["JwtSettings:Audience"] ?? "SmartBankApp",
-                SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
+                Issuer = _jwtSettings.Issuer,
+                Audience = _jwtSettings.Audience,
+                SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(_jwtSettings.KeyBytes), SecurityAlgorithms.HmacSha256Signature)
             };
 
             var token = tokenHandler.CreateToken(tokenDescriptor);
