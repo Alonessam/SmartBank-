@@ -7,8 +7,11 @@ namespace SmartBank.Core.Entities
     {
         public Guid Id { get; set; } = Guid.NewGuid();
         public Guid UserId { get; set; }
+        // AES-GCM ciphertext. The CVV is deliberately NOT stored: it is shown once at issuance.
         public string EncryptedCardNumber { get; set; } = string.Empty;
-        public string EncryptedCardCvv { get; set; } = string.Empty;
+
+        // Keyed hash (HMAC-SHA256 hex) of the card number, used for duplicate detection. Null on legacy rows.
+        public string? CardNumberHash { get; set; }
         public string ExpiryDate { get; set; } = DateTime.UtcNow.AddYears(5).ToString("MM/yy");
         public decimal CardLimit { get; set; }
         public decimal CurrentDebt { get; set; }

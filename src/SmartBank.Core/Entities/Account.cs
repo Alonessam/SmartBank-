@@ -13,9 +13,8 @@ namespace SmartBank.Core.Entities
         public string Currency { get; set; } = "TRY"; // Default TRY
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
-        // Debit Card encrypted details (Phase 3 AES)
+        // Debit card number, encrypted with AES-GCM. The CVV is deliberately NOT stored: it is shown once at issuance.
         public string EncryptedCardNumber { get; set; } = string.Empty;
-        public string EncryptedCardCvv { get; set; } = string.Empty;
         public string CardTheme { get; set; } = "theme-neon-blue";
         public string ExpiryDate { get; set; } = DateTime.UtcNow.AddYears(5).ToString("MM/yy");
 
