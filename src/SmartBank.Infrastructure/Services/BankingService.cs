@@ -50,8 +50,7 @@ namespace SmartBank.Infrastructure.Services
                     Balance = a.Balance,
                     Currency = a.Currency,
                     CreatedAt = a.CreatedAt,
-                    CardNumber = Core.Common.EncryptionHelper.Decrypt(a.EncryptedCardNumber) ?? string.Empty,
-                    CardCvv = Core.Common.EncryptionHelper.Decrypt(a.EncryptedCardCvv) ?? string.Empty,
+                    CardNumber = SafeDecrypt(a.EncryptedCardNumber),
                     CardTheme = a.CardTheme,
                     ExpiryDate = a.ExpiryDate,
                     AccountType = a.AccountType,
@@ -350,7 +349,6 @@ namespace SmartBank.Infrastructure.Services
                 Balance = 0.00m,
                 Currency = string.IsNullOrEmpty(currency) ? "TRY" : currency.ToUpper(),
                 EncryptedCardNumber = Core.Common.EncryptionHelper.Encrypt(cardNum),
-                EncryptedCardCvv = Core.Common.EncryptionHelper.Encrypt(cvv),
                 CardTheme = "theme-neon-blue",
                 ExpiryDate = DateTime.UtcNow.AddYears(5).ToString("MM/yy"),
                 AccountType = string.IsNullOrEmpty(accountType) ? "DemandDeposit" : accountType
@@ -394,8 +392,7 @@ namespace SmartBank.Infrastructure.Services
             var dtos = cards.Select(cc => new CreditCardDto
             {
                 Id = cc.Id,
-                CardNumber = Core.Common.EncryptionHelper.Decrypt(cc.EncryptedCardNumber),
-                CardCvv = Core.Common.EncryptionHelper.Decrypt(cc.EncryptedCardCvv),
+                CardNumber = SafeDecrypt(cc.EncryptedCardNumber),
                 ExpiryDate = cc.ExpiryDate,
                 CardLimit = cc.CardLimit,
                 CurrentDebt = cc.CurrentDebt,
@@ -504,7 +501,7 @@ namespace SmartBank.Infrastructure.Services
                     SourceAccountId = sourceAccount.Id,
                     DestinationAccountId = null,
                     Amount = payRequest.Amount,
-                    Description = $"Kredi Kartı Borç Ödeme - Kart: *{(Core.Common.EncryptionHelper.Decrypt(card.EncryptedCardNumber).Length > 4 ? Core.Common.EncryptionHelper.Decrypt(card.EncryptedCardNumber).Substring(12) : "****")}",
+                    Description = $"Kredi Kartı Borç Ödeme - Kart: *{CardMasking.LastFour(SafeDecrypt(card.EncryptedCardNumber))}",
                     Type = TransactionType.Transfer,
                     Category = "Fatura",
                     CreatedAt = DateTime.UtcNow
@@ -586,8 +583,7 @@ namespace SmartBank.Infrastructure.Services
                 var dto = new CreditCardDto
                 {
                     Id = card.Id,
-                    CardNumber = Core.Common.EncryptionHelper.Decrypt(card.EncryptedCardNumber),
-                    CardCvv = Core.Common.EncryptionHelper.Decrypt(card.EncryptedCardCvv),
+                    CardNumber = SafeDecrypt(card.EncryptedCardNumber),
                     ExpiryDate = card.ExpiryDate,
                     CardLimit = card.CardLimit,
                     CurrentDebt = card.CurrentDebt,
@@ -776,6 +772,10 @@ namespace SmartBank.Infrastructure.Services
             return ServiceResult<CreditCardStatementDto>.Success(dto);
         }
 
+        // Display paths must not fail because one stored card cannot be decrypted (e.g. legacy rows from before v1.1).
+        private static string SafeDecrypt(string? cipherText) =>
+            EncryptionHelper.TryDecrypt(cipherText, out var plain) ? plain : string.Empty;
+
         private string GenerateAccountNumber() => "TR" + SecureRandom.Digits(16);
 
         private string GenerateCardNumber() => "4" + SecureRandom.Digits(15);
@@ -953,26 +953,32 @@ namespace SmartBank.Infrastructure.Services
 
         public async Task<ServiceResult<List<StandingOrderDto>>> GetStandingOrdersAsync(Guid userId)
         {
-            var orders = await _context.StandingOrders
-                .Include(so => so.CreditCard)
+            // Decryption cannot be translated to SQL, so load the encrypted value and map in memory.
+            var rows = await _context.StandingOrders
                 .Where(so => so.UserId == userId)
                 .OrderByDescending(so => so.CreatedAt)
-                .Select(so => new StandingOrderDto
+                .Select(so => new
                 {
-                    Id = so.Id,
-                    SourceAccountNumber = so.SourceAccountNumber,
-                    DestinationAccountNumber = so.DestinationAccountNumber,
-                    Amount = so.Amount,
-                    Frequency = so.Frequency,
-                    MaturityDate = so.MaturityDate,
-                    NextExecutionDate = so.NextExecutionDate,
-                    IsActive = so.IsActive,
-                    OrderType = so.OrderType,
-                    CreditCardId = so.CreditCardId,
-                    CreditCardNumber = so.CreditCard != null ? so.CreditCard.EncryptedCardNumber : null,
-                    CreatedAt = so.CreatedAt
+                    Order = so,
+                    EncryptedCardNumber = so.CreditCard != null ? so.CreditCard.EncryptedCardNumber : null
                 })
                 .ToListAsync();
+
+            var orders = rows.Select(r => new StandingOrderDto
+            {
+                Id = r.Order.Id,
+                SourceAccountNumber = r.Order.SourceAccountNumber,
+                DestinationAccountNumber = r.Order.DestinationAccountNumber,
+                Amount = r.Order.Amount,
+                Frequency = r.Order.Frequency,
+                MaturityDate = r.Order.MaturityDate,
+                NextExecutionDate = r.Order.NextExecutionDate,
+                IsActive = r.Order.IsActive,
+                OrderType = r.Order.OrderType,
+                CreditCardId = r.Order.CreditCardId,
+                CreditCardLast4 = r.EncryptedCardNumber == null ? null : CardMasking.LastFour(SafeDecrypt(r.EncryptedCardNumber)),
+                CreatedAt = r.Order.CreatedAt
+            }).ToList();
 
             return ServiceResult<List<StandingOrderDto>>.Success(orders);
         }
@@ -1181,12 +1187,16 @@ namespace SmartBank.Infrastructure.Services
                 return ServiceResult<CreditCardDto>.Failure("MaxCreditCardsLimitReached", "En fazla 1 adet kredi kartı sahibi olabilirsiniz.");
             }
 
+            // Duplicate check goes through the keyed hash: ciphertext is randomised, so it cannot be compared.
             string cardNumber = GenerateCardNumber();
-            while (await _context.CreditCards.AnyAsync(cc => cc.EncryptedCardNumber == Core.Common.EncryptionHelper.Encrypt(cardNumber)))
+            string cardHash = EncryptionHelper.HashCardNumber(cardNumber);
+            while (await _context.CreditCards.AnyAsync(cc => cc.CardNumberHash == cardHash))
             {
                 cardNumber = GenerateCardNumber();
+                cardHash = EncryptionHelper.HashCardNumber(cardNumber);
             }
 
+            // Shown to the user once in this response and never stored.
             string cvv = GenerateCvv();
             string expiryDate = DateTime.UtcNow.AddYears(8).ToString("MM/yy");
 
@@ -1194,7 +1204,7 @@ namespace SmartBank.Infrastructure.Services
             {
                 UserId = userId,
                 EncryptedCardNumber = Core.Common.EncryptionHelper.Encrypt(cardNumber),
-                EncryptedCardCvv = Core.Common.EncryptionHelper.Encrypt(cvv),
+                CardNumberHash = cardHash,
                 ExpiryDate = expiryDate,
                 CardLimit = 10000.00m,
                 CurrentDebt = 0.00m,

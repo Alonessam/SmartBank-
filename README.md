@@ -87,10 +87,12 @@ The application is fully deployed and accessible on the cloud:
 ## ⚙️ Setup & Configuration
 
 ### 1. Database Initialization
-Before running the API, verify your connection string in `appsettings.json` (defaults to SQL Server LocalDB) and run migrations:
+Before running the API, verify your connection string in `appsettings.json` (defaults to SQL Server LocalDB) and run migrations. Run `./scripts/dev-secrets.ps1` first (see step 2): the API validates its secrets at startup, and `dotnet ef` starts the API to find the `DbContext`.
 ```bash
 dotnet ef database update --project src/SmartBank.Infrastructure --startup-project src/SmartBank.API
 ```
+
+> **Upgrading a PostgreSQL deployment to v1.1?** Run [`docs/deploy/v1.1-postgres-upgrade.sql`](docs/deploy/v1.1-postgres-upgrade.sql) once before deploying. Card data is now encrypted with AES-GCM under a new key, so card numbers stored by earlier versions cannot be decrypted. The CVV is no longer stored at all: it is shown once, when a card is issued.
 
 ### 2. Configure Secrets
 Secrets are **never** stored in `appsettings.json`. The API refuses to start without a JWT signing key and an encryption key.
@@ -212,10 +214,12 @@ Uygulama bulut altyapısı üzerinde canlıya alınmıştır ve test edilebilir 
 ## ⚙️ Kurulum ve Çalıştırma
 
 ### 1. Veritabanı Migrasyonları & Seed Verileri
-API sunucusunu çalıştırmadan önce `appsettings.json` içindeki bağlantı dizesini kontrol edin ve migrasyonları uygulayın:
+API sunucusunu çalıştırmadan önce `appsettings.json` içindeki bağlantı dizesini kontrol edin ve migrasyonları uygulayın. Önce `./scripts/dev-secrets.ps1` çalıştırın (2. adıma bakın): API gizli anahtarlarını açılışta doğrular ve `dotnet ef`, `DbContext`'i bulmak için API'yi başlatır.
 ```bash
 dotnet ef database update --project src/SmartBank.Infrastructure --startup-project src/SmartBank.API
 ```
+
+> **PostgreSQL ortamını v1.1'e mi yükseltiyorsunuz?** Yayına almadan önce [`docs/deploy/v1.1-postgres-upgrade.sql`](docs/deploy/v1.1-postgres-upgrade.sql) betiğini bir kez çalıştırın. Kart verisi artık yeni bir anahtarla AES-GCM ile şifreleniyor, bu yüzden önceki sürümlerde saklanan kart numaraları çözülemez. CVV artık hiç saklanmıyor: kart oluşturulurken yalnızca bir kez gösteriliyor.
 
 ### 2. Gizli Anahtarları Yapılandırın
 Gizli anahtarlar `appsettings.json` içinde **tutulmaz**. JWT imza anahtarı ve şifreleme anahtarı olmadan API başlamaz.

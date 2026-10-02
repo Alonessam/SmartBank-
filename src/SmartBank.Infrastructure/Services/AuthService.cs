@@ -58,7 +58,6 @@ namespace SmartBank.Infrastructure.Services
 
             // Automatically create a default bank account with 1000 TRY for testing purposes
             var cardNum = GenerateCardNumber();
-            var cvv = GenerateCvv();
 
             var accountCode = "ACC-" + SecureRandom.Next(1000000, 10000000);
             while (await _context.Accounts.AnyAsync(a => a.AccountCode == accountCode))
@@ -74,20 +73,19 @@ namespace SmartBank.Infrastructure.Services
                 Balance = 1000.00m,
                 Currency = "TRY",
                 EncryptedCardNumber = SmartBank.Core.Common.EncryptionHelper.Encrypt(cardNum),
-                EncryptedCardCvv = SmartBank.Core.Common.EncryptionHelper.Encrypt(cvv),
                 CardTheme = "theme-neon-blue"
             };
 
             user.Accounts.Add(defaultAccount);
 
-            // Automatically create a default Credit Card with 10,000 TRY limit and 1,250 TRY debt
+            // Automatically create a default Credit Card with 10,000 TRY limit and 1,250 TRY debt.
+            // No CVV is generated: the register response does not show card details and the CVV is never stored.
             var ccNumber = GenerateCardNumber();
-            var ccCvv = GenerateCvv();
             var defaultCreditCard = new CreditCard
             {
                 User = user,
                 EncryptedCardNumber = SmartBank.Core.Common.EncryptionHelper.Encrypt(ccNumber),
-                EncryptedCardCvv = SmartBank.Core.Common.EncryptionHelper.Encrypt(ccCvv),
+                CardNumberHash = SmartBank.Core.Common.EncryptionHelper.HashCardNumber(ccNumber),
                 ExpiryDate = DateTime.UtcNow.AddYears(5).ToString("MM/yy"),
                 CardLimit = 10000.00m,
                 CurrentDebt = 1250.00m,
@@ -391,7 +389,5 @@ namespace SmartBank.Infrastructure.Services
         private string GenerateAccountNumber() => "TR" + SecureRandom.Digits(16);
 
         private string GenerateCardNumber() => "4" + SecureRandom.Digits(15); // Visa
-
-        private string GenerateCvv() => SecureRandom.Next(100, 1000).ToString();
     }
 }
