@@ -21,8 +21,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- DefaultHttpContext and friends, for testing middleware without starting a server. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\SmartBank.Core\SmartBank.Core.csproj" />
     <ProjectReference Include="..\SmartBank.Infrastructure\SmartBank.Infrastructure.csproj" />
+    <ProjectReference Include="..\SmartBank.API\SmartBank.API.csproj" />
   </ItemGroup>
 
 </Project>

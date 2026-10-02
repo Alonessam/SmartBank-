@@ -1,10 +1,14 @@
-using System.Text;
+﻿using System.Text;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using SmartBank.API.Health;
 using SmartBank.API.Hubs;
+using SmartBank.API.Security;
+using SmartBank.API.Services;
 using SmartBank.Core.Interfaces;
 using SmartBank.Infrastructure.Data;
 using SmartBank.Infrastructure.Services;
@@ -49,7 +53,7 @@ builder.Services.AddAuthentication(options =>
 })
 .AddJwtBearer(options =>
 {
-    options.RequireHttpsMetadata = false;
+    options.RequireHttpsMetadata = !builder.Environment.IsDevelopment();
     options.SaveToken = true;
     options.TokenValidationParameters = new TokenValidationParameters
     {
@@ -136,17 +140,29 @@ builder.Services.AddRateLimiter(options =>
     };
 });
 
+// Browsers may only call this API from the origins listed in configuration (Cors:AllowedOrigins, or the environment
+// variable Cors__AllowedOrigins__0). The old policy accepted every origin together with credentials, which let any
+// website a signed-in customer visited call the API with that customer's token.
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? Array.Empty<string>();
+var isDevelopment = builder.Environment.IsDevelopment();
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
         policy.AllowAnyHeader()
               .AllowAnyMethod()
-              .SetIsOriginAllowed(origin => true)
+              .SetIsOriginAllowed(origin => CorsOriginPolicy.IsAllowed(origin, allowedOrigins, isDevelopment))
               .AllowCredentials();
     });
 });
 
+// Liveness (/health) touches nothing; readiness (/health/ready) checks the database. Both answer only Healthy/Unhealthy.
+builder.Services.AddHealthChecks()
+    .AddCheck<DatabaseHealthCheck>("database", tags: new[] { "ready" });
+
+// Lets services write the caller's real IP into the audit trail.
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<IClientInfo, HttpContextClientInfo>();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 
@@ -172,39 +188,9 @@ app.UseAuthorization();
 app.MapControllers();
 app.MapHub<SupportHub>("/hubs/support");
 
-app.MapGet("/db-check", async (SmartBankDbContext db) =>
-{
-    try
-    {
-        var canConnect = await db.Database.CanConnectAsync();
-        return Results.Ok(new { DatabaseConnection = canConnect, Message = "Successfully connected to SmartBankDb on LocalDB!" });
-    }
-    catch (Exception ex)
-    {
-        return Results.Problem(ex.Message);
-    }
-})
-.WithName("DbCheck");
-
-var summaries = new[]
-{
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
-
-app.MapGet("/weatherforecast", () =>
-{
-    var forecast =  Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
-})
-.WithName("GetWeatherForecast");
-
+// Replaces the old /db-check (which returned the database exception message) and the /weatherforecast template.
+app.MapHealthChecks("/health", new HealthCheckOptions { Predicate = _ => false });
+app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = check => check.Tags.Contains("ready") });
 // Automatic Database Setup & Seeding on Startup
 using (var scope = app.Services.CreateScope())
 {
@@ -235,10 +221,3 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.Run();
-
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}
-
-
