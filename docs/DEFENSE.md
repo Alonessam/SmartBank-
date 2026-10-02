@@ -55,3 +55,26 @@ Mülakatta bu dosyadaki cümleleri **kendi kelimelerinle** anlatabilmen hedeflen
 - Geçişli (transitive) bağımlılık nedir, güvenlik açığı oradaysa nasıl düzeltirsin?
 - CI neden sadece "test geçiyor" değil, bağımlılık denetimini de içermeli?
 - Bir güvenlik açığının "gerçek etkisi" nasıl değerlendirilir? (Bu açık için neden düşük?)
+
+---
+
+## T3 — Güvenli rastgelelik
+
+**Sorun.** Tek seferlik şifre (OTP), kart numarası, CVV, hesap numarası ve hesap kodu `System.Random` ile üretiliyordu (18 yerde, `new Random()`). `System.Random` istatistiksel bir üreteçtir, kriptografik değildir: dışarıdan gözlenen çıktılardan iç durumu yeniden kurulabilir ve sonraki değerler tahmin edilebilir. Bir saldırgan OTP'yi tahmin ederse 2FA anlamsızlaşır.
+
+**Ne yaptım.**
+- `SecureRandom` yardımcısı (`Core/Common`): `Next(min, max)` ve `Digits(length)`. İkisi de `RandomNumberGenerator` (işletim sisteminin kriptografik üreteci) üzerinden çalışır.
+- OTP, hesap kodu, hesap numarası, kart numarası ve CVV üretimi buna taşındı. `BankingService` ve `AuthService`'te kopyalanmış üreteç metotları da kısaldı.
+- Birim testler: aralık, boş aralıkta hata, dağılım düzgünlüğü, uzunluk ve rakam kontrolü, tekrar etmeme.
+- CI'a koruma adımı: `MarketRateService` (demo fiyat dalgalanması) ve şablon `Program.cs` dışında `new Random(` / `Random.Shared` görülürse build kırılır. Aynı hatanın geri gelmesini otomatik engeller.
+
+**Neden `RandomNumberGenerator.GetInt32`.** `random.Next() % n` gibi bir hesap küçük bir sapma (modulo bias) yaratır; `GetInt32(min, max)` bunu kendi içinde ele alır, aralık içinde düzgün dağılım verir.
+
+**Bilerek bıraktıklarım.** `MarketRateService` `Random` kullanmaya devam ediyor: orada tahmin edilemezlik gerekmiyor, sadece demo fiyatlarına rastgele titreşim ekleniyor. Kart numaraları Luhn kontrol basamağı taşımıyor, bu güvenlik değil gerçekçilik meselesi ve kapsam dışı.
+
+**Nasıl kanıtladım.** 28 test yeşil, yerelde ve CI'da koruma adımı temiz.
+
+**Mülakat soruları.**
+- `Random` ile `RandomNumberGenerator` arasındaki fark nedir, ne zaman hangisi?
+- Modulo bias nedir?
+- OTP'yi tahmin edilebilir üretmek 2FA'ya ne yapar? Ek olarak hangi önlem lazım? (T5: deneme sınırı, kilit.)
