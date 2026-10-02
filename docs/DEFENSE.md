@@ -201,3 +201,47 @@ Kod okurken aynı sınıftan başka sorunlar da çıktı:
 - Deadlock nedir, SQL Server'da neden oluştu, nasıl ele aldın? Hangi hatalar yeniden denenebilir?
 - Talimat işçisinde iki örnek aynı talimatı nasıl iki kez çalıştırabilirdi? `NextExecutionDate` jetonu bunu nasıl engelliyor?
 - Testi önce başarısız görmenin değeri nedir? Bu testi InMemory sağlayıcıyla neden yazamadın?
+
+---
+
+## T7 — Temizlik ve sertleştirme
+
+**Sorun (bulduklarım).**
+1. **Şablondan kalan, sızdıran uçlar.** `/weatherforecast` (ASP.NET şablonu) canlı API'de duruyordu. `/db-check` kimlik doğrulamasızdı ve hata olunca `exception.Message`'ı (veritabanı hata metni) olduğu gibi döndürüyordu; başarı mesajı da "LocalDB" ifadesini ele veriyordu.
+2. **CORS: her origin + credentials.** `SetIsOriginAllowed(_ => true)` ile `AllowCredentials()` birlikte, herhangi bir sitenin (kurbanın ziyaret ettiği) API'yi kurbanın token'ıyla çağırabilmesi demek.
+3. **Hata ayrıntısı istemciye gidiyordu.** `GlobalExceptionMiddleware` üretimde `exception.Message`'ı döndürüyordu. Üstüne transfer/ödeme/harcama servisleri `ex.Message`'ı doğrudan iş yanıtına yazıyordu (SQL hatası, bağlantı bilgisi sızabilir).
+4. **Denetim kaydında sahte IP.** Altı yerde `IpAddress = "127.0.0.1"` yazılıydı: kayıt "kim, nereden" sorusunu cevaplamıyordu.
+5. **Docker imajı root çalışıyordu** ve `EXPOSE 80/443` yazıyordu, oysa .NET 10 imajı 8080 dinler.
+6. **`.gitignore` hataları**: `[Db]`, `bbin/`, `[Log]s/` (bu bir karakter sınıfı, "Ls/", "os/", "gs/" dizinlerini eşler, gerçek log dizinlerini değil), `*.副本`.
+7. **EF uyarısı:** `Account.InterestRate` için ondalık kesinlik tanımsızdı.
+8. **CI:** `System.Random` korumasında `Program.cs` muaf tutuluyordu (şablon yüzünden).
+
+**Ne yaptım.**
+- `/weatherforecast` ve `/db-check` silindi. Yerine **`/health`** (canlılık: hiçbir şeye dokunmaz) ve **`/health/ready`** (hazırlık: veritabanına ulaşılıyor mu). İkisi de yalnızca `Healthy`/`Unhealthy` döndürür, ayrıntı loga gider.
+- **CORS izin listesi**: yalnızca `Cors:AllowedOrigins` (varsayılan GitHub Pages adresi; üretimde `Cors__AllowedOrigins__0`) kabul edilir. `CorsOriginPolicy` ayrı, test edilebilir bir sınıf. Geliştirme modunda `null` (dosyadan açılan sayfa) ve `localhost` kabul edilir, **üretimde edilmez** (`null` origin, sandbox'lı iframe ve `data:` URL'lerin de gönderdiği bir değerdir).
+- **Hata gövdesi**: üretimde genel mesaj + `traceId`; tam istisna yalnızca geliştirme modunda. Servislerin `ex.Message` yansıtması kaldırıldı, hata loglanıyor, istemciye genel mesaj dönüyor.
+- **Denetim kaydı**: `IClientInfo` (istek bağlamından gerçek IP) ile altı yer de gerçek adresi yazıyor; istek dışı işler (talimat işçisi) `system:standing-order-worker` yazıyor. `AuthService.Register` da IP alıyor.
+- **Dockerfile**: root olmayan `app` kullanıcısı (`USER $APP_UID`), açık `ASPNETCORE_HTTP_PORTS=8080`, doğru `EXPOSE 8080`.
+- **`.gitignore`** düzeltildi, log/`TestResults` dizinleri doğru biçimde yok sayılıyor.
+- **`InterestRate`** `decimal(5,2)` (migration + PostgreSQL betiği; betik testi kesinliği de karşılaştırıyor).
+- **CI**: `System.Random` koruması artık yalnızca `MarketRateService`'i muaf tutuyor. Test adımı `pipefail` ile çalışır (aksi halde `| tee` başarısız testleri gizlerdi) ve **atlanan test varsa CI'yı başarısız sayar**: PostgreSQL servisi bağlanmazsa veritabanı testleri sessizce "geçmiş" görünmesin.
+
+**Neden bu seçimler.**
+- *`/health` ikiye bölündü:* orkestratörler canlılık (süreç yaşıyor mu, yeniden başlatılsın mı) ile hazırlığı (trafik alabilir mi) ayırır. Veritabanı kesintisinde süreci yeniden başlatmak çözüm olmaz, o yüzden canlılık veritabanına bakmaz.
+- *Origin için `null`'ı neden yalnızca geliştirmede:* README'deki "index.html'i doğrudan aç" akışı çalışmaya devam etmeli, ama üretimde `null`'a izin vermek bir delik.
+- *`AllowCredentials` neden hâlâ var:* SignalR istemcisi varsayılan olarak kimlik bilgisiyle bağlanır. Güvenli olması için artık joker değil, açık origin listesiyle birlikte kullanılıyor.
+
+**Bilinen sınırlamalar.**
+- Docker imajını bu makinede derleyemedim (Docker kurulu değil). Resmî .NET imajının `app` kullanıcısı ve 8080 varsayımı belgelenmiş standart, ama Render'a çıkmadan önce bir kez dağıtıp doğrulamak gerekir.
+- Denetim kaydı hâlâ veritabanı seviyesinde değiştirilemez değil (yalnızca uygulama silmiyor). "Immutable" iddiası T9'da README'de düzeltilecek.
+- `/health` uçları kimlik doğrulamasız (tasarım gereği: yük dengeleyici çağırır).
+- `X-Forwarded-For` güveni: Dockerfile tüm vekilleri güvenilir sayar; yalnızca vekil arkasında çalıştırılmalı.
+
+**Nasıl kanıtladım.** 139 birim ve gerçek-veritabanı testi (CORS politikası: listedeki/benzeri/yanlış şema-port-alt alan, `null`/localhost yalnızca geliştirmede; ara katman: üretimde sızıntı yok, geliştirmede tam; denetim IP'si; servis hata mesajı sızdırmıyor). Canlı API'ye karşı: üretim modunda `/health` 200, `/health/ready` veritabanı yokken 503 ve gövdede bağlantı bilgisi yok, `/weatherforecast` ve `/db-check` 404, veritabanı kapalıyken giriş 500 ama gövde genel mesaj + `traceId`, CORS yalnızca listedeki origin'e `Access-Control-Allow-Origin` veriyor; geliştirme modunda `null` ve `localhost` kabul, kötü origin reddediliyor; tüm 13 migration uygulandı; `InterestRate` `decimal(5,2)`; denetim satırlarında gerçek IP.
+
+**Mülakat soruları.**
+- CORS joker + credentials neden tehlikeli? Same-origin policy ile CORS'un ilişkisi nedir? CORS bir sunucu güvenliği mekanizması mı?
+- Liveness ile readiness arasındaki fark nedir? Veritabanı kesintisinde hangisi başarısız olmalı?
+- Hata ayrıntısını neden istemciye değil loga yazıyoruz? `traceId` ne işe yarar?
+- Konteyneri root çalıştırmak neden kötü? 1024 altı portlar neden root ister?
+- `.gitignore`'da `[Log]s/` ne eşler? Neden hata?
