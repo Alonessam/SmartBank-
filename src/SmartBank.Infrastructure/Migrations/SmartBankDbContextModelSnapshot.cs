@@ -58,11 +58,6 @@ namespace SmartBank.Infrastructure.Migrations
                         .HasMaxLength(3)
                         .HasColumnType("nvarchar(3)");
 
-                    b.Property<string>("EncryptedCardCvv")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
                     b.Property<string>("EncryptedCardNumber")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -187,6 +182,10 @@ namespace SmartBank.Infrastructure.Migrations
                     b.Property<decimal>("CardLimit")
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<string>("CardNumberHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
                     b.Property<string>("CardTheme")
                         .IsRequired()
                         .HasMaxLength(50)
@@ -197,11 +196,6 @@ namespace SmartBank.Infrastructure.Migrations
 
                     b.Property<decimal>("CurrentDebt")
                         .HasColumnType("decimal(18,2)");
-
-                    b.Property<string>("EncryptedCardCvv")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
 
                     b.Property<string>("EncryptedCardNumber")
                         .IsRequired()
@@ -217,6 +211,10 @@ namespace SmartBank.Infrastructure.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("CardNumberHash")
+                        .IsUnique()
+                        .HasFilter("[CardNumberHash] IS NOT NULL");
 
                     b.HasIndex("UserId");
 
