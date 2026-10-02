@@ -157,7 +157,8 @@ namespace SmartBank.Infrastructure.Services
                 UserId = user.Id,
                 Username = user.Username,
                 Tckn = user.Tckn,
-                FullName = user.FullName
+                FullName = user.FullName,
+                Role = user.Role.ToString()
             };
 
             return ServiceResult<AuthResponseDto>.Success(response);
@@ -341,7 +342,8 @@ public async Task<ServiceResult<bool>> Toggle2FaAsync(Guid userId, bool enable)
             UserId = user.Id,
             Username = user.Username,
             Tckn = user.Tckn,
-            FullName = user.FullName
+            FullName = user.FullName,
+            Role = user.Role.ToString()
         };
 private string GenerateJwtToken(User user)
         {
@@ -351,6 +353,7 @@ private string GenerateJwtToken(User user)
             {
                 new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
                 new Claim(ClaimTypes.Name, user.Username),
+                new Claim(ClaimTypes.Role, user.Role.ToString()),
                 new Claim("tckn", user.Tckn)
             };
 

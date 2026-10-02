@@ -406,6 +406,11 @@ document.addEventListener("DOMContentLoaded", () => {
             window.location.href = "index.html";
             return;
         }
+        if (currentUser.role !== "Agent") {
+            // Not a support agent: nothing here would load anyway (the API refuses), so do not show the page.
+            window.location.href = "dashboard.html";
+            return;
+        }
         document.getElementById("user-display").textContent = currentUser.fullName;
         loadActiveSessions();
         initAgentEvents();
@@ -423,7 +428,8 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 function redirectByUserRole() {
-    if (currentUser.username.toLowerCase().includes("agent")) {
+    // The role is decided by the server (it is also inside the token); the UI only follows it.
+    if (currentUser.role === "Agent") {
         window.location.href = "agent.html";
     } else {
         window.location.href = "dashboard.html";
@@ -531,7 +537,7 @@ function initAuthEvents() {
                         return;
                     }
 
-                    saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName });
+                    saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName, role: data.role });
                     redirectByUserRole();
                 } catch (err) {
                     errorDiv.textContent = getLocalizedText("ConnectionError", "Connection to server failed.");
@@ -569,7 +575,7 @@ function initAuthEvents() {
                         return;
                     }
 
-                    saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName });
+                    saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName, role: data.role });
                     redirectByUserRole();
                 } catch (err) {
                     errorDiv.textContent = getLocalizedText("ConnectionError", "Connection to server failed.");
@@ -630,7 +636,7 @@ function initAuthEvents() {
                     return;
                 }
 
-                saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName });
+                saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName, role: data.role });
                 redirectByUserRole();
             } catch (err) {
                 errorDiv.textContent = getLocalizedText("ConnectionError", "Connection to server failed.");

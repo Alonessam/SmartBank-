@@ -497,6 +497,9 @@ namespace SmartBank.Infrastructure.Migrations
                     b.Property<int?>("PendingOtpPurpose")
                         .HasColumnType("int");
 
+                    b.Property<int>("Role")
+                        .HasColumnType("int");
+
                     b.Property<string>("Tckn")
                         .IsRequired()
                         .HasMaxLength(11)
