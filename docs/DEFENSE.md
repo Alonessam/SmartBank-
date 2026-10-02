@@ -245,3 +245,46 @@ Kod okurken aynı sınıftan başka sorunlar da çıktı:
 - Hata ayrıntısını neden istemciye değil loga yazıyoruz? `traceId` ne işe yarar?
 - Konteyneri root çalıştırmak neden kötü? 1024 altı portlar neden root ister?
 - `.gitignore`'da `[Log]s/` ne eşler? Neden hata?
+
+---
+
+## T8 — Rol tabanlı yetkilendirme ve entegrasyon testleri (yetki açığı)
+
+**Bu görev planda "test kapsamı (3 → 30+)" idi.** Testleri yazarken `[Authorize]`'ın ötesinde ne olduğunu okuyunca, kod tabanındaki **en ciddi yetkilendirme açığını** buldum ve görevi ona çevirdim.
+
+**Sorun.**
+1. **"Temsilci" = kullanıcı adında "agent" geçmesi.** `ChatController` bir kullanıcıyı destek temsilcisi sayıyordu, eğer `username.Contains("agent")`. Kayıtta kullanıcı adı serbest olduğu için **herkes `agent_x` adıyla kayıt olup temsilci olabiliyordu**. Frontend de aynı kuralla temsilci panelini açıyordu.
+2. **Temsilci uçlarında hiç rol kontrolü yoktu.** `active-sessions` (tüm konuşmalar), `agent-metrics`, `suggest-response/{id}` (herhangi bir oturumun içeriğini okuyup özetliyor) ve `transfer-session/{id}` yalnızca `[Authorize]` (giriş yapmış olmak) istiyordu.
+3. **SignalR hub'ı tamamen açıktı.** `JoinSessionAsync`: giriş yapmış herkes **herhangi** bir sohbet odasına girip canlı okuyabiliyordu. `SendMessageAsync`: oturumun sahibi olmayan **herkes otomatik "Agent"** etiketleniyordu, yani bir müşteri başka bir müşterinin sohbetine **bankanın sesiyle** yazabiliyordu ("OTP kodunuzu paylaşın" sosyal mühendisliği için ideal). `CloseSessionAsync`: herkes her oturumu kapatabiliyordu. `RegisterAgentAsync`: herkes "Agents" grubuna girip her yeni müşteri talebini dinleyebiliyordu.
+4. **Ölü ve suistimale açık test uçları**: `test-setup`, `test-ai/{id}` (giriş yapmış herkese keyfi istemle AI kotası harcatıyordu), `test-send-message`, `test-rag`. Arayüz hiçbirini kullanmıyordu.
+
+**Ne yaptım.**
+- `User.Role` (`Customer`/`Agent`): veritabanı kolonu + JWT'de `role` claim'i + girişte/kayıtta yanıt alanı. **Kayıt her zaman Customer** oluşturur; istek modelinde rol alanı yok. Temsilci, yönetici tarafından veritabanında terfi ettirilir (README'de SQL).
+- `ChatController`: `active-sessions`, `agent-metrics`, `suggest-response`, `transfer-session` → `[Authorize(Roles = "Agent")]`. Mesaj okuma: müşteri yalnızca kendi oturumunu, temsilci herhangi birini; karar `User.IsInRole("Agent")` ile, kullanıcı adıyla değil.
+- `SupportHub`: `JoinSession` ve `CloseSession` yalnızca oturum sahibi veya temsilci; `SendMessage` göndereni sahip → "User", temsilci → "Agent", başkası → reddedilir; `RegisterAgent` yalnızca temsilci.
+- Dört ölü test ucu silindi.
+- Frontend: rol artık sunucudan geliyor; temsilci paneli rol `Agent` değilse açılmıyor (asıl koruma sunucuda, bu yalnızca kullanım kolaylığı).
+- **Entegrasyon test altyapısı** (`ApiFactory`): gerçek uygulamayı (tüm ara katmanlar, kimlik doğrulama, yetkilendirme, denetleyiciler, SignalR hub'ı) bellek içinde başlatır ve **HTTP/SignalR üzerinden** kullanıcı kaydı + giriş dahil gerçek istemci gibi konuşur.
+- Testler: **rol** (kullanıcı adı rol vermez, rol token'da, isteğe rol eklenemez), **sohbet HTTP** (anonim 401, müşteri 403, "agent" adı fark etmez, başkasının konuşması okunamaz, temsilci okur, ölü uçlar 404), **banka IDOR** (başkasının hesap listesi/işlemleri/transferi/yatırma/hesap kapama/kart ekstresi/kart ödeme/harcama/dönem ilerletme, hepsi reddedilir; bakiyeler değişmez), **SignalR** (odaya girememe ve mesajı duymama, bankanın sesiyle yazamama, temsilci olamama ve talepleri duymama, başkasının oturumunu kapatamama, sahip kendi oturumunu kullanabilir, temsilci herhangi birine "Agent" olarak yazabilir, kimliksiz bağlantı reddedilir).
+
+**Neden bu seçimler.**
+- *Rol veritabanında, token'da:* sunucu tarafında doğrulanabilir tek kaynak. İstemciden gelen hiçbir şey (kullanıcı adı, istek alanı, localStorage) yetki vermez.
+- *Yönetici promosyonu SQL ile:* bir "kendini terfi ettir" ucu veya yapılandırmadaki ad listesi, "ilk kayıt olan kazanır" yarışı yaratırdı. Basit ve savunulabilir olan: yetkiyi uygulama değil yönetici verir.
+- *Kullanıcı adı alanını kısıtlamak yerine rolü ayırmak:* `agent` adını yasaklamak yanlış çözüm (isimle yetki zaten kötü fikir); doğru çözüm yetkiyi addan ayırmak.
+- *Entegrasyon testleri:* birim testler `ChatController`'ı atlayıp servisleri çağırdığı için bu açığı **göremezdi**. Açık, ara katman ve rota seviyesinde.
+
+**Bilinen sınırlamalar.**
+- Rol token'da taşınıyor ve token ömrü 7 gün: bir temsilcinin yetkisi alındığında, token süresi dolana kadar eski token çalışmaya devam eder. Çözüm (kısa ömürlü token + yenileme ya da her istekte rol doğrulama) bu sürümün kapsamı dışında.
+- Mevcut canlı veritabanında adında "agent" geçen hesaplar yükseltme sonrası müşteri olur; gerçek personelin README'deki SQL ile terfi ettirilip yeniden giriş yapması gerekir.
+- `deposit` ucu bir demo "para yükleme" musluğudur: giriş yapan herkes kendi hesabına 10.000.000 TL'ye kadar ekleyebilir. Gerçek bir sistemde olmaz, README'de belirtilecek.
+- Sohbetteki AI yanıtı, oturum sahibinin hesap bilgilerini kullanabiliyor olabilir. Bunun doğrulaması ve istem enjeksiyonu riski bu sürümde incelenmedi.
+
+**Nasıl kanıtladım.** 185 test (46'sı bu göreve ait entegrasyon testi). **Mutasyon kontrolü:** düzeltmeleri geçici olarak eski haline (kullanıcı adı kuralı, rol yok, odaya serbest giriş) getirince **14 test düştü**, geri alınca geçti. Entegrasyon testleri art arda üç çalıştırmada kararlı. Tüm paket SQL Server (LocalDB) ve PostgreSQL 16 ile geçiyor.
+
+**Mülakat soruları.**
+- Yetkilendirme (authorization) ile kimlik doğrulama (authentication) farkı nedir? Bu açık hangisiydi?
+- "Kullanıcı adında agent geçiyorsa temsilci" neden bir güvenlik açığı? Rol neden istemciden gelmemeli?
+- IDOR nedir? Bu projede nerelerde olabilirdi, nasıl test ettin?
+- SignalR hub'ında yetkilendirme neden `[Authorize]` ile bitmez? Grup üyeliği neden bir yetki sınırıdır?
+- Entegrasyon testi ile birim testi farkı nedir? Bu açığı hangisi yakalar?
+- JWT içindeki rol claim'inin dezavantajı nedir? Yetki geri alındığında ne olur?
