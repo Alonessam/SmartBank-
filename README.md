@@ -2,9 +2,15 @@
 
 [![CI](https://github.com/Alonessam/SmartBank-/actions/workflows/ci.yml/badge.svg)](https://github.com/Alonessam/SmartBank-/actions/workflows/ci.yml)
 
-SmartBank is a high-fidelity, feature-rich digital banking and fintech portal built on **.NET 10.0 (ASP.NET Core Web API)** and a modern **Vanilla HTML5/CSS3/JS** frontend. It features multi-currency asset management, real-time market rates simulation, an AI-powered customer support chatbot (with RAG), secure credit card pipelines, and advanced anti-fraud transaction workflows.
+SmartBank is a **portfolio project**: a digital-banking web app built on **.NET 10 (ASP.NET Core Web API)** with a vanilla HTML/CSS/JS frontend. It covers multi-currency accounts, market rates, credit cards with statements, standing orders, rule-based fraud checks and an AI-assisted support chat with live agents.
+
+> **Everything is simulated.** The money, the cards and the exchange rates are fake. It is not a real bank and it is not a regulated or PCI-certified product.
 
 *(Türkçe açıklama için sayfanın altına kaydırabilirsiniz / Scroll down for the Turkish version)*
+
+## ✅ What v1.1 changed
+
+Version 1.1 is a security and reliability pass, driven by a review of the original code. The headline fixes: any customer could read other customers' chats and write into them as a bank agent, a password could be reset with just a T.C. number, the 2FA code was returned in the response, concurrent transfers could create money (reproduced on SQL Server and PostgreSQL, then fixed), and the JWT and AES keys were committed to the repository. Each fix has tests, several were proven by making the test fail first. The full story, with the reasoning and the trade-offs, is in [`docs/DEFENSE.md`](docs/DEFENSE.md); the list is in [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
@@ -36,9 +42,22 @@ SmartBank is a high-fidelity, feature-rich digital banking and fintech portal bu
 
 ---
 
-## 🏛️ Enterprise Architecture & Design Patterns (New)
+## 🏛️ Architecture & Design Patterns
 
-The application has been upgraded with industry-standard design patterns and corporate bank-level architectures:
+```mermaid
+flowchart LR
+    Browser["Browser<br/>static site on GitHub Pages"] -->|"HTTPS + JWT"| MW
+    subgraph API["ASP.NET Core API (Docker on Render)"]
+        MW["Middleware<br/>CORS, rate limit, authentication, error handling"] --> Ctl["Controllers + SignalR hub<br/>(role checks)"]
+        Ctl --> Svc["Services<br/>banking, auth, chat"]
+        Worker["Standing-order worker"] --> Svc
+    end
+    Svc --> DB[("PostgreSQL<br/>Supabase")]
+    Svc -.-> AI["Ollama / Gemini<br/>+ FAQ retrieval"]
+    Svc -.-> SMTP["SMTP<br/>one-time codes"]
+```
+
+Layers: `SmartBank.Core` (entities, DTOs, interfaces and the pure security rules for one-time codes and lockout), `SmartBank.Infrastructure` (EF Core, services, background worker), `SmartBank.API` (controllers, SignalR hub, middleware), `SmartBank.Web` (static frontend) and `SmartBank.Tests`.
 
 ### 1. Caching Pattern (Decorator & Memory Cache)
 * **Design:** Implemented using the **Decorator Pattern**. The HTTP-based `MarketRateService` is wrapped inside `CachedMarketRateService` without altering existing client code (Open-Closed Principle).
@@ -46,32 +65,39 @@ The application has been upgraded with industry-standard design patterns and cor
 
 ### 2. Hosted Background Services (Worker / Cron Job)
 * **Design:** Built using .NET's built-in **`BackgroundService` (IHostedService)**.
-* **Behavior:** The `StandingOrderExecutionWorker` runs otonomously every 30 seconds in the background. It scans pending, active standing orders, executes transfers in a secure DB transaction, writes audit logs, and shifts the execution date to the next period (Daily, Weekly, Monthly).
+* **Behavior:** The `StandingOrderExecutionWorker` wakes every 30 seconds, finds due orders and executes each one in its own scope and database transaction. An order runs exactly once even if several workers or a customer's transfer touch the same rows (see concurrency below). A collision does not deactivate the order, it is retried on the next cycle; only a real failure deactivates it.
 
-### 3. Immutable Audit Trail (Audit Logs)
-* **Design:** Designed for security audit compliance.
-* **Behavior:** Every critical user action—Registration, Login, Password Reset, Fund Transfers, Exchange Transactions, and Account Closures—is logged with specific detail payloads, IP addresses, and timestamps into an immutable `AuditLogs` table.
+### 3. Audit Trail (Audit Logs)
+* **Behavior:** Sensitive actions (registration, sign-in, failed sign-in and lockout, password reset, transfers, exchange, account closing) are written to an `AuditLogs` table with a detail text, the caller's real IP address and a timestamp.
+* **Honest caveat:** the application only ever inserts audit rows, but the database does not enforce it (no permissions or triggers prevent updates or deletes). It is append-only by convention, **not tamper-proof**.
 
-### 4. Global Exception Middleware & RFC 7807 (Problem Details)
+### 4. Global Exception Middleware (RFC 7807-style Problem Details)
 * **Design:** Centralized error handler built as an ASP.NET Core middleware.
-* **Behavior:** Fledgling exceptions are caught at the pipeline root. The client receives standardized, structured JSON objects complying with the **RFC 7807 (Problem Details for HTTP APIs)** standard, keeping controllers clean of boilerplate try-catch blocks.
+* **Behavior:** Unhandled exceptions are caught at the pipeline root and returned as problem-details JSON (`type`, `title`, `status`, `detail`, `instance`) plus a `traceId`. Outside Development the `detail` is generic and the real exception goes to the log, so internals (SQL text, stack traces) never reach a client.
 
 ### 5. Validation Pipeline (FluentValidation)
 * **Design:** Separates model validation rules from business logic.
 * **Behavior:** `RegisterDtoValidator` and `TransferRequestDtoValidator` perform strict validations (TCKN 11-digit checks, 6-digit PIN checks, positive amount checks) in the API request lifecycle.
 
-### 6. Automated Unit Tests (xUnit & Moq)
-* **Design:** Implemented inside `SmartBank.Tests` project using `xUnit` and `Moq`.
-* **Behavior:** Utilizes an EF Core `InMemory` database (with transaction warning overrides) to run isolation tests for the core fund transfer logic (Sufficient Balance, Insufficient Funds, and Transfer-to-Self edge cases) with 100% success rate.
+### 6. Concurrency-safe Money Movement (Optimistic Concurrency)
+* **Problem it solves:** two requests that read the same balance and each write their own result (a "lost update"). On a real database this created money out of thin air before v1.1.
+* **Design:** `Account` and `CreditCard` carry an integer `Version`; every update is `WHERE Id = @id AND Version = @read`. If the row changed in between, nothing is written and the operation is repeated from fresh reads (up to 10 times, with a short random back-off). SQL Server deadlock victims and PostgreSQL serialization failures are retried the same way. A plain integer behaves the same on both databases, unlike `rowversion` or `xmin`.
+
+### 7. Automated Tests (xUnit, Moq, WebApplicationFactory, SignalR client)
+* **Unit tests:** pure rules (one-time codes, lockout, encryption, CORS policy, error middleware) and services against EF Core's in-memory provider.
+* **Real-database tests:** concurrent transfers, deposits and card charges, the standing-order worker and the PostgreSQL upgrade script run against SQL Server and/or PostgreSQL (the in-memory provider cannot reproduce races). CI runs them against PostgreSQL.
+* **Integration tests:** the whole application is started in memory and driven over HTTP and SignalR: roles, chat endpoints, the hub, and cross-customer access to accounts and cards (IDOR). Several were first run against the vulnerable code to prove they fail.
+* **Hygiene guards:** a test fails if any source file contains double-encoded Turkish text, and CI fails on skipped tests, vulnerable NuGet packages and `System.Random` in security code.
 
 ---
 
 ## 🛠️ Technology Stack
 
-* **Backend:** .NET 10.0 (C#), EF Core, MS SQL Server, SignalR, BCrypt.NET
+* **Backend:** .NET 10 (C#), EF Core, SignalR, BCrypt.NET, FluentValidation. **PostgreSQL in production, SQL Server LocalDB for local development**
 * **Frontend:** Semantic HTML5, Vanilla CSS3 (Custom Variables, Keyframes, Glassmorphism), ES6+ JavaScript, Chart.js
-* **AI:** Ollama (Llama 3/Local LLM) and Gemini API with semantic RAG retrieval
-* **Testing:** xUnit, Moq, Microsoft.EntityFrameworkCore.InMemory
+* **AI:** Ollama (Llama 3/Local LLM) and Gemini API with FAQ retrieval (RAG)
+* **Testing:** xUnit, Moq, EF Core InMemory, `Microsoft.AspNetCore.Mvc.Testing`, SignalR client; SQL Server and PostgreSQL for the real-database tests
+* **Delivery:** Docker, GitHub Actions (build, tests with a PostgreSQL service, dependency audit), Dependabot
 
 ---
 
@@ -80,7 +106,39 @@ The application has been upgraded with industry-standard design patterns and cor
 The application is fully deployed and accessible on the cloud:
 * **Frontend Web App (GitHub Pages):** [https://alonessam.github.io/SmartBank-/](https://alonessam.github.io/SmartBank-/)
 * **Backend REST API (Render Docker):** `https://smartbank-fintech-api.onrender.com`
-* **Database (Supabase PostgreSQL):** Configured via Session Connection Pooler for maximum security and scalability.
+* **Database (Supabase PostgreSQL):** Configured via Session Connection Pooler.
+
+Things to know about the demo: the API runs on a free tier, so the **first request after a quiet period takes about a minute** while the service wakes up (the market-rates box shows "Yükleniyor..." until then). One-time codes are e-mailed, so password reset only works where SMTP is configured; the public demo may run with `Demo__ExposeOtp=true`, which shows 2FA codes in the UI so the flow can be demonstrated without a mailbox (see the settings table below). Do not enter real personal data: it is a demo.
+
+---
+
+## 🔐 Security Model
+
+| Risk | What the code does |
+|---|---|
+| Secrets in the repository | JWT and encryption keys come from user-secrets or environment variables; the API refuses to start without them (fail fast). |
+| Card data | AES-256-GCM with a random nonce per value (tampering is detected). Card duplicates are found through a keyed HMAC. The CVV is **never stored**; it is shown once when a card is issued. |
+| Guessing a PIN or a one-time code | 5 wrong PINs lock the account for 15 minutes; a one-time code dies after 5 wrong guesses, expires after 5 minutes, is single-use and bound to its purpose (and, for transfers, to the exact amount and recipient). Per-IP rate limit on the auth endpoints. Unknown T.C. numbers and wrong PINs get identical answers. |
+| Account takeover | Password reset needs a code e-mailed to the owner; the 2FA code is not returned by the API (unless the demo flag is on). |
+| Who may do what | Roles live in the database and in the token. Customers reach only their own accounts, cards and chats; support-agent endpoints and hub methods need the `Agent` role, which only an administrator can grant. Verified with cross-customer (IDOR) integration tests. |
+| Browser access | CORS accepts only the origins listed in configuration. |
+| Concurrent requests | Optimistic concurrency with retry on every money movement. |
+| Information leaks | Errors return a generic message and a trace id; details go to the log. |
+
+## ⚠️ Known Limitations
+
+Be honest about what this is: a portfolio project with a simulated bank. In particular:
+
+* **The `deposit` endpoint is a demo faucet.** Any signed-in user can add money to their own account (up to 10,000,000 TRY). A real system has nothing like it.
+* **Tokens last 7 days and cannot be revoked.** A role change, a lockout or a password reset does not invalidate tokens that were already issued. Tokens are kept in `localStorage`, so a cross-site-scripting bug would expose them; there is no Content-Security-Policy.
+* **The rate limiter is per instance.** Behind several instances the limit is not shared (that would need a shared store or a gateway).
+* **One-time codes are stored in plain text** in the database for their five-minute life (hashing them is the production choice).
+* **Cards are simulated:** numbers carry no check digit, the credit card number is returned in full by the API (the UI masks it), and nothing here is PCI-certified.
+* **The audit trail is append-only by convention**, not tamper-proof (see above).
+* **Registration reveals whether a username or T.C. number is already taken.**
+* **The AI chat** was not reviewed for what it may disclose about a customer or for prompt injection.
+* **Two database providers.** The EF migrations target SQL Server; production is PostgreSQL with a hand-run script ([`docs/deploy`](docs/deploy/v1.1-postgres-upgrade.sql), tested against a real PostgreSQL). A single-provider setup would be cleaner.
+* The Docker image was changed to run as a non-root user but could not be built on the machine where v1.1 was written; deploy it once and check.
 
 ---
 
@@ -166,7 +224,13 @@ Since the database has been fully reset to a clean state, please register a new 
 
 # 🇹🇷 SmartBank - Premium Fintech & Dijital Bankacılık Portalı
 
-SmartBank, modern kullanıcı arayüzü (UI/UX), güvenlik standartları, canlı piyasa verileri, yapay zeka kabiliyetleri ve gelişmiş finansal iş akışlarını harmanlayan kurumsal düzeyde bir dijital bankacılık ve fintech portalıdır. Proje, **.NET 10.0 (ASP.NET Core Web API)** ve **Vanilla HTML5/CSS3/JS** altyapısıyla geliştirilmiştir.
+SmartBank bir **portfolyo projesidir**: **.NET 10 (ASP.NET Core Web API)** ve Vanilla HTML/CSS/JS arayüzüyle geliştirilmiş bir dijital bankacılık web uygulaması. Çoklu para birimli hesaplar, piyasa kurları, ekstreli kredi kartları, otomatik ödeme talimatları, kural tabanlı dolandırıcılık kontrolleri ve canlı temsilcili, yapay zeka destekli bir destek sohbeti içerir.
+
+> **Her şey simülasyondur.** Para, kartlar ve döviz kurları sahtedir. Gerçek bir banka değildir; düzenlemeye tabi veya PCI sertifikalı bir ürün de değildir.
+
+## ✅ v1.1 neleri değiştirdi
+
+Sürüm 1.1, özgün kodun gözden geçirilmesiyle yapılan bir güvenlik ve güvenilirlik turudur. Öne çıkan düzeltmeler: herhangi bir müşteri başkalarının sohbetlerini okuyabiliyor ve onlara banka temsilcisi gibi yazabiliyordu, parola yalnızca T.C. numarasıyla sıfırlanabiliyordu, 2FA kodu yanıtta dönüyordu, eşzamanlı transferler para üretebiliyordu (SQL Server ve PostgreSQL'de yeniden üretildi, sonra düzeltildi), JWT ve AES anahtarları depoya yazılmıştı. Her düzeltmenin testi var; birkaçı önce testin başarısız olduğu gösterilerek kanıtlandı. Gerekçeler ve ödünleşimlerle birlikte tüm hikâye [`docs/DEFENSE.md`](docs/DEFENSE.md) içinde, liste [`CHANGELOG.md`](CHANGELOG.md) içinde.
 
 ---
 
@@ -196,9 +260,9 @@ SmartBank, modern kullanıcı arayüzü (UI/UX), güvenlik standartları, canlı
 
 ---
 
-## 🏛️ Kurumsal Mimari ve Tasarım Kalıpları (Yeni)
+## 🏛️ Mimari ve Tasarım Kalıpları
 
-Yazılım mimarisi standartlarına uygun olarak projeye eklenen kurumsal altyapılar:
+Katmanlar: `SmartBank.Core` (varlıklar, DTO'lar, arayüzler ve tek kullanımlık kod ile hesap kilidi için saf güvenlik kuralları), `SmartBank.Infrastructure` (EF Core, servisler, arka plan işçisi), `SmartBank.API` (denetleyiciler, SignalR hub'ı, ara katmanlar), `SmartBank.Web` (statik arayüz) ve `SmartBank.Tests`. Akış şeması için İngilizce bölümdeki diyagrama bakın.
 
 ### 1. Önbellek Yapısı (Decorator & Memory Cache)
 * **Tasarım:** **Decorator Tasarım Kalıbı** kullanılmıştır. `MarketRateService` sınıfı, mevcut istemci kodları değiştirilmeden `CachedMarketRateService` ile sarmalanmıştır (Açık-Kapalı Prensibi).
@@ -206,32 +270,39 @@ Yazılım mimarisi standartlarına uygun olarak projeye eklenen kurumsal altyap�
 
 ### 2. Arka Plan Servisleri (Hosted Services / Worker)
 * **Tasarım:** .NET yerleşik **`BackgroundService` (IHostedService)** altyapısı kullanılmıştır.
-* **Davranış:** `StandingOrderExecutionWorker` arka planda her 30 saniyede bir otonom olarak çalışır. Vadesi gelmiş otomatik ödeme talimatlarını veritabanı transaction'ı içinde işler, audit log yazar ve sonraki periyoda günceller.
+* **Davranış:** `StandingOrderExecutionWorker` her 30 saniyede bir uyanır, vadesi gelen talimatları bulur ve her birini kendi kapsamında ve kendi veritabanı transaction'ında çalıştırır. Birden fazla işçi veya bir müşteri transferi aynı satırlara dokunsa bile talimat tam olarak bir kez çalışır (aşağıdaki eşzamanlılık bölümüne bakın). Çakışma talimatı kapatmaz, sonraki döngüde yeniden denenir; yalnızca gerçek bir hata talimatı kapatır.
 
-### 3. Değiştirilemez Denetim Günlüğü (Audit Trail)
-* **Tasarım:** BDDK ve finansal güvenlik denetim standartlarına uygundur.
-* **Davranış:** Kullanıcı Kaydı, Giriş, Şifre Sıfırlama, Para Transferi, Döviz İşlemleri ve Hesap Kapatma gibi tüm hassas işlemler detayları ve IP adresleriyle birlikte değiştirilemez `AuditLogs` tablosuna kaydedilir.
+### 3. Denetim Günlüğü (Audit Trail)
+* **Davranış:** Hassas işlemler (kayıt, giriş, başarısız giriş ve kilitlenme, şifre sıfırlama, transfer, döviz, hesap kapatma) detay metni, çağıranın gerçek IP adresi ve zaman damgasıyla `AuditLogs` tablosuna yazılır.
+* **Dürüst not:** Uygulama denetim satırlarını yalnızca ekler, ancak veritabanı bunu zorlamaz (güncelleme/silmeyi engelleyen yetki veya tetikleyici yok). Gelenek gereği yalnızca-ekleme'dir, **kurcalamaya karşı korumalı değildir**.
 
-### 4. Global Hata Yakalama & RFC 7807 (Problem Details)
+### 4. Global Hata Yakalama (RFC 7807 tarzı Problem Details)
 * **Tasarım:** Hata yönetimini merkezileştiren ASP.NET Core middleware yapısı.
-* **Davranış:** API genelinde oluşan tüm beklenmeyen hatalar yakalanarak istemciye **RFC 7807 (Problem Details)** standardında JSON formatında dönülür. Kod genelinde gereksiz try-catch bloklarının önüne geçilir.
+* **Davranış:** Beklenmeyen hatalar boru hattının kökünde yakalanır ve `traceId` ile birlikte problem-details JSON'u olarak dönülür. Geliştirme dışında `detail` geneldir ve gerçek istisna loga gider; böylece iç ayrıntılar (SQL metni, stack trace) istemciye ulaşmaz.
 
 ### 5. Validasyon Pipeline'ı (FluentValidation)
 * **Tasarım:** Model doğrulama kurallarını iş mantığından ayırır.
 * **Davranış:** `RegisterDtoValidator` ve `TransferRequestDtoValidator` sınıfları TCKN, 6 haneli PIN şifresi ve transfer tutarlarını API istek hattı üzerinde sıkı doğrulamalara tabi tutar.
 
-### 6. Otomasyonlu Birim Testleri (xUnit & Moq)
-* **Tasarım:** `SmartBank.Tests` projesi altında `xUnit` ve `Moq` kütüphaneleriyle kurgulanmıştır.
-* **Davranış:** EF Core `InMemory` veritabanı sağlayıcısı kullanılarak para transferi iş mantığının tüm başarı ve başarısızlık (yetersiz bakiye, kendine transfer) senaryoları %100 başarı oranıyla test edilir.
+### 6. Eşzamanlılığa Dayanıklı Para Hareketleri (İyimser Eşzamanlılık)
+* **Çözdüğü sorun:** aynı bakiyeyi okuyup her biri kendi sonucunu yazan iki istek ("kayıp güncelleme"). v1.1'den önce gerçek bir veritabanında bu, yoktan para üretiyordu.
+* **Tasarım:** `Account` ve `CreditCard` tamsayı bir `Version` taşır; her güncelleme `WHERE Id = @id AND Version = @okunan` ile yapılır. Satır arada değiştiyse hiçbir şey yazılmaz ve işlem taze okumalarla yeniden yapılır (en fazla 10 kez, kısa rastgele bekleme ile). SQL Server deadlock kurbanları ve PostgreSQL serileştirme hataları da aynı yolla yeniden denenir. Düz bir tamsayı, `rowversion` veya `xmin`'in aksine iki veritabanında da aynı davranır.
+
+### 7. Otomasyonlu Testler (xUnit, Moq, WebApplicationFactory, SignalR istemcisi)
+* **Birim testler:** saf kurallar (tek kullanımlık kodlar, kilit, şifreleme, CORS politikası, hata ara katmanı) ve EF Core InMemory'ye karşı servisler.
+* **Gerçek veritabanı testleri:** eşzamanlı transfer, yatırma ve kart harcaması, talimat işçisi ve PostgreSQL yükseltme betiği SQL Server ve/veya PostgreSQL'e karşı çalışır (InMemory yarışları yeniden üretemez). CI bunları PostgreSQL'e karşı çalıştırır.
+* **Entegrasyon testleri:** uygulamanın tamamı bellekte başlatılıp HTTP ve SignalR üzerinden sürülür: roller, sohbet uçları, hub, hesaplara ve kartlara müşteriler arası erişim (IDOR). Birçoğu önce savunmasız koda karşı çalıştırılıp başarısız olduğu kanıtlandı.
+* **Hijyen korumaları:** bir kaynak dosyada çift kodlanmış Türkçe metin varsa test düşer; CI atlanan testlerde, açıklı NuGet paketlerinde ve güvenlik kodunda `System.Random`'da başarısız olur.
 
 ---
 
 ## 🛠️ Kullanılan Teknolojiler
 
-* **Backend:** .NET 10.0 (C#), EF Core, MS SQL Server, SignalR, BCrypt.NET
+* **Backend:** .NET 10 (C#), EF Core, SignalR, BCrypt.NET, FluentValidation. **Üretimde PostgreSQL, yerel geliştirmede SQL Server LocalDB**
 * **Frontend:** HTML5, Vanilla CSS3 (Neon Glow & Glassmorphism), Javascript (ES6+), Chart.js
-* **Yapay Zeka:** Ollama (Llama 3/Yerel LLM) ve Gemini API ile RAG entegrasyonu
-* **Test:** xUnit, Moq, Microsoft.EntityFrameworkCore.InMemory
+* **Yapay Zeka:** Ollama (Llama 3/Yerel LLM) ve Gemini API ile SSS getirimi (RAG)
+* **Test:** xUnit, Moq, EF Core InMemory, `Microsoft.AspNetCore.Mvc.Testing`, SignalR istemcisi; gerçek veritabanı testleri için SQL Server ve PostgreSQL
+* **Teslimat:** Docker, GitHub Actions (derleme, PostgreSQL servisli testler, bağımlılık denetimi), Dependabot
 
 ---
 
@@ -240,7 +311,39 @@ Yazılım mimarisi standartlarına uygun olarak projeye eklenen kurumsal altyap�
 Uygulama bulut altyapısı üzerinde canlıya alınmıştır ve test edilebilir durumdadır:
 * **Canlı Arayüz (GitHub Pages):** [https://alonessam.github.io/SmartBank-/](https://alonessam.github.io/SmartBank-/)
 * **Canlı API Sunucusu (Render Docker):** `https://smartbank-fintech-api.onrender.com`
-* **Veritabanı (Supabase PostgreSQL):** Maksimum performans ve güvenlik için Session Connection Pooler üzerinden yapılandırılmıştır.
+* **Veritabanı (Supabase PostgreSQL):** Session Connection Pooler üzerinden yapılandırılmıştır.
+
+Demo hakkında bilmeniz gerekenler: API ücretsiz katmanda çalışıyor, bu yüzden **sessiz bir dönemden sonraki ilk istek yaklaşık bir dakika sürer** (servis uyanırken piyasa kutusunda "Yükleniyor..." görünür). Tek kullanımlık kodlar e-postayla gönderilir, bu yüzden şifre sıfırlama yalnızca SMTP yapılandırılmış yerlerde çalışır; herkese açık demo, kodları arayüzde göstererek akışı e-posta kutusu olmadan sergilemek için `Demo__ExposeOtp=true` ile çalışıyor olabilir (aşağıdaki ayar tablosuna bakın). Gerçek kişisel veri girmeyin: bu bir demodur.
+
+---
+
+## 🔐 Güvenlik Modeli
+
+| Risk | Kodun yaptığı |
+|---|---|
+| Depodaki gizli bilgiler | JWT ve şifreleme anahtarları user-secrets veya ortam değişkenlerinden gelir; anahtar yoksa API başlamaz (fail fast). |
+| Kart verisi | Her değer için rastgele nonce ile AES-256-GCM (kurcalama tespit edilir). Kart tekrarları anahtarlı HMAC ile bulunur. CVV **hiç saklanmaz**; kart oluşturulurken bir kez gösterilir. |
+| PIN veya tek kullanımlık kodu tahmin etme | 5 yanlış PIN hesabı 15 dakika kilitler; tek kullanımlık kod 5 yanlış tahminde yok edilir, 5 dakikada sona erer, tek kullanımlıktır ve amacına (transferde tam tutara ve alıcıya) bağlıdır. Auth uçlarında IP başına hız sınırı. Bilinmeyen T.C. numarası ve yanlış PIN aynı yanıtı alır. |
+| Hesap ele geçirme | Şifre sıfırlama, sahibine e-postayla gönderilen kodu ister; 2FA kodu API'den dönmez (demo bayrağı açık değilse). |
+| Kim neyi yapabilir | Roller veritabanında ve token'da yaşar. Müşteriler yalnızca kendi hesaplarına, kartlarına ve sohbetlerine ulaşır; temsilci uçları ve hub metotları yalnızca yöneticinin verebileceği `Agent` rolünü ister. Müşteriler arası (IDOR) entegrasyon testleriyle doğrulandı. |
+| Tarayıcı erişimi | CORS yalnızca yapılandırmada listelenen origin'leri kabul eder. |
+| Eşzamanlı istekler | Her para hareketinde yeniden denemeli iyimser eşzamanlılık. |
+| Bilgi sızıntıları | Hatalar genel mesaj ve izleme kimliği döner; ayrıntılar loga gider. |
+
+## ⚠️ Bilinen Sınırlamalar
+
+Bunun ne olduğu konusunda dürüst olalım: simüle edilmiş bir bankaya sahip bir portfolyo projesi. Özellikle:
+
+* **`deposit` ucu bir demo musluğudur.** Giriş yapan herkes kendi hesabına para ekleyebilir (10.000.000 TL'ye kadar). Gerçek bir sistemde buna benzer bir şey olmaz.
+* **Token'lar 7 gün geçerlidir ve iptal edilemez.** Rol değişikliği, kilitlenme veya şifre sıfırlama zaten verilmiş token'ları geçersiz kılmaz. Token'lar `localStorage`'da tutulur, bu yüzden bir siteler arası betik (XSS) hatası bunları açığa çıkarır; Content-Security-Policy yok.
+* **Hız sınırlayıcı örnek başınadır.** Birden fazla örnek arkasında sınır paylaşılmaz (bunun için ortak bir depo veya ağ geçidi gerekir).
+* **Tek kullanımlık kodlar** beş dakikalık ömürleri boyunca veritabanında düz metin saklanır (üretimde özetlenmesi tercih edilir).
+* **Kartlar simülasyondur:** numaralarda kontrol basamağı yok, kredi kartı numarası API'den tam döner (arayüz maskeler), hiçbir şey PCI sertifikalı değildir.
+* **Denetim günlüğü gelenek gereği yalnızca-ekleme'dir**, kurcalamaya karşı korumalı değildir (yukarıya bakın).
+* **Kayıt, kullanıcı adının veya T.C. numarasının alınmış olduğunu belli eder.**
+* **Yapay zeka sohbeti**, bir müşteri hakkında neyi ifşa edebileceği ve istem enjeksiyonu açısından gözden geçirilmedi.
+* **İki veritabanı sağlayıcısı.** EF migration'ları SQL Server'ı hedefler; üretim, elle çalıştırılan bir betikle PostgreSQL'dir ([`docs/deploy`](docs/deploy/v1.1-postgres-upgrade.sql), gerçek bir PostgreSQL'e karşı test edildi). Tek sağlayıcılı bir kurulum daha temiz olurdu.
+* Docker imajı root olmayan kullanıcıyla çalışacak şekilde değiştirildi ama v1.1'in yazıldığı makinede derlenemedi; bir kez dağıtıp kontrol edin.
 
 ---
 
