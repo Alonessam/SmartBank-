@@ -16,6 +16,24 @@ jobs:
   build-test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
+    # PostgreSQL is the production database. The real-database tests (concurrent transfers, the standing-order worker,
+    # the production upgrade script) run against it. Without this variable they are skipped, as on a fresh clone.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      SMARTBANK_TEST_POSTGRES: Host=localhost;Port=5432;Username=postgres;Password=postgres
+
     steps:
       - uses: actions/checkout@v7
 
