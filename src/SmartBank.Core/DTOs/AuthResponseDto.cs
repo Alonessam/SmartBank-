@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 
 namespace SmartBank.Core.DTOs
 {
@@ -9,5 +9,6 @@ namespace SmartBank.Core.DTOs
         public string Username { get; set; } = string.Empty;
         public string Tckn { get; set; } = string.Empty;
         public string FullName { get; set; } = string.Empty;
+        public string Role { get; set; } = string.Empty; // "Customer" or "Agent", for the UI; the server trusts only the token
     }
 }

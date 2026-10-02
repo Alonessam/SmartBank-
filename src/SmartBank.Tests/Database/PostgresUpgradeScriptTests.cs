@@ -69,7 +69,7 @@ namespace SmartBank.Tests.Database
                 ALTER TABLE ""CreditCards"" DROP COLUMN ""CardNumberHash"", DROP COLUMN ""Version"";
                 ALTER TABLE ""Accounts"" DROP COLUMN ""Version"";
                 ALTER TABLE ""Users"" DROP COLUMN ""FailedLoginCount"", DROP COLUMN ""LockoutEnd"", DROP COLUMN ""OtpFailedCount"",
-                                      DROP COLUMN ""PendingOtpPurpose"", DROP COLUMN ""PendingOtpBinding"";
+                                      DROP COLUMN ""PendingOtpPurpose"", DROP COLUMN ""PendingOtpBinding"", DROP COLUMN ""Role"";
                 ALTER TABLE ""Accounts"" ALTER COLUMN ""InterestRate"" TYPE numeric;
                 ALTER TABLE ""Accounts"" ADD COLUMN ""EncryptedCardCvv"" varchar(50) NOT NULL DEFAULT '';
                 ALTER TABLE ""CreditCards"" ADD COLUMN ""EncryptedCardCvv"" varchar(50) NOT NULL DEFAULT '';");

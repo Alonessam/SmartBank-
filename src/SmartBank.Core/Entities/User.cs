@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace SmartBank.Core.Entities
@@ -13,6 +13,9 @@ namespace SmartBank.Core.Entities
         public string LastName { get; set; } = string.Empty;
         public string FullName { get; set; } = string.Empty;
         public string Email { get; set; } = string.Empty;
+
+        // Authorization level. Registration always creates a Customer; support agents are promoted in the database.
+        public UserRole Role { get; set; } = UserRole.Customer;
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
         // Two-Factor Authentication fields.
