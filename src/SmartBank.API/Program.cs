@@ -221,3 +221,6 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.Run();
+
+// Lets the integration tests start the whole application (WebApplicationFactory<Program>).
+public partial class Program { }
