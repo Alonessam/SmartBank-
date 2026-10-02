@@ -288,3 +288,34 @@ Kod okurken aynı sınıftan başka sorunlar da çıktı:
 - SignalR hub'ında yetkilendirme neden `[Authorize]` ile bitmez? Grup üyeliği neden bir yetki sınırıdır?
 - Entegrasyon testi ile birim testi farkı nedir? Bu açığı hangisi yakalar?
 - JWT içindeki rol claim'inin dezavantajı nedir? Yetki geri alındığında ne olur?
+
+---
+
+## T9 — README dürüstlüğü
+
+**Sorun.** README, kodun yapmadığı veya doğrulanamayan şeyleri söylüyordu. Bir mülakatçı bunu kodla karşılaştırdığında ilk yakalayacağı şeyler bunlardır ve bir güvenlik projesinde **abartı, açığın kendisi kadar güven kaybettirir**.
+- "Bank-level / corporate-level architecture", "high-fidelity", "secure credit card pipelines", "advanced anti-fraud".
+- Türkçe bölümde: "**BDDK ve finansal güvenlik denetim standartlarına uygundur**": doğrulanmamış bir uyumluluk iddiası.
+- "**Immutable** audit trail": hiçbir şey değiştirmeyi engellemiyordu (yalnızca uygulama silmiyordu).
+- "%100 başarı oranı" (3 test için), "otonom", "Fledgling exceptions" gibi yazım/anlam hataları, MS SQL Server'ın üretim veritabanı olduğu izlenimi (üretim PostgreSQL).
+- Gerçek anahtarı `appsettings.json`'a yazmayı öğütleyen kurulum talimatı (T1'de düzeltildi).
+
+**Ne yaptım.**
+- Girişe "Her şey simülasyondur, gerçek banka değildir" notu; abartılı sıfatlar çıkarıldı, söylenenler kodla örtüşüyor.
+- Denetim günlüğü "değiştirilemez" yerine "yalnızca-ekleme (gelenek gereği), kurcalamaya karşı korumalı değil"; uyumluluk iddiası kaldırıldı; hata ara katmanı "RFC 7807 *tarzı*" (alanlar uyuyor ama birebir standart değil).
+- **Güvenlik Modeli** tablosu (risk → kodun yaptığı) ve **Bilinen Sınırlamalar** bölümü: demo para musluğu, 7 günlük iptal edilemeyen token ve `localStorage`, örnek başına hız sınırı, düz metin OTP, simüle kartlar, kurcalanabilir denetim, kullanıcı sayımı, gözden geçirilmeyen AI sohbeti, iki veritabanı sağlayıcısı, derlenemeyen Docker değişikliği.
+- Mimari diyagramı (Mermaid), eşzamanlılık ve test bölümleri gerçek duruma göre yeniden yazıldı; teknoloji yığını (üretimde PostgreSQL) ve canlı demo notları (soğuk başlangıç, e-posta/SMTP, demo bayrağı).
+- `CHANGELOG.md` ve **yükseltme kontrol listesi**: yeni anahtarları üret, ortam değişkenlerini ayarla, SQL betiğini çalıştır, temsilcileri terfi ettir, `main`'e birleştir, sağlık uçlarını kontrol et.
+
+**Neden bu seçim.** Sınırlamaları kendin yazarsan mülakatta bir "gotcha"ya dönüşmez, olgunluk göstergesine dönüşür: "bunun farkındaydım, nedenini ve ne yapacağımı biliyorum". Ayrıca kullanıcıyı (ve sonraki geliştiriciyi) yanıltmamak başlı başına bir mühendislik sorumluluğudur.
+
+### Bir süreç hatası ve dersi (dürüst not)
+
+T5'ten itibaren bazı kod değişikliklerini PowerShell betikleriyle uyguladım. Windows PowerShell 5.1, **BOM'suz** `.ps1` dosyasını sistemin ANSI kod sayfasıyla (bu makinede Türkçe, 1254) okur. Betiğin içine yazdığım Türkçe metinler bu yüzden bozulup (her harf iki yanlış karakter) kaynak dosyalara yazıldı: hata mesajları, bir arayüz mesajı ve **veritabanına giden varsayılan transfer kategorisi `Diğer`**. Derleme ve testler geçti çünkü bozuk metin geçerli bir metindi. Fark etme yolum: README'yi yazarken bir betikte Türkçe karakter görüp dosyaları taramak.
+
+Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çevirdim, her şeyi taradım (yalnızca üç dosya), ve **bir daha olmaması için** depodaki tüm metin dosyalarını tarayan bir test ekledim (`EncodingHygieneTests`). Kural: ASCII dışı karakter içeren değişiklikleri betikle değil, UTF-8'e güvenilir bir araçla uygula; "geçen testler doğruluğun kanıtı değildir" dersi.
+
+**Mülakat soruları.**
+- Dokümantasyondaki abartı neden bir güvenlik riski? "Immutable" ile "append-only by convention" farkı nedir?
+- Bu projenin sınırlamalarını sayabilir misin? Hangisini ilk düzeltirdin ve nasıl?
+- Karakter kodlaması hatası nasıl oluştu ve neden testler yakalamadı? Nasıl önledin?

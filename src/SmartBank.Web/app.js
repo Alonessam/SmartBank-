@@ -678,7 +678,7 @@ function initAuthEvents() {
                 hideMessages();
 
                 if (!/^\d{11}$/.test(tckn)) {
-                    showError(currentLanguage === "tr" ? "T.C. Kimlik NumarasÄ± 11 haneli olmalÄ±dÄ±r." : "T.C. Identity Number must be 11 digits.");
+                    showError(currentLanguage === "tr" ? "T.C. Kimlik Numarası 11 haneli olmalıdır." : "T.C. Identity Number must be 11 digits.");
                     return;
                 }
 
