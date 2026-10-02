@@ -1,9 +1,10 @@
-using System;
+﻿using System;
 using System.Security.Claims;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.DependencyInjection;
+using SmartBank.Core.Entities;
 using SmartBank.Core.Interfaces;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -59,6 +60,12 @@ namespace SmartBank.API.Hubs
 
         public async Task JoinSessionAsync(Guid sessionId)
         {
+            // Without this check any signed-in user could join any session's group and read it live.
+            if (!await CanAccessSessionAsync(sessionId))
+            {
+                await Clients.Caller.SendAsync("Error", "Access denied to this chat session.");
+                return;
+            }
             // Add connection to the session group
             await Groups.AddToGroupAsync(Context.ConnectionId, sessionId.ToString());
             
@@ -73,17 +80,17 @@ namespace SmartBank.API.Hubs
             var userId = GetUserId();
             var username = Context.User?.FindFirst(ClaimTypes.Name)?.Value ?? "Guest";
 
-            // Determine if the sender is the original user or an agent
-            // We retrieve messages to check the owner of the session, or simply check the session creator ID
-            var messages = await _chatService.GetSessionMessagesAsync(sessionId, userId);
-            
-            string senderRole = "Agent";
-            if (messages.IsSuccess)
+            // The sender is the session's owner ("User") or a support agent ("Agent"). Anyone else is refused: it used
+            // to be that every non-owner was labelled "Agent", so any customer could write into someone else's chat
+            // in the bank's voice.
+            var isOwner = userId.HasValue && (await _chatService.GetSessionMessagesAsync(sessionId, userId)).IsSuccess;
+            if (!isOwner && !IsAgent)
             {
-                // Access allowed for owner -> sender is the "User"
-                senderRole = "User";
+                await Clients.Caller.SendAsync("Error", "Access denied to this chat session.");
+                return;
             }
 
+            string senderRole = isOwner ? "User" : "Agent";
             var result = await _chatService.AddMessageAsync(sessionId, senderRole, content);
 
             if (result.IsSuccess && result.Data != null)
@@ -338,6 +345,11 @@ namespace SmartBank.API.Hubs
 
         public async Task CloseSessionAsync(Guid sessionId)
         {
+            if (!await CanAccessSessionAsync(sessionId))
+            {
+                await Clients.Caller.SendAsync("Error", "Access denied to this chat session.");
+                return;
+            }
             var result = await _chatService.CloseSessionAsync(sessionId);
 
             if (result.IsSuccess)
@@ -438,6 +450,12 @@ namespace SmartBank.API.Hubs
         // Agents call this method to connect to the general agents feed
         public async Task RegisterAgentAsync()
         {
+            // Joining the "Agents" group means receiving every new customer's session request: agents only.
+            if (!IsAgent)
+            {
+                await Clients.Caller.SendAsync("Error", "Support agent role required.");
+                return;
+            }
             await Groups.AddToGroupAsync(Context.ConnectionId, "Agents");
             await Clients.Caller.SendAsync("AgentRegistered");
         }
@@ -453,9 +471,21 @@ namespace SmartBank.API.Hubs
             return val.Trim();
         }
 
-        private Guid? GetUserId()
+        private bool IsAgent => Context.User?.IsInRole(RoleNames.Agent) == true;
+
+        // A session may be used by its owner and by support agents, nobody else.
+        private async Task<bool> CanAccessSessionAsync(Guid sessionId)
         {
-            var userIdStr = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (IsAgent) return true;
+
+            var userId = GetUserId();
+            if (!userId.HasValue) return false;
+
+            return (await _chatService.GetSessionMessagesAsync(sessionId, userId)).IsSuccess;
+        }
+
+        private Guid? GetUserId()
+        {            var userIdStr = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             return Guid.TryParse(userIdStr, out var userId) ? userId : null;
         }
     }
