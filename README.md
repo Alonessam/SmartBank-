@@ -125,6 +125,22 @@ dotnet run --project src/SmartBank.API --launch-profile http
 ### 4. Run the Client Portal
 Open `src/SmartBank.Web/index.html` directly in a browser or host it with any static web server (such as VS Code's Live Server).
 
+### 5. Run the Tests
+
+```bash
+dotnet test SmartBank.slnx
+```
+
+The unit tests need nothing else. A second group of tests runs against a **real database**, because races between concurrent requests cannot be reproduced with the in-memory provider: concurrent transfers, deposits and card charges, the standing-order worker, and the PostgreSQL upgrade script. They are skipped (and reported as skipped) unless you point them at a server through environment variables; each test creates and drops its own throw-away database:
+
+```powershell
+$env:SMARTBANK_TEST_SQLSERVER = "Server=(localdb)\mssqllocaldb;Trusted_Connection=True;TrustServerCertificate=True"
+$env:SMARTBANK_TEST_POSTGRES  = "Host=localhost;Username=postgres;Password=<password>"
+dotnet test SmartBank.slnx
+```
+
+CI runs them against a PostgreSQL 16 service container, the production database.
+
 ---
 
 ## 🧪 Testing Credentials (Fresh Database Setup)
@@ -257,6 +273,22 @@ API sunucusu `http://localhost:5038` portunda çalışacaktır.
 
 ### 4. Arayüzü Açın
 `src/SmartBank.Web/index.html` dosyasını tarayıcınızda doğrudan açarak ya da bir Local Web Server (Live Server vb.) üzerinden uygulamayı görüntüleyebilirsiniz.
+
+### 5. Testleri Çalıştırın
+
+```bash
+dotnet test SmartBank.slnx
+```
+
+Birim testler başka bir şey gerektirmez. İkinci grup testler **gerçek bir veritabanına** karşı çalışır, çünkü eşzamanlı istekler arasındaki yarış durumları InMemory sağlayıcıyla yeniden üretilemez: eşzamanlı transfer/yatırma/kart harcaması, talimat işçisi ve PostgreSQL yükseltme betiği. Ortam değişkeniyle bir sunucu göstermezseniz bu testler atlanır (ve "atlandı" diye raporlanır); her test kendi geçici veritabanını oluşturup siler:
+
+```powershell
+$env:SMARTBANK_TEST_SQLSERVER = "Server=(localdb)\mssqllocaldb;Trusted_Connection=True;TrustServerCertificate=True"
+$env:SMARTBANK_TEST_POSTGRES  = "Host=localhost;Username=postgres;Password=<parola>"
+dotnet test SmartBank.slnx
+```
+
+CI bu testleri üretim veritabanı olan PostgreSQL 16 servis kapsayıcısına karşı çalıştırır.
 
 ---
 Developed with premium design aesthetics and enterprise-ready C# practices. © 2026 SmartBank Team.
