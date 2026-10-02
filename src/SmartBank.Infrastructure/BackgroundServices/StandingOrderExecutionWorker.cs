@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -205,7 +205,7 @@ namespace SmartBank.Infrastructure.BackgroundServices
                     UserId = order.UserId,
                     Action = "StandingOrderExecuted",
                     Details = $"Executed standing order ID: {order.Id}. Amount: {executionAmount} TRY. Type: {order.OrderType}",
-                    IpAddress = "127.0.0.1",
+                    IpAddress = "system:standing-order-worker",
                     CreatedAt = DateTime.UtcNow
                 };
                 db.AuditLogs.Add(audit);

@@ -39,7 +39,8 @@ namespace SmartBank.Tests.Database
             // the script adds "DEFAULT 0" so existing rows can be filled in.
             const string sql = @"
                 SELECT table_name || '.' || column_name || ' ' || data_type || ' null=' || is_nullable ||
-                       ' len=' || COALESCE(character_maximum_length::text, '-')
+                       ' len=' || COALESCE(character_maximum_length::text, '-') ||
+                       ' num=' || COALESCE(numeric_precision::text, '-') || ',' || COALESCE(numeric_scale::text, '-')
                 FROM information_schema.columns
                 WHERE table_schema = 'public' AND table_name IN ('Accounts', 'CreditCards', 'Users')
                 ORDER BY table_name, column_name";
@@ -69,6 +70,7 @@ namespace SmartBank.Tests.Database
                 ALTER TABLE ""Accounts"" DROP COLUMN ""Version"";
                 ALTER TABLE ""Users"" DROP COLUMN ""FailedLoginCount"", DROP COLUMN ""LockoutEnd"", DROP COLUMN ""OtpFailedCount"",
                                       DROP COLUMN ""PendingOtpPurpose"", DROP COLUMN ""PendingOtpBinding"";
+                ALTER TABLE ""Accounts"" ALTER COLUMN ""InterestRate"" TYPE numeric;
                 ALTER TABLE ""Accounts"" ADD COLUMN ""EncryptedCardCvv"" varchar(50) NOT NULL DEFAULT '';
                 ALTER TABLE ""CreditCards"" ADD COLUMN ""EncryptedCardCvv"" varchar(50) NOT NULL DEFAULT '';");
 

@@ -78,6 +78,7 @@ namespace SmartBank.Infrastructure.Data
                 entity.Property(a => a.Currency).IsRequired().HasMaxLength(3);
                 entity.Property(a => a.EncryptedCardNumber).IsRequired().HasMaxLength(100);
                 entity.Property(a => a.Version).IsConcurrencyToken();
+                entity.Property(a => a.InterestRate).HasColumnType("decimal(5,2)"); // an annual rate such as 52.50
                 entity.Property(a => a.CardTheme).IsRequired().HasMaxLength(50);
 
                 entity.HasIndex(a => a.AccountNumber).IsUnique();
