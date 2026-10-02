@@ -2,6 +2,7 @@ using System;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using SmartBank.Core.DTOs;
 using SmartBank.Core.Interfaces;
 using FluentValidation;
@@ -11,6 +12,7 @@ namespace SmartBank.API.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
+    [EnableRateLimiting("auth")] // per-IP limit on every auth endpoint, see Program.cs
     public class AuthController : ControllerBase
     {
         private readonly IAuthService _authService;
@@ -54,7 +56,7 @@ namespace SmartBank.API.Controllers
                 return BadRequest(ModelState);
             }
 
-            var result = await _authService.LoginAsync(loginDto);
+            var result = await _authService.LoginAsync(loginDto, ClientIp());
 
             if (!result.IsSuccess)
             {
@@ -73,7 +75,7 @@ namespace SmartBank.API.Controllers
                 return BadRequest(ModelState);
             }
 
-            var result = await _authService.Verify2FaAsync(verify2FaDto);
+            var result = await _authService.Verify2FaAsync(verify2FaDto, ClientIp());
 
             if (!result.IsSuccess)
             {
@@ -91,7 +93,22 @@ namespace SmartBank.API.Controllers
                 return BadRequest(ModelState);
             }
 
-            var result = await _authService.ForgotPasswordAsync(forgotPasswordDto);
+            // Step 1: e-mail a code. The answer is the same whether or not the T.C. number is registered.
+            await _authService.RequestPasswordResetAsync(forgotPasswordDto, ClientIp());
+
+            return Ok(new { Message = "If this T.C. Kimlik Numarası is registered, a verification code has been sent to its e-mail address." });
+        }
+
+        [HttpPost("reset-password")]
+        public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordDto resetPasswordDto)
+        {
+            if (!ModelState.IsValid)
+            {
+                return BadRequest(ModelState);
+            }
+
+            // Step 2: the e-mailed code is required to set a new PIN.
+            var result = await _authService.ResetPasswordAsync(resetPasswordDto, ClientIp());
 
             if (!result.IsSuccess)
             {
@@ -143,6 +160,9 @@ namespace SmartBank.API.Controllers
 
             return Ok(new { Enabled = result.Data });
         }
+
+        // Behind a reverse proxy this is the real client address only if forwarded headers are enabled (see Dockerfile).
+        private string? ClientIp() => HttpContext.Connection.RemoteIpAddress?.ToString();
 
         private Guid GetUserId()
         {

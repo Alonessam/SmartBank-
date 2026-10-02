@@ -23,5 +23,9 @@ COPY --from=build-env /app/out .
 EXPOSE 80
 EXPOSE 443
 
+# Render (like most PaaS hosts) terminates TLS in a reverse proxy. Trust X-Forwarded-For/Proto so the app sees the
+# real client IP: the per-IP rate limit and the audit log depend on it. Do not expose this container directly.
+ENV ASPNETCORE_FORWARDEDHEADERS_ENABLED=true
+
 # Start application
 ENTRYPOINT ["dotnet", "SmartBank.API.dll"]
