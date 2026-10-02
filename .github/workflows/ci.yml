@@ -42,10 +42,10 @@ jobs:
           dotnet-version: 10.0.x
 
       # System.Random is predictable. Security-relevant values must come from SecureRandom.
-      # MarketRateService uses it only for demo price jitter, Program.cs only in the weather template (removed later).
+      # MarketRateService uses it only for demo price jitter.
       - name: Guard against System.Random in security code
         run: |
-          hits=$(grep -rnE "new Random\(|Random\.Shared" src --include=*.cs | grep -v -e "MarketRateService.cs" -e "src/SmartBank.API/Program.cs" || true)
+          hits=$(grep -rnE "new Random\(|Random\.Shared" src --include=*.cs | grep -v "MarketRateService.cs" || true)
           if [ -n "$hits" ]; then
             echo "$hits"
             echo "::error::System.Random found outside the allowed files. Use SecureRandom for secrets."
@@ -59,9 +59,17 @@ jobs:
         run: dotnet build SmartBank.slnx --configuration Release --no-restore
 
       - name: Test
-        run: >
-          dotnet test SmartBank.slnx --configuration Release --no-build
-          --collect:"XPlat Code Coverage" --results-directory ./TestResults
+        run: |
+          set -o pipefail   # without it, `| tee` would hide a failing `dotnet test`
+          dotnet test SmartBank.slnx --configuration Release --no-build \
+            --collect:"XPlat Code Coverage" --results-directory ./TestResults | tee test.log
+
+          # The real-database tests are skipped when no database is configured. A skip here would mean the
+          # PostgreSQL service is not wired up, so CI treats any skipped test as a failure instead of a silent pass.
+          if grep -qE "Skipped: +[1-9]" test.log; then
+            echo "::error::Some tests were skipped: the PostgreSQL service did not reach the database tests."
+            exit 1
+          fi
 
       - name: Upload coverage
         if: always()
