@@ -28,9 +28,14 @@ v1.1 needs configuration and a database change. Deploying it without them makes 
    Supabase SQL editor *before* the new API goes live. Compare table and column names with the Table Editor first.
 4. **Promote your support staff.** Accounts whose username merely contained "agent" are customers now. Run the
    `UPDATE ... SET "Role" = 1` statement from the script for each real agent.
-5. **Merge `release/v1.1` into `main`** (Render deploys from `main`), then tag `v1.1.0`.
-6. **Check** `GET /health` and `GET /health/ready`, sign in again (old tokens are invalid because the key changed) and
-   note that card numbers created by v1.0 can no longer be decrypted (the script explains the optional demo-data reset).
+5. **Merge `release/v1.1` into `main`** (Render deploys from `main`) and wait for the deploy to finish. Do not do this
+   before steps 1-3: the new API refuses to start without them.
+6. **Check** `GET /health` and `GET /health/ready`.
+7. **Publish the frontend** with `./scripts/deploy-pages.ps1` (dry run, shows what changes) and then
+   `./scripts/deploy-pages.ps1 -Push`. The new frontend needs the new API (role in the sign-in response, two-step password
+   reset), so publish it after step 6. Then tag `v1.1.0`.
+8. **Sign in again** (old tokens are invalid because the key changed). Card numbers created by v1.0 can no longer be
+   decrypted (the SQL script explains the optional demo-data reset).
 
 ### Security
 
