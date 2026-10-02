@@ -68,7 +68,7 @@ namespace SmartBank.Infrastructure.Migrations
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<decimal?>("InterestRate")
-                        .HasColumnType("decimal(18,2)");
+                        .HasColumnType("decimal(5,2)");
 
                     b.Property<DateTime?>("MaturityDate")
                         .HasColumnType("datetime2");
