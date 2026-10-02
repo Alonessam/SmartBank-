@@ -3,9 +3,12 @@ using System.Collections.Generic;
 
 namespace SmartBank.Core.Entities
 {
-    public class Account
+    public class Account : IConcurrencyVersioned
     {
         public Guid Id { get; set; } = Guid.NewGuid();
+
+        // Optimistic-concurrency token, see IConcurrencyVersioned. Protects Balance against lost updates.
+        public int Version { get; set; }
         public Guid UserId { get; set; }
         public string AccountNumber { get; set; } = string.Empty;
         public string AccountCode { get; set; } = string.Empty;

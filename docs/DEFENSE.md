@@ -107,7 +107,7 @@ Mülakatta bu dosyadaki cümleleri **kendi kelimelerinle** anlatabilmen hedeflen
 
 **Bilinen sınırlamalar.** Kredi kartı numarası API'den hâlâ tam olarak dönüyor (frontend maskeliyor). Gerçek bir sistemde sunucu tarafında maskelemek gerekir. Anahtar döndürme (rotation) için `v1:` öneki hazır, ama çoklu anahtar desteği yok.
 
-**Nasıl kanıtladım.** 53 birim test (rastgele nonce, kurcalama, yanlış anahtar, bozuk girdi, hash anahtara bağlı, sütun uzunluğu, servis akışları, eski satır). LocalDB'de geçici bir veritabanında **tüm migration'ları** uyguladım, API'yi çalıştırdım: kayıt, giriş, hesap/kart okuma (CVV boş), yeni hesap açılışında CVV bir kez dönüyor, tekrar okununca boş. Veritabanında CVV sütunu yok, kart şifreli metinleri `v1:` ile başlıyor, kredi kartında hash dolu. Test veritabanı sonra silindi. **Doğrulanmayan:** PostgreSQL betiğini gerçek bir PostgreSQL'de çalıştırmadım.
+**Nasıl kanıtladım.** 53 birim test (rastgele nonce, kurcalama, yanlış anahtar, bozuk girdi, hash anahtara bağlı, sütun uzunluğu, servis akışları, eski satır). LocalDB'de geçici bir veritabanında **tüm migration'ları** uyguladım, API'yi çalıştırdım: kayıt, giriş, hesap/kart okuma (CVV boş), yeni hesap açılışında CVV bir kez dönüyor, tekrar okununca boş. Veritabanında CVV sütunu yok, kart şifreli metinleri `v1:` ile başlıyor, kredi kartında hash dolu. Test veritabanı sonra silindi. **Not:** PostgreSQL betiği T4'te henüz gerçek bir PostgreSQL'de çalıştırılmamıştı; T6'da `PostgresUpgradeScriptTests` ile doğrulandı (eski şema → modelle aynı sütunlar, ikinci çalıştırma değişiklik yapmıyor).
 
 **Mülakat soruları.**
 - Sabit IV neden kötü? CBC ile GCM farkı nedir?
@@ -159,3 +159,45 @@ Mülakatta bu dosyadaki cümleleri **kendi kelimelerinle** anlatabilmen hedeflen
 - Hesap kilidinin dezavantajı nedir, nasıl azaltılır?
 - Sabit zamanlı karşılaştırma neden? Bilinmeyen kullanıcıda neden yine BCrypt çalıştırıyoruz?
 - Uygulama içi hız sınırı ne zaman yetmez?
+
+---
+
+## T6 — Eşzamanlı para hareketleri (yarış durumu)
+
+**Sorun.** Bakiye değiştiren her akış "oku → kontrol et → hesapla → yaz" şeklindeydi, arada kilit veya sürüm kontrolü yoktu. İki istek aynı anda aynı bakiyeyi okuyup ikisi de kendi hesabını mutlak değer olarak yazıyordu (**kayıp güncelleme**). Bu gerçek bir veritabanında ölçüldü: önce **testi yazıp düzeltmeden çalıştırdım ve başarısız olduğunu gördüm**; SQL Server ve PostgreSQL'de, toplam para 1000 TL iken 1019,94 / 1211,03 / 1362,10 TL'ye çıktı. Yani sistem **yoktan para üretiyordu** (aynı yarış, bakiyeden fazla harcamaya da izin verir).
+Kod okurken aynı sınıftan başka sorunlar da çıktı:
+- Kredi kartı limitinde aynı yarış: iki eşzamanlı harcama, birlikte limiti aşabiliyordu.
+- Hesap kapatma: bakiye okunduktan sonra değişirse, eski bakiye aktarılıp hesap siliniyordu (para kaybı).
+- Talimat işçisi: **herhangi** bir hata talimatı kalıcı olarak kapatıyordu (geçici bir çakışma bile). Hata sonrası bellekte değişmiş bakiyeleri, kapatma kaydıyla birlikte yanlışlıkla kaydedebilirdi. İki işçi örneği aynı talimatı iki kez çalıştırabilirdi.
+- İşçi `CreditCardDebt` adını arıyordu, uygulama ise `CreditCardAutoPay` üretiyordu: otomatik kart ödeme talimatları vadesi gelince "geçersiz tutar" ile kapatılıyordu.
+
+**Ne yaptım.**
+- **İyimser eşzamanlılık (optimistic concurrency)**: `Account` ve `CreditCard`'a `Version` (int) kolonu. Her `UPDATE`/`DELETE` artık `WHERE Id = @id AND Version = @okuduğumSürüm` ile çalışır; satır arada değiştiyse hiçbir şey yazılmaz ve EF `DbUpdateConcurrencyException` fırlatır. `SaveChanges` geçersiz kılınarak sürüm otomatik artırılır (tek yerde, unutulamaz).
+- **Yeniden deneme**: Çakışmada işlem geri alınır, bellek temizlenir ve işlem **taze verilerle baştan** çalışır (en fazla 10 deneme, artan rastgele bekleme ile). Bakiye yeniden kontrol edilir, bu yüzden "bakiye yetersiz" doğru sonucu verir. Aynı yolla **deadlock kurbanı** (SQL Server 1205) ve PostgreSQL `40001`/`40P01` hataları da yeniden denenir: veritabanı bunların "yeniden çalıştır" anlamına geldiğini zaten söyler. (Deadlock'u ilk teşhis ederken testte gördüm.)
+- Transfer, OTP kontrolü *bir kez*, para adımı ise *tekrarlanabilir* olacak şekilde ikiye ayrıldı: tek kullanımlık kod, yeniden denemede tüketilmiş olmasın.
+- Para hareketi yapan tüm metotlar aynı çatıdan geçiyor: transfer, kart borç ödeme, kart harcama, ekstre kapama, hesap kapatma, döviz alım/satım, para yatırma.
+- **Talimat işçisi baştan yazıldı**: her talimat kendi kapsam ve `DbContext`'inde işlenir; çakışmada talimat **kapatılmaz**, sonraki döngüde tekrar denenir; `NextExecutionDate` talimatın eşzamanlılık jetonudur, böylece iki işçi aynı talimatı iki kez çalıştıramaz; gerçek bir hatada bellekteki yarım değişiklikler atılır ve talimat temiz bir `UPDATE` ile kapatılır; `CreditCardAutoPay` tanınır.
+- Migration `AddConcurrencyVersions` ve PostgreSQL betiği güncellendi.
+
+**Neden bu seçim (alternatifler).**
+- *`xmin` / `rowversion`:* sağlayıcıya özgü (PostgreSQL `xmin`, SQL Server `rowversion`). Bu uygulama iki sağlayıcıyı destekliyor (yerelde SQL Server, üretimde PostgreSQL), uygulama yönetimli tamsayı sürüm ikisinde de aynı çalışıyor.
+- *Karamsar kilit (`SELECT … FOR UPDATE`):* satırı okurken kilitler, çakışmayı baştan önler. Dezavantajı: sağlayıcıya özgü SQL, kilit sırası yönetimi (deadlock), kilit süresince bekleme. Bu uygulamada çakışma nadir, iyimser yaklaşım okumayı engellemez ve nadir çakışmada yeniden dener. Çok yoğun tek-satır yarışta (ör. tek "kasa" hesabı) karamsar kilit daha uygun olurdu.
+- *Serializable izolasyon:* en güçlü garanti ama hem SQL Server'da hem PostgreSQL'de çok sayıda serileştirme hatası/deadlock üretir ve her yerde yeniden deneme gerektirir; tüm okumalar pahalılaşır.
+- *Sürümü yalnız `Balance` ile sınırlamak:* sürüm satır düzeyinde, bakiye dışında bir alan değişse de artar. Daha dar bir jeton (`Balance`'ın kendisi) mümkündü ama "bakiye aynı değere dönmüş" (ABA) durumunda çakışmayı kaçırırdı; ayrı sürüm sayısı bunu yaşatmaz.
+
+**Bilinen sınırlamalar.**
+- Çok yoğun tek-satır yarışta 10 deneme yetmeyebilir; bu durumda `ConcurrentModification` ("tekrar deneyin") döner, para yine korunur.
+- Döviz alımı sırasında kur okuması ile yazma arasında kur değişebilir (kur sabitlenmiyor).
+- `DeleteAccount` ve `Exchange` içinde audit kaydı ayrı bir `SaveChanges` ile yazılıyor; ikisi tek işlemde değil (bakiye/işlem yazımı yine tek atomik adımda).
+- Uygulama içi sürüm yalnızca bu uygulamanın EF yolundan korur. Veritabanına doğrudan SQL ile yazan bir araç sürümü artırmazsa çakışma tespiti devre dışı kalır.
+
+**Nasıl kanıtladım.** (1) Gerçek veritabanı testleri: 40 eşzamanlı transfer (toplam bakiyeyi aşan), zıt yönlü transferler, yatırma + transfer karışımı, 30 eşzamanlı kart harcaması (limit aşılmıyor), 4 işçinin aynı talimatı aynı anda çalıştırması (tek kez icra), hatalı talimatın temiz kapanması, kart otomatik ödemesi. Değişmezler: toplam para sabit, hiçbir bakiye eksiye düşmüyor, her başarılı işlem tam bir kez kayıtlı, başarısızlıklar yalnızca beklenen iş sonuçları. Düzeltmeden önce başarısız (yukarıdaki rakamlar), sonra SQL Server (LocalDB) ve PostgreSQL 16'da tekrarlı çalıştırmalarda geçiyor. Deadlock'u bu testler ortaya çıkardı. (2) Gerçek API'ye karşı HTTP: 40 paralel transfer, 33 başarılı, 7 yetersiz bakiye, 0 pes, toplam tam 2000 TL, hesap sürümleri (v33) başarılı transfer sayısına eşit. (3) PostgreSQL yükseltme betiği: eski şema → modelle aynı sütunlar, ikinci çalıştırma değişiklik yapmıyor, unique indeks mevcut. CI, PostgreSQL servisiyle bu testleri her push'ta çalıştırır. Veritabanı bağlantısı yoksa bu testler "atlandı" olarak görünür (sessizce geçmez).
+
+**Mülakat soruları.**
+- Kayıp güncelleme (lost update) nedir? İki isteğin akışını adım adım çiz.
+- İyimser ile karamsar eşzamanlılık farkı nedir? Bu uygulamada neden iyimser, ne zaman karamsar tercih edersin?
+- Neden `xmin`/`rowversion` yerine uygulama yönetimli bir sürüm sayısı?
+- Yeniden deneme neden "baştan, taze okumalarla" olmalı? OTP kontrolünü neden yeniden deneme döngüsünün dışına aldın?
+- Deadlock nedir, SQL Server'da neden oluştu, nasıl ele aldın? Hangi hatalar yeniden denenebilir?
+- Talimat işçisinde iki örnek aynı talimatı nasıl iki kez çalıştırabilirdi? `NextExecutionDate` jetonu bunu nasıl engelliyor?
+- Testi önce başarısız görmenin değeri nedir? Bu testi InMemory sağlayıcıyla neden yazamadın?
