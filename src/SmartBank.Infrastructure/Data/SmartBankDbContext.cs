@@ -52,7 +52,6 @@ namespace SmartBank.Infrastructure.Data
                 entity.Property(a => a.Balance).HasColumnType("decimal(18,2)");
                 entity.Property(a => a.Currency).IsRequired().HasMaxLength(3);
                 entity.Property(a => a.EncryptedCardNumber).IsRequired().HasMaxLength(100);
-                entity.Property(a => a.EncryptedCardCvv).IsRequired().HasMaxLength(50);
                 entity.Property(a => a.CardTheme).IsRequired().HasMaxLength(50);
 
                 entity.HasIndex(a => a.AccountNumber).IsUnique();
@@ -116,7 +115,8 @@ namespace SmartBank.Infrastructure.Data
             {
                 entity.HasKey(cc => cc.Id);
                 entity.Property(cc => cc.EncryptedCardNumber).IsRequired().HasMaxLength(100);
-                entity.Property(cc => cc.EncryptedCardCvv).IsRequired().HasMaxLength(50);
+                entity.Property(cc => cc.CardNumberHash).HasMaxLength(64);
+                entity.HasIndex(cc => cc.CardNumberHash).IsUnique();
                 entity.Property(cc => cc.ExpiryDate).IsRequired().HasMaxLength(10);
                 entity.Property(cc => cc.CardLimit).HasColumnType("decimal(18,2)");
                 entity.Property(cc => cc.CurrentDebt).HasColumnType("decimal(18,2)");

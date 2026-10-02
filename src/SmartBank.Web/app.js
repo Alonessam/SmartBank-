@@ -1223,7 +1223,8 @@ function updateCardPreview(cardNumber, cvv, expiryDate, theme, typeText) {
         previewExpiry.textContent = "EXP " + (expiryDate || "12/31");
     }
     if (previewCvv) {
-        previewCvv.textContent = cvv || "000";
+        // The CVV is never stored: it only arrives in the response that issues the card.
+        previewCvv.textContent = cvv || "•••";
     }
     if (previewType) {
         previewType.textContent = typeText || "DEBIT";
