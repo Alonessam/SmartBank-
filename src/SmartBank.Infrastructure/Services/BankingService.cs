@@ -235,8 +235,7 @@ namespace SmartBank.Infrastructure.Services
                 if (needsOtp && user != null)
                 {
                     // Generate 6-digit OTP code
-                    var random = new Random();
-                    var otp = random.Next(100000, 1000000).ToString();
+                    var otp = SecureRandom.Next(100000, 1000000).ToString();
 
                     user.TwoFactorSecret = otp;
                     user.TwoFactorExpiry = DateTime.UtcNow.AddMinutes(5);
@@ -337,10 +336,10 @@ namespace SmartBank.Infrastructure.Services
             var cardNum = GenerateCardNumber();
             var cvv = GenerateCvv();
 
-            var accountCode = "ACC-" + new Random().Next(1000000, 9999999).ToString();
+            var accountCode = "ACC-" + SecureRandom.Next(1000000, 10000000);
             while (await _context.Accounts.AnyAsync(a => a.AccountCode == accountCode))
             {
-                accountCode = "ACC-" + new Random().Next(1000000, 9999999).ToString();
+                accountCode = "ACC-" + SecureRandom.Next(1000000, 10000000);
             }
 
             var newAccount = new Account
@@ -777,33 +776,11 @@ namespace SmartBank.Infrastructure.Services
             return ServiceResult<CreditCardStatementDto>.Success(dto);
         }
 
-        private string GenerateAccountNumber()
-        {
-            var random = new Random();
-            var sb = new System.Text.StringBuilder("TR");
-            for (int i = 0; i < 16; i++)
-            {
-                sb.Append(random.Next(0, 10));
-            }
-            return sb.ToString();
-        }
+        private string GenerateAccountNumber() => "TR" + SecureRandom.Digits(16);
 
-        private string GenerateCardNumber()
-        {
-            var random = new Random();
-            var sb = new System.Text.StringBuilder("4");
-            for (int i = 0; i < 15; i++)
-            {
-                sb.Append(random.Next(0, 10));
-            }
-            return sb.ToString();
-        }
+        private string GenerateCardNumber() => "4" + SecureRandom.Digits(15);
 
-        private string GenerateCvv()
-        {
-            var random = new Random();
-            return random.Next(100, 1000).ToString();
-        }
+        private string GenerateCvv() => SecureRandom.Next(100, 1000).ToString();
 
         public async Task<ServiceResult<bool>> DeleteAccountAsync(Guid userId, Guid accountId, Guid? transferTargetAccountId = null)
         {
@@ -1204,14 +1181,13 @@ namespace SmartBank.Infrastructure.Services
                 return ServiceResult<CreditCardDto>.Failure("MaxCreditCardsLimitReached", "En fazla 1 adet kredi kartı sahibi olabilirsiniz.");
             }
 
-            var random = new Random();
-            string cardNumber = "4" + string.Join("", Enumerable.Range(0, 15).Select(_ => random.Next(0, 10).ToString()));
+            string cardNumber = GenerateCardNumber();
             while (await _context.CreditCards.AnyAsync(cc => cc.EncryptedCardNumber == Core.Common.EncryptionHelper.Encrypt(cardNumber)))
             {
-                cardNumber = "4" + string.Join("", Enumerable.Range(0, 15).Select(_ => random.Next(0, 10).ToString()));
+                cardNumber = GenerateCardNumber();
             }
 
-            string cvv = random.Next(100, 1000).ToString();
+            string cvv = GenerateCvv();
             string expiryDate = DateTime.UtcNow.AddYears(8).ToString("MM/yy");
 
             var creditCard = new CreditCard

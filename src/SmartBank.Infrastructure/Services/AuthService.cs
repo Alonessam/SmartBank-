@@ -60,10 +60,10 @@ namespace SmartBank.Infrastructure.Services
             var cardNum = GenerateCardNumber();
             var cvv = GenerateCvv();
 
-            var accountCode = "ACC-" + new Random().Next(1000000, 9999999).ToString();
+            var accountCode = "ACC-" + SecureRandom.Next(1000000, 10000000);
             while (await _context.Accounts.AnyAsync(a => a.AccountCode == accountCode))
             {
-                accountCode = "ACC-" + new Random().Next(1000000, 9999999).ToString();
+                accountCode = "ACC-" + SecureRandom.Next(1000000, 10000000);
             }
 
             var defaultAccount = new Account
@@ -171,8 +171,7 @@ namespace SmartBank.Infrastructure.Services
             // Check if 2FA is enabled for this user
             if (user.TwoFactorEnabled)
             {
-                var random = new Random();
-                var otp = random.Next(100000, 1000000).ToString();
+                var otp = SecureRandom.Next(100000, 1000000).ToString();
                 
                 user.TwoFactorSecret = otp;
                 user.TwoFactorExpiry = DateTime.UtcNow.AddMinutes(5);
@@ -389,31 +388,10 @@ namespace SmartBank.Infrastructure.Services
             return tokenHandler.WriteToken(token);
         }
 
-        private string GenerateAccountNumber()
-        {
-            var random = new Random();
-            var sb = new StringBuilder("TR");
-            for (int i = 0; i < 16; i++)
-            {
-                sb.Append(random.Next(0, 10));
-            }
-            return sb.ToString();
-        }
-        private string GenerateCardNumber()
-        {
-            var random = new Random();
-            var sb = new StringBuilder("4"); // Visa
-            for (int i = 0; i < 15; i++)
-            {
-                sb.Append(random.Next(0, 10));
-            }
-            return sb.ToString();
-        }
+        private string GenerateAccountNumber() => "TR" + SecureRandom.Digits(16);
 
-        private string GenerateCvv()
-        {
-            var random = new Random();
-            return random.Next(100, 1000).ToString();
-        }
+        private string GenerateCardNumber() => "4" + SecureRandom.Digits(15); // Visa
+
+        private string GenerateCvv() => SecureRandom.Next(100, 1000).ToString();
     }
 }
