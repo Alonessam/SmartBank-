@@ -10,6 +10,30 @@ namespace SmartBank.Infrastructure.Data
         {
         }
 
+        // Optimistic concurrency: bump the version of every versioned row that is about to be updated. The UPDATE then
+        // reads "... WHERE Id = @id AND Version = @oldVersion", so it only succeeds if nobody changed the row since it
+        // was read. Both overloads are overridden because EF routes every SaveChanges/SaveChangesAsync call through them.
+        public override int SaveChanges(bool acceptAllChangesOnSuccess)
+        {
+            BumpVersions();
+            return base.SaveChanges(acceptAllChangesOnSuccess);
+        }
+
+        public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+        {
+            BumpVersions();
+            return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        }
+
+        private void BumpVersions()
+        {
+            foreach (var entry in ChangeTracker.Entries<IConcurrencyVersioned>().Where(e => e.State == EntityState.Modified))
+            {
+                var loadedVersion = (int)entry.Property(nameof(IConcurrencyVersioned.Version)).OriginalValue!;
+                entry.Entity.Version = loadedVersion + 1;
+            }
+        }
+
         public DbSet<User> Users { get; set; }
         public DbSet<MarketRate> MarketRates { get; set; }
         public DbSet<Account> Accounts { get; set; }
@@ -53,6 +77,7 @@ namespace SmartBank.Infrastructure.Data
                 entity.Property(a => a.Balance).HasColumnType("decimal(18,2)");
                 entity.Property(a => a.Currency).IsRequired().HasMaxLength(3);
                 entity.Property(a => a.EncryptedCardNumber).IsRequired().HasMaxLength(100);
+                entity.Property(a => a.Version).IsConcurrencyToken();
                 entity.Property(a => a.CardTheme).IsRequired().HasMaxLength(50);
 
                 entity.HasIndex(a => a.AccountNumber).IsUnique();
@@ -118,6 +143,7 @@ namespace SmartBank.Infrastructure.Data
                 entity.Property(cc => cc.EncryptedCardNumber).IsRequired().HasMaxLength(100);
                 entity.Property(cc => cc.CardNumberHash).HasMaxLength(64);
                 entity.HasIndex(cc => cc.CardNumberHash).IsUnique();
+                entity.Property(cc => cc.Version).IsConcurrencyToken();
                 entity.Property(cc => cc.ExpiryDate).IsRequired().HasMaxLength(10);
                 entity.Property(cc => cc.CardLimit).HasColumnType("decimal(18,2)");
                 entity.Property(cc => cc.CurrentDebt).HasColumnType("decimal(18,2)");
@@ -188,6 +214,10 @@ namespace SmartBank.Infrastructure.Data
                 entity.Property(so => so.Amount).HasColumnType("decimal(18,2)");
                 entity.Property(so => so.Frequency).IsRequired().HasMaxLength(20);
                 entity.Property(so => so.OrderType).IsRequired().HasMaxLength(20);
+
+                // The execution date doubles as the concurrency token: two workers that both picked up the same due
+                // order cannot both run it, because the second one's UPDATE of the next date finds it already moved.
+                entity.Property(so => so.NextExecutionDate).IsConcurrencyToken();
 
                 entity.HasOne(so => so.User)
                       .WithMany()

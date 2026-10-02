@@ -24,9 +24,14 @@ ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "OtpFailedCount"    integer NOT NUL
 ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "PendingOtpPurpose" integer;          -- 1 Login, 2 Transfer, 3 PasswordReset
 ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "PendingOtpBinding" varchar(64);      -- hash of the transfer a code approves
 
+-- 4) Optimistic-concurrency versions: protect balances and card debt against lost updates
+--    (EF migration 20261002xxxxxx_AddConcurrencyVersions).
+ALTER TABLE "Accounts"    ADD COLUMN IF NOT EXISTS "Version" integer NOT NULL DEFAULT 0;
+ALTER TABLE "CreditCards" ADD COLUMN IF NOT EXISTS "Version" integer NOT NULL DEFAULT 0;
+
 COMMIT;
 
--- 4) OPTIONAL, recommended for the demo database.
+-- 5) OPTIONAL, recommended for the demo database.
 --    Existing card numbers were encrypted with the OLD key and the OLD format (AES-CBC, fixed IV), so v1.1
 --    cannot decrypt them: the API returns an empty card number for those rows. All data in the demo
 --    database is fake. For a clean start, delete it (this removes ALL users, accounts, cards and

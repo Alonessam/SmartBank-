@@ -76,6 +76,10 @@ namespace SmartBank.Infrastructure.Migrations
                     b.Property<Guid>("UserId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
+
                     b.HasKey("Id");
 
                     b.HasIndex("AccountCode")
@@ -209,6 +213,10 @@ namespace SmartBank.Infrastructure.Migrations
 
                     b.Property<Guid>("UserId")
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
 
                     b.HasKey("Id");
 
@@ -374,6 +382,7 @@ namespace SmartBank.Infrastructure.Migrations
                         .HasColumnType("datetime2");
 
                     b.Property<DateTime>("NextExecutionDate")
+                        .IsConcurrencyToken()
                         .HasColumnType("datetime2");
 
                     b.Property<string>("OrderType")
