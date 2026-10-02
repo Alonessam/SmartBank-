@@ -1,5 +1,7 @@
 # ❖ SmartBank - Premium Fintech & Digital Banking Portal
 
+[![CI](https://github.com/Alonessam/SmartBank-/actions/workflows/ci.yml/badge.svg)](https://github.com/Alonessam/SmartBank-/actions/workflows/ci.yml)
+
 SmartBank is a high-fidelity, feature-rich digital banking and fintech portal built on **.NET 10.0 (ASP.NET Core Web API)** and a modern **Vanilla HTML5/CSS3/JS** frontend. It features multi-currency asset management, real-time market rates simulation, an AI-powered customer support chatbot (with RAG), secure credit card pipelines, and advanced anti-fraud transaction workflows.
 
 *(Türkçe açıklama için sayfanın altına kaydırabilirsiniz / Scroll down for the Turkish version)*
