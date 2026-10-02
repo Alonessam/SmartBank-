@@ -312,7 +312,7 @@ namespace SmartBank.Infrastructure.Services
                     Amount = transferRequest.Amount,
                     Description = transferRequest.Description,
                     Type = TransactionType.Transfer,
-                    Category = string.IsNullOrEmpty(transferRequest.Category) ? "DiÄŸer" : transferRequest.Category,
+                    Category = string.IsNullOrEmpty(transferRequest.Category) ? "Diğer" : transferRequest.Category,
                     CreatedAt = DateTime.UtcNow
                 };
 

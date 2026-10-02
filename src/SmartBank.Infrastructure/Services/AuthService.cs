@@ -194,7 +194,7 @@ namespace SmartBank.Infrastructure.Services
                 }
 
                 // Identical answer for "no such T.C. number" and "wrong PIN".
-                return ServiceResult<AuthResponseDto>.Failure("InvalidCredentials", "Invalid T.C. Kimlik NumarasÄ± or password.");
+                return ServiceResult<AuthResponseDto>.Failure("InvalidCredentials", "Invalid T.C. Kimlik Numarası or password.");
             }
 
             LoginLockout.Reset(user);
@@ -206,7 +206,7 @@ namespace SmartBank.Infrastructure.Services
 
                 _otpDelivery.Send(user, code, OtpPurpose.Login);
 
-                var message = "Ä°ki aÅŸamalÄ± doÄŸrulama gerekiyor.";
+                var message = "İki aşamalı doğrulama gerekiyor.";
                 if (_otpDelivery.ExposeCodeInResponse)
                 {
                     message += $"|OTP:{code}"; // demo mode only, see IOtpDelivery.ExposeCodeInResponse
@@ -248,7 +248,7 @@ namespace SmartBank.Infrastructure.Services
             if (user == null)
             {
                 BCrypt.Net.BCrypt.Verify(resetPasswordDto.NewPassword, DummyPasswordHash); // keep timing similar
-                return ServiceResult<bool>.Failure("InvalidOrExpiredCode", "GeÃ§ersiz veya sÃ¼resi dolmuÅŸ doÄŸrulama kodu.");
+                return ServiceResult<bool>.Failure("InvalidOrExpiredCode", "Geçersiz veya süresi dolmuş doğrulama kodu.");
             }
 
             var check = OtpManager.Verify(user, OtpPurpose.PasswordReset, resetPasswordDto.Code, now);
@@ -300,7 +300,7 @@ public async Task<ServiceResult<bool>> Toggle2FaAsync(Guid userId, bool enable)
             // Same answer for an unknown T.C. number and a wrong code.
             if (user == null)
             {
-                return ServiceResult<AuthResponseDto>.Failure("InvalidOrExpiredCode", "GeÃ§ersiz veya sÃ¼resi dolmuÅŸ doÄŸrulama kodu.");
+                return ServiceResult<AuthResponseDto>.Failure("InvalidOrExpiredCode", "Geçersiz veya süresi dolmuş doğrulama kodu.");
             }
 
             if (LoginLockout.IsLocked(user, now))
@@ -324,7 +324,7 @@ public async Task<ServiceResult<bool>> Toggle2FaAsync(Guid userId, bool enable)
 
         private static ServiceResult<T> OtpFailure<T>(OtpCheckResult check) => check == OtpCheckResult.TooManyAttempts
             ? ServiceResult<T>.Failure("TooManyOtpAttempts", "Too many wrong codes. Request a new code and try again.")
-            : ServiceResult<T>.Failure("InvalidOrExpiredCode", "GeÃ§ersiz veya sÃ¼resi dolmuÅŸ doÄŸrulama kodu.");
+            : ServiceResult<T>.Failure("InvalidOrExpiredCode", "Geçersiz veya süresi dolmuş doğrulama kodu.");
 
         private static AuditLog NewAuditLog(Guid userId, string action, string details, string? ipAddress) => new()
         {
