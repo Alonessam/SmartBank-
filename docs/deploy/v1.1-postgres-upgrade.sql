@@ -16,9 +16,17 @@ ALTER TABLE "CreditCards" DROP COLUMN IF EXISTS "EncryptedCardCvv";
 ALTER TABLE "CreditCards" ADD COLUMN IF NOT EXISTS "CardNumberHash" varchar(64);
 CREATE UNIQUE INDEX IF NOT EXISTS "IX_CreditCards_CardNumberHash" ON "CreditCards" ("CardNumberHash");
 
+-- 3) Brute-force protection and one-time-code hardening
+--    (EF migration 20261002xxxxxx_AddOtpAndLockoutFields). Use the same timestamp type as "TwoFactorExpiry".
+ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "FailedLoginCount"  integer NOT NULL DEFAULT 0;
+ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "LockoutEnd"        timestamp with time zone;
+ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "OtpFailedCount"    integer NOT NULL DEFAULT 0;
+ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "PendingOtpPurpose" integer;          -- 1 Login, 2 Transfer, 3 PasswordReset
+ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "PendingOtpBinding" varchar(64);      -- hash of the transfer a code approves
+
 COMMIT;
 
--- 3) OPTIONAL, recommended for the demo database.
+-- 4) OPTIONAL, recommended for the demo database.
 --    Existing card numbers were encrypted with the OLD key and the OLD format (AES-CBC, fixed IV), so v1.1
 --    cannot decrypt them: the API returns an empty card number for those rows. All data in the demo
 --    database is fake. For a clean start, delete it (this removes ALL users, accounts, cards and
