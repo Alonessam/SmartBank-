@@ -3,9 +3,12 @@ using System.Collections.Generic;
 
 namespace SmartBank.Core.Entities
 {
-    public class CreditCard
+    public class CreditCard : IConcurrencyVersioned
     {
         public Guid Id { get; set; } = Guid.NewGuid();
+
+        // Optimistic-concurrency token, see IConcurrencyVersioned. Protects CurrentDebt against lost updates.
+        public int Version { get; set; }
         public Guid UserId { get; set; }
         // AES-GCM ciphertext. The CVV is deliberately NOT stored: it is shown once at issuance.
         public string EncryptedCardNumber { get; set; } = string.Empty;
