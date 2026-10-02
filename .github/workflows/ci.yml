@@ -23,6 +23,17 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      # System.Random is predictable. Security-relevant values must come from SecureRandom.
+      # MarketRateService uses it only for demo price jitter, Program.cs only in the weather template (removed later).
+      - name: Guard against System.Random in security code
+        run: |
+          hits=$(grep -rnE "new Random\(|Random\.Shared" src --include=*.cs | grep -v -e "MarketRateService.cs" -e "src/SmartBank.API/Program.cs" || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::System.Random found outside the allowed files. Use SecureRandom for secrets."
+            exit 1
+          fi
+
       - name: Restore
         run: dotnet restore SmartBank.slnx
 
