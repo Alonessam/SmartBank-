@@ -1,5 +1,7 @@
 using System.Text;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using SmartBank.API.Hubs;
@@ -78,6 +80,8 @@ builder.Services.AddAuthentication(options =>
 });
 
 // Register Core & Infrastructure Services
+// One-time codes are delivered by e-mail; Demo:ExposeOtp (off by default) additionally exposes them for a mailbox-less demo.
+builder.Services.AddSingleton<IOtpDelivery, SmtpOtpDelivery>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IBankingService, BankingService>();
 builder.Services.AddScoped<IChatService, ChatService>();
@@ -96,6 +100,41 @@ builder.Services.AddValidatorsFromAssemblyContaining<RegisterDtoValidator>();
 // Add services to the container.
 builder.Services.AddControllers();
 builder.Services.AddSignalR();
+
+// Per-IP rate limit on the auth endpoints (login, 2FA, password reset, register). This is the coarse layer;
+// the per-account lockout and the OTP attempt counter in the services are the precise ones.
+// Behind a reverse proxy the IP is only the real client address if forwarded headers are enabled (see Dockerfile).
+var authPermitLimit = builder.Configuration.GetValue("RateLimiting:Auth:PermitLimit", 10);
+var authWindowSeconds = builder.Configuration.GetValue("RateLimiting:Auth:WindowSeconds", 60);
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    options.AddPolicy("auth", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = authPermitLimit,
+                Window = TimeSpan.FromSeconds(authWindowSeconds),
+                QueueLimit = 0
+            }));
+
+    options.OnRejected = async (context, cancellationToken) =>
+    {
+        if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
+        {
+            context.HttpContext.Response.Headers.RetryAfter = ((int)Math.Ceiling(retryAfter.TotalSeconds)).ToString();
+        }
+
+        await context.HttpContext.Response.WriteAsJsonAsync(new
+        {
+            IsSuccess = false,
+            ErrorKey = "TooManyRequests",
+            Message = "Too many requests. Please wait a moment and try again."
+        }, cancellationToken);
+    };
+});
 
 builder.Services.AddCors(options =>
 {
@@ -124,6 +163,8 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 
 app.UseCors();
+
+app.UseRateLimiter();
 
 app.UseAuthentication();
 app.UseAuthorization();
