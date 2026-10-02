@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -8,20 +8,20 @@ using SmartBank.Core.DTOs;
 using SmartBank.Core.Entities;
 using SmartBank.Core.Interfaces;
 using SmartBank.Infrastructure.Data;
-using Microsoft.Extensions.Configuration;
+using SmartBank.Core.Security;
 
 namespace SmartBank.Infrastructure.Services
 {
     public class BankingService : IBankingService
     {
         private readonly SmartBankDbContext _context;
-        private readonly IConfiguration _configuration;
+        private readonly IOtpDelivery _otpDelivery;
         private readonly IMarketRateService _marketRateService;
 
-        public BankingService(SmartBankDbContext context, IConfiguration configuration, IMarketRateService marketRateService)
+        public BankingService(SmartBankDbContext context, IOtpDelivery otpDelivery, IMarketRateService marketRateService)
         {
             _context = context;
-            _configuration = configuration;
+            _otpDelivery = otpDelivery;
             _marketRateService = marketRateService;
         }
 
@@ -156,18 +156,20 @@ namespace SmartBank.Infrastructure.Services
                     return ServiceResult<TransactionDto>.Failure("UserNotFound", "User details not found.");
                 }
 
-                if (user.TwoFactorSecret != transferRequest.OtpCode || 
-                    !user.TwoFactorExpiry.HasValue || 
-                    user.TwoFactorExpiry.Value < DateTime.UtcNow)
+                // The code only approves the exact transfer it was issued for (same accounts, same amount).
+                var binding = OtpManager.TransferBinding(sourceAccount.AccountNumber, destinationAccount.AccountNumber, transferRequest.Amount);
+                var otpCheck = OtpManager.Verify(user, OtpPurpose.Transfer, transferRequest.OtpCode, DateTime.UtcNow, binding);
+                await _context.SaveChangesAsync(); // persists the failed-attempt counter, or the cleared code on success
+
+                if (otpCheck == OtpCheckResult.TooManyAttempts)
+                {
+                    return ServiceResult<TransactionDto>.Failure("TooManyOtpAttempts", "Too many wrong codes. Start the transfer again to get a new code.");
+                }
+
+                if (otpCheck != OtpCheckResult.Valid)
                 {
                     return ServiceResult<TransactionDto>.Failure("InvalidOtpCode", "Invalid or expired verification code.");
                 }
-
-                // Clear OTP after successful verification
-                user.TwoFactorSecret = null;
-                user.TwoFactorExpiry = null;
-                _context.Users.Update(user);
-                await _context.SaveChangesAsync();
 
                 // Skip fraud/2FA checks because user validated it via OTP
                 checkFraudAnd2FA = false;
@@ -233,25 +235,20 @@ namespace SmartBank.Infrastructure.Services
 
                 if (needsOtp && user != null)
                 {
-                    // Generate 6-digit OTP code
-                    var otp = SecureRandom.Next(100000, 1000000).ToString();
-
-                    user.TwoFactorSecret = otp;
-                    user.TwoFactorExpiry = DateTime.UtcNow.AddMinutes(5);
-
-                    _context.Users.Update(user);
+                    // One-time code, valid for 5 minutes, bound to this exact transfer.
+                    var binding = OtpManager.TransferBinding(sourceAccount.AccountNumber, destinationAccount.AccountNumber, transferRequest.Amount);
+                    var otp = OtpManager.Issue(user, OtpPurpose.Transfer, DateTime.UtcNow, binding);
                     await _context.SaveChangesAsync();
 
-                    // Send email in a background task
-                    _ = Task.Run(async () => {
-                        await Send2FaEmailAsync(user.Email, user.FullName, otp);
-                    });
+                    _otpDelivery.Send(user, otp, OtpPurpose.Transfer);
 
-                    // Print to server console for testing/audit purposes
-                    Console.WriteLine($"[SmartBank 2FA OTP] Generated OTP Code: {otp} for user {user.Username} (Expires: {user.TwoFactorExpiry})");
+                    var message = reasonMessage;
+                    if (_otpDelivery.ExposeCodeInResponse)
+                    {
+                        message += $"|OTP:{otp}"; // demo mode only, see IOtpDelivery.ExposeCodeInResponse
+                    }
 
-                    // Return OTP code inside the message for simulation purposes in frontend
-                    return ServiceResult<TransactionDto>.Failure(reasonKey, $"{reasonMessage}|OTP:{otp}");
+                    return ServiceResult<TransactionDto>.Failure(reasonKey, message);
                 }
             }
 
@@ -1238,61 +1235,6 @@ namespace SmartBank.Infrastructure.Services
             };
 
             return ServiceResult<CreditCardDto>.Success(dto);
-        }
-
-        private async Task Send2FaEmailAsync(string emailAddress, string username, string otpCode)
-        {
-            try
-            {
-                var smtpHost = _configuration["SmtpSettings:Host"] ?? "localhost";
-                var smtpPortStr = _configuration["SmtpSettings:Port"] ?? "25";
-                int.TryParse(smtpPortStr, out var smtpPort);
-                var smtpUsername = _configuration["SmtpSettings:Username"] ?? "";
-                var smtpPassword = _configuration["SmtpSettings:Password"] ?? "";
-                var enableSsl = bool.Parse(_configuration["SmtpSettings:EnableSsl"] ?? "false");
-                var fromAddress = _configuration["SmtpSettings:FromAddress"] ?? "no-reply@smartbank.com";
-
-                using (var mail = new System.Net.Mail.MailMessage())
-                {
-                    mail.From = new System.Net.Mail.MailAddress(fromAddress, "SmartBank Güvenlik");
-                    mail.To.Add(emailAddress);
-                    mail.Subject = "SmartBank Güvenlik Doğrulama Kodu";
-                    
-                    mail.Body = $@"
-                    <html>
-                    <body style='font-family: Arial, sans-serif; background-color: #0d1b2a; color: #e0e1dd; padding: 2rem;'>
-                        <div style='max-width: 600px; margin: 0 auto; background-color: #1b263b; border-radius: 12px; border: 1px solid #415a77; padding: 2rem;'>
-                            <h2 style='color: #00f260; text-align: center; font-size: 1.8rem; margin-top: 0;'>❖ SmartBank Güvenlik</h2>
-                            <p style='font-size: 1.1rem;'>Merhaba <strong>{username}</strong>,</p>
-                            <p style='font-size: 1.1rem; line-height: 1.6;'>Hesabınızdan başlatılan para transferi işlemini onaylamak için aşağıdaki 6 haneli doğrulama kodunu kullanın:</p>
-                            <div style='text-align: center; margin: 2rem 0;'>
-                                <span style='font-size: 2.2rem; font-weight: bold; background-color: #0d1b2a; color: #00f260; padding: 0.75rem 2rem; border-radius: 8px; letter-spacing: 5px; border: 1px solid #415a77;'>{otpCode}</span>
-                            </div>
-                            <p style='color: #a3b18a; font-size: 0.9rem; line-height: 1.6;'>Bu kod 5 dakika boyunca geçerlidir. İşlemi siz başlatmadıysanız lütfen hemen müşteri hizmetlerimizle iletişime geçiniz.</p>
-                            <hr style='border: 0; border-top: 1px solid #415a77; margin: 2rem 0;' />
-                            <p style='font-size: 0.8rem; text-align: center; color: #a3b18a;'>SmartBank A.Ş. &copy; {DateTime.UtcNow.Year}</p>
-                        </div>
-                    </body>
-                    </html>";
-                    mail.IsBodyHtml = true;
-
-                    using (var smtp = new System.Net.Mail.SmtpClient(smtpHost, smtpPort))
-                    {
-                        if (!string.IsNullOrEmpty(smtpUsername))
-                        {
-                            smtp.Credentials = new System.Net.NetworkCredential(smtpUsername, smtpPassword);
-                        }
-                        smtp.EnableSsl = enableSsl;
-                        
-                        await smtp.SendMailAsync(mail);
-                    }
-                }
-                Console.WriteLine($"[SmartBank 2FA Email] Real verification email successfully sent to {emailAddress}.");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[SmartBank 2FA Email Error] Failed to send email to {emailAddress}: {ex.Message}");
-            }
         }
 
         public async Task<ServiceResult<TransactionDto>> DepositMoneyAsync(Guid userId, string accountNumber, decimal amount)

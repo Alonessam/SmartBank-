@@ -26,7 +26,7 @@ namespace SmartBank.Tests
                 .Options);
 
         private static BankingService NewService(SmartBankDbContext context) =>
-            new(context, new Mock<IConfiguration>().Object, new Mock<IMarketRateService>().Object);
+            new(context, new FakeOtpDelivery(), new Mock<IMarketRateService>().Object);
 
         private static async Task<User> AddUserAsync(SmartBankDbContext context)
         {
