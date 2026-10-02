@@ -115,3 +115,47 @@ Mülakatta bu dosyadaki cümleleri **kendi kelimelerinle** anlatabilmen hedeflen
 - Neden düz SHA-256 değil HMAC? Anahtar ayrımı (HKDF) neden?
 - CVV neden saklanmaz? Şifreli de olsa neden saklanmaz?
 - Bozuk bir şifreli değeri okurken neden hata fırlatıp, görüntüleme yolunda yakalıyoruz?
+
+---
+
+## T5 — Hesap ele geçirme ve kaba kuvvet koruması
+
+**Sorun.** Planda "kaba kuvvet" diye başlayan bu görev, kodu okurken üç katı daha ciddi açık çıkardı:
+1. **Parola sıfırlama kimlik doğrulamasızdı.** `forgot-password` yalnızca T.C. Kimlik Numarası + yeni PIN alıp parolayı doğrudan değiştiriyordu. TCKN'yi bilen herkes hesabı ele geçirebilirdi. Kaba kuvvet gerekmiyordu bile.
+2. **2FA kodu istemciye geri veriliyordu.** Giriş ve transfer yanıtlarının mesajına `|OTP:123456` ekleniyor, ayrıca sunucu konsoluna yazılıyordu. PIN'i bilen biri ikinci faktörü de yanıtın içinden okuyordu: 2FA fiilen yoktu.
+3. **Transfer kodu işleme bağlı değildi.** Bir transfer için üretilen kod, 5 dakika içinde *başka bir tutar veya alıcı* için de geçerliydi.
+4. Kaba kuvvet: PIN 6 haneli (1.000.000 olasılık), OTP 6 haneli, deneme sınırı yok. BCrypt her denemeyi yavaşlatır ama saldırganı durdurmaz.
+5. Hata mesajları ve yanıt süresi hangi TCKN'nin kayıtlı olduğunu sızdırıyordu (`TcknNotFound`, `UserNotFound`, bilinmeyen TCKN'de BCrypt çalışmadığı için daha hızlı yanıt).
+
+**Ne yaptım.**
+- **`LoginLockout`**: 5 yanlış PIN'de hesap 15 dakika kilitlenir. Kilitliyken PIN kontrol edilmez, ek denemeler kilidi uzatmaz. Başarılı girişte sayaç sıfırlanır.
+- **`OtpManager`**: kod kriptografik üretilir, 5 dakika geçerli, **tek kullanımlık**, **amaca bağlı** (giriş/transfer/parola sıfırlama; giriş kodu parola sıfırlamada kullanılamaz), **5 yanlış denemede yok edilir** (900.000 olasılıktan 5 tahmin), karşılaştırma **sabit zamanlı**.
+- **Transfer kodu işleme bağlı** (dynamic linking): kod; kaynak hesap, hedef hesap ve tutarın SHA-256 özetine bağlı. Tutar veya alıcı değişirse kod geçersiz.
+- **Parola sıfırlama iki adımlı**: (1) `forgot-password` e-postaya kod gönderir, TCKN kayıtlı olsun olmasın aynı yanıtı verir, 60 sn'lik bekleme süresiyle posta kutusu bombardımanını önler; (2) `reset-password` kodu ister. Doğrulanmış sıfırlama kilidi de kaldırır.
+- **Kod yanıtta dönmüyor.** Yalnızca `Demo:ExposeOtp=true` iken (varsayılan kapalı) giriş/transfer kodları yanıta eklenir. Parola sıfırlama kodu **hiçbir zaman** yanıtta dönmez.
+- **Eşit zamanlı ve eşit yanıt**: bilinmeyen TCKN için de bir BCrypt doğrulaması yapılır; "kullanıcı yok" ve "yanlış PIN" aynı yanıtı verir.
+- **IP başına hız sınırı** (`/api/auth/*`, varsayılan dakikada 10): kaba katman. Hassas katman hesap kilidi ve OTP sayacıdır.
+- **Denetim kaydı**: başarısız giriş, kilitlenme ve sıfırlama talepleri gerçek istemci IP'siyle yazılıyor.
+- Tekrarlanan iki SMTP gönderici tek `IOtpDelivery`'de toplandı; e-posta içeriği HTML-kodlanıyor, kod ve adres loga yazılmıyor.
+
+**Neden bu seçimler.**
+- *Kilit mi, yoksa artan gecikme mi?* Basit ve açıklaması kolay olduğu için kilit. Dezavantajı: saldırgan, bir kurbanın TCKN'sini sürekli deneyip onu kilitleyebilir (kilitleme ile hizmet engelleme). Etki 15 dakikalık geçici kilitle ve IP hız sınırıyla sınırlı. Gerçek bir bankada ek olarak cihaz/IP tabanlı risk puanlaması olur.
+- *Kodu neden hash'lemedim?* Kod 5 dakikalık ömürlü ve 5 denemelik. Veritabanı sızsa bile pencere çok dar. Üretimde yine de özet saklanır; bilinen sınırlama.
+- *Hız sınırı neden uygulama içi?* Tek örnekli bir demo için yeterli. Çok örnekli bir dağıtımda sınır örnekler arasında paylaşılmaz; orada Redis tabanlı bir sınırlayıcı veya ters vekil (gateway) seviyesinde sınır gerekir.
+- *`ForwardedHeaders` neden Dockerfile'da?* Render gibi bir vekilin arkasında tüm istekler vekilin IP'sinden gelir; ayar olmazsa tüm kullanıcılar aynı hız sınırı kovasını paylaşır. İmaj yalnızca vekil arkasında kullanılmalı, doğrudan internete açılırsa `X-Forwarded-For` sahtelenebilir.
+
+**Bilinen sınırlamalar (dürüst liste).**
+- JWT ömrü 7 gün ve iptal edilemiyor. Parola sıfırlandığında eski token'lar süresi dolana kadar geçerli kalır. Çözüm (kısa ömürlü token + yenileme ya da güvenlik damgası) kapsam dışı.
+- Kayıt (`register`) hâlâ kullanıcı adı/TCKN'nin alınmış olduğunu söylüyor (kullanıcı sayımı).
+- `BankingService`'teki denetim kayıtları hâlâ sabit `127.0.0.1` yazıyor.
+- Herkese açık demo'da (`Demo:ExposeOtp=true`) giriş/transfer 2FA'sı fiilen PIN'e düşer. Bu bilinçli bir demo tavizi, bayrakla kontrol ediliyor ve README'de uyarı var.
+
+**Nasıl kanıtladım.** 100 birim test (OTP: yaşam döngüsü, amaç, bağlama, deneme sınırı, bekleme; kilit: eşik, süre sonu, sıfırlama; servis: giriş, kilit, 2FA, iki adımlı sıfırlama, transfer onayı). Bağlama kontrolünü kasıtlı bozunca 4 test düştü (mutasyon kontrolü). LocalDB'de tüm migration'larla çalışan API'ye karşı: 2FA yanıtında kod yok, 5 yanlış PIN sonrası `AccountLocked`, bilinmeyen TCKN ile yanlış PIN aynı yanıt, parola sıfırlama kodsuz başarısız ve yanıtta kod yok, denetim kaydında gerçek IP, hız sınırı IP başına (3 izin, sonra 429 + `Retry-After`, başka IP ayrı kova, auth dışı endpoint etkilenmiyor).
+
+**Mülakat soruları.**
+- Parola sıfırlamada neden e-posta kodu şart? Yanıtın TCKN'ye göre değişmemesi neden önemli?
+- OTP'yi neden amaca ve işleme bağlıyoruz? "Dynamic linking" nedir?
+- 6 haneli bir kod deneme sınırıyla neden güvenli sayılır? Saldırganın 5 denemede başarı olasılığı nedir?
+- Hesap kilidinin dezavantajı nedir, nasıl azaltılır?
+- Sabit zamanlı karşılaştırma neden? Bilinmeyen kullanıcıda neden yine BCrypt çalıştırıyoruz?
+- Uygulama içi hız sınırı ne zaman yetmez?

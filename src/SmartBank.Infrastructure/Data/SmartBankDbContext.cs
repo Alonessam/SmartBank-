@@ -37,6 +37,7 @@ namespace SmartBank.Infrastructure.Data
                 entity.Property(u => u.FullName).IsRequired().HasMaxLength(100);
                 entity.Property(u => u.Email).IsRequired().HasMaxLength(100);
                 entity.Property(u => u.TwoFactorSecret).HasMaxLength(10);
+                entity.Property(u => u.PendingOtpBinding).HasMaxLength(64);
                 
                 entity.HasIndex(u => u.Username).IsUnique();
                 entity.HasIndex(u => u.Tckn).IsUnique();
