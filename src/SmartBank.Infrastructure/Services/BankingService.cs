@@ -252,12 +252,48 @@ namespace SmartBank.Infrastructure.Services
                 }
             }
 
+            // Everything above only decides whether this transfer is allowed. The money itself moves below, in a
+            // step that is safe to repeat if another request touches the same accounts at the same moment.
+            return await RunWithConcurrencyRetryAsync(() => ExecuteTransferAsync(userId, transferRequest));
+        }
+
+        private async Task<ServiceResult<TransactionDto>> ExecuteTransferAsync(Guid userId, TransferRequestDto transferRequest)
+        {
+            // Fresh reads on every attempt (the context was cleared first), so balances are current.
+            var sourceAccount = await _context.Accounts
+                .FirstOrDefaultAsync(a => a.AccountNumber == transferRequest.SourceAccountNumber);
+
+            if (sourceAccount == null)
+            {
+                return ServiceResult<TransactionDto>.Failure("SourceAccountNotFound", "Source account was not found.");
+            }
+
+            if (sourceAccount.UserId != userId)
+            {
+                return ServiceResult<TransactionDto>.Failure("UnauthorizedAccountAccess", "You do not have access to this source account.");
+            }
+
+            var destinationAccount = await _context.Accounts
+                .FirstOrDefaultAsync(a => a.AccountNumber == transferRequest.DestinationAccountNumber);
+
+            if (destinationAccount == null)
+            {
+                return ServiceResult<TransactionDto>.Failure("DestinationAccountNotFound", "Destination account was not found.");
+            }
+
+            // The balance may have dropped since the first check, so it is checked again against what is stored now.
+            if (sourceAccount.Balance < transferRequest.Amount)
+            {
+                return ServiceResult<TransactionDto>.Failure("InsufficientFunds", "Insufficient funds in the source account.");
+            }
+
             // Using DB Transaction to guarantee atomicity of the money transfer
             using var dbTransaction = await _context.Database.BeginTransactionAsync();
 
             try
             {
-                // 4. Update balances
+                // 4. Update balances. Both rows carry a version: if either was changed by someone else since the read
+                // above, SaveChanges writes nothing and throws DbUpdateConcurrencyException.
                 sourceAccount.Balance -= transferRequest.Amount;
                 destinationAccount.Balance += transferRequest.Amount;
 
@@ -269,7 +305,7 @@ namespace SmartBank.Infrastructure.Services
                     Amount = transferRequest.Amount,
                     Description = transferRequest.Description,
                     Type = TransactionType.Transfer,
-                    Category = string.IsNullOrEmpty(transferRequest.Category) ? "Diğer" : transferRequest.Category,
+                    Category = string.IsNullOrEmpty(transferRequest.Category) ? "DiÄŸer" : transferRequest.Category,
                     CreatedAt = DateTime.UtcNow
                 };
 
@@ -307,6 +343,12 @@ namespace SmartBank.Infrastructure.Services
 
                 return ServiceResult<TransactionDto>.Success(dto);
             }
+            catch (Exception ex) when (DatabaseConflict.IsRetryable(ex))
+            {
+                // Someone else got in the way (version conflict or deadlock victim): undo and let the retry loop start over.
+                await dbTransaction.RollbackAsync();
+                throw;
+            }
             catch (Exception ex)
             {
                 // Rollback EF transaction changes on general exceptions
@@ -314,7 +356,6 @@ namespace SmartBank.Infrastructure.Services
                 return ServiceResult<TransactionDto>.Failure("TransactionFailed", $"An error occurred during transaction: {ex.Message}");
             }
         }
-
         public async Task<ServiceResult<AccountDto>> CreateAccountAsync(Guid userId, string currency, string accountType = "DemandDeposit")
         {
             var userExists = await _context.Users.AnyAsync(u => u.Id == userId);
@@ -456,7 +497,10 @@ namespace SmartBank.Infrastructure.Services
             return ServiceResult<List<CreditCardStatementDto>>.Success(dtos);
         }
 
-        public async Task<ServiceResult<bool>> PayCreditCardDebtAsync(Guid userId, Guid cardId, PayCreditCardDebtDto payRequest)
+        public Task<ServiceResult<bool>> PayCreditCardDebtAsync(Guid userId, Guid cardId, PayCreditCardDebtDto payRequest) =>
+            RunWithConcurrencyRetryAsync(() => PayCreditCardDebtAsyncCore(userId, cardId, payRequest));
+
+        private async Task<ServiceResult<bool>> PayCreditCardDebtAsyncCore(Guid userId, Guid cardId, PayCreditCardDebtDto payRequest)
         {
             if (payRequest.Amount <= 0)
             {
@@ -524,6 +568,11 @@ namespace SmartBank.Infrastructure.Services
 
                 return ServiceResult<bool>.Success(true);
             }
+            catch (Exception ex) when (DatabaseConflict.IsRetryable(ex))
+            {
+                await dbTransaction.RollbackAsync();
+                throw;
+            }
             catch (Exception ex)
             {
                 await dbTransaction.RollbackAsync();
@@ -531,7 +580,10 @@ namespace SmartBank.Infrastructure.Services
             }
         }
 
-        public async Task<ServiceResult<CreditCardDto>> ChargeCreditCardAsync(Guid userId, Guid cardId, decimal amount, string description)
+        public Task<ServiceResult<CreditCardDto>> ChargeCreditCardAsync(Guid userId, Guid cardId, decimal amount, string description) =>
+            RunWithConcurrencyRetryAsync(() => ChargeCreditCardAsyncCore(userId, cardId, amount, description));
+
+        private async Task<ServiceResult<CreditCardDto>> ChargeCreditCardAsyncCore(Guid userId, Guid cardId, decimal amount, string description)
         {
             if (amount <= 0)
             {
@@ -590,6 +642,11 @@ namespace SmartBank.Infrastructure.Services
 
                 return ServiceResult<CreditCardDto>.Success(dto);
             }
+            catch (Exception ex) when (DatabaseConflict.IsRetryable(ex))
+            {
+                await dbTransaction.RollbackAsync();
+                throw;
+            }
             catch (Exception ex)
             {
                 await dbTransaction.RollbackAsync();
@@ -597,7 +654,10 @@ namespace SmartBank.Infrastructure.Services
             }
         }
 
-        public async Task<ServiceResult<CreditCardStatementDto>> AdvanceStatementPeriodAsync(Guid userId, Guid cardId)
+        public Task<ServiceResult<CreditCardStatementDto>> AdvanceStatementPeriodAsync(Guid userId, Guid cardId) =>
+            RunWithConcurrencyRetryAsync(() => AdvanceStatementPeriodAsyncCore(userId, cardId));
+
+        private async Task<ServiceResult<CreditCardStatementDto>> AdvanceStatementPeriodAsyncCore(Guid userId, Guid cardId)
         {
             var card = await _context.CreditCards
                 .Include(cc => cc.Statements)
@@ -769,6 +829,39 @@ namespace SmartBank.Infrastructure.Services
             return ServiceResult<CreditCardStatementDto>.Success(dto);
         }
 
+        // Optimistic concurrency. Accounts and credit cards carry a version number; an UPDATE or DELETE only succeeds if
+        // the row is still at the version that was read. When two requests collide, one of them gets
+        // a conflict error instead of silently overwriting the other's balance (a "lost update"), and the
+        // operation is repeated from fresh reads. Only an operation that is safe to run again may go through here:
+        // nothing before the money step may have side effects (one-time codes are checked before it, not inside it).
+        private const int MaxConcurrencyAttempts = 10;
+
+        private async Task<ServiceResult<T>> RunWithConcurrencyRetryAsync<T>(Func<Task<ServiceResult<T>>> operation)
+        {
+            for (var attempt = 1; ; attempt++)
+            {
+                // Start every attempt from fresh reads: anything the context still tracks may be stale.
+                _context.ChangeTracker.Clear();
+
+                try
+                {
+                    return await operation();
+                }
+                catch (Exception ex) when (DatabaseConflict.IsRetryable(ex))
+                {
+                    _context.ChangeTracker.Clear();
+
+                    if (attempt >= MaxConcurrencyAttempts)
+                    {
+                        return ServiceResult<T>.Failure("ConcurrentModification",
+                            "The account was changed by another operation at the same time. Please try again.");
+                    }
+
+                    // A short, growing, random pause spreads out requests that keep colliding.
+                    await Task.Delay(SecureRandom.Next(2, 20 * attempt));
+                }
+            }
+        }
         // Display paths must not fail because one stored card cannot be decrypted (e.g. legacy rows from before v1.1).
         private static string SafeDecrypt(string? cipherText) =>
             EncryptionHelper.TryDecrypt(cipherText, out var plain) ? plain : string.Empty;
@@ -779,7 +872,10 @@ namespace SmartBank.Infrastructure.Services
 
         private string GenerateCvv() => SecureRandom.Next(100, 1000).ToString();
 
-        public async Task<ServiceResult<bool>> DeleteAccountAsync(Guid userId, Guid accountId, Guid? transferTargetAccountId = null)
+        public Task<ServiceResult<bool>> DeleteAccountAsync(Guid userId, Guid accountId, Guid? transferTargetAccountId = null) =>
+            RunWithConcurrencyRetryAsync(() => DeleteAccountAsyncCore(userId, accountId, transferTargetAccountId));
+
+        private async Task<ServiceResult<bool>> DeleteAccountAsyncCore(Guid userId, Guid accountId, Guid? transferTargetAccountId = null)
         {
             var account = await _context.Accounts
                 .FirstOrDefaultAsync(a => a.Id == accountId && a.UserId == userId);
@@ -1037,7 +1133,10 @@ namespace SmartBank.Infrastructure.Services
             return ServiceResult<bool>.Success(true);
         }
 
-        public async Task<ServiceResult<TransactionDto>> ExchangeMoneyAsync(Guid userId, ExchangeDto exchangeDto)
+        public Task<ServiceResult<TransactionDto>> ExchangeMoneyAsync(Guid userId, ExchangeDto exchangeDto) =>
+            RunWithConcurrencyRetryAsync(() => ExchangeMoneyAsyncCore(userId, exchangeDto));
+
+        private async Task<ServiceResult<TransactionDto>> ExchangeMoneyAsyncCore(Guid userId, ExchangeDto exchangeDto)
         {
             if (!Guid.TryParse(exchangeDto.SourceAccountId, out var sourceAccountId))
             {
@@ -1237,7 +1336,10 @@ namespace SmartBank.Infrastructure.Services
             return ServiceResult<CreditCardDto>.Success(dto);
         }
 
-        public async Task<ServiceResult<TransactionDto>> DepositMoneyAsync(Guid userId, string accountNumber, decimal amount)
+        public Task<ServiceResult<TransactionDto>> DepositMoneyAsync(Guid userId, string accountNumber, decimal amount) =>
+            RunWithConcurrencyRetryAsync(() => DepositMoneyAsyncCore(userId, accountNumber, amount));
+
+        private async Task<ServiceResult<TransactionDto>> DepositMoneyAsyncCore(Guid userId, string accountNumber, decimal amount)
         {
             if (amount <= 0)
             {
