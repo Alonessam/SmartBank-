@@ -15,7 +15,7 @@ namespace SmartBank.Core.DTOs
         public bool IsActive { get; set; }
         public string OrderType { get; set; } = "Transfer"; // Transfer or CreditCardAutoPay
         public Guid? CreditCardId { get; set; }
-        public string? CreditCardNumber { get; set; }
+        public string? CreditCardLast4 { get; set; }
         public DateTime CreatedAt { get; set; }
     }
 

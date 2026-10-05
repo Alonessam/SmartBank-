@@ -58,11 +58,6 @@ namespace SmartBank.Infrastructure.Migrations
                         .HasMaxLength(3)
                         .HasColumnType("nvarchar(3)");
 
-                    b.Property<string>("EncryptedCardCvv")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
                     b.Property<string>("EncryptedCardNumber")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -73,13 +68,17 @@ namespace SmartBank.Infrastructure.Migrations
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<decimal?>("InterestRate")
-                        .HasColumnType("decimal(18,2)");
+                        .HasColumnType("decimal(5,2)");
 
                     b.Property<DateTime?>("MaturityDate")
                         .HasColumnType("datetime2");
 
                     b.Property<Guid>("UserId")
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
 
                     b.HasKey("Id");
 
@@ -187,6 +186,10 @@ namespace SmartBank.Infrastructure.Migrations
                     b.Property<decimal>("CardLimit")
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<string>("CardNumberHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
                     b.Property<string>("CardTheme")
                         .IsRequired()
                         .HasMaxLength(50)
@@ -197,11 +200,6 @@ namespace SmartBank.Infrastructure.Migrations
 
                     b.Property<decimal>("CurrentDebt")
                         .HasColumnType("decimal(18,2)");
-
-                    b.Property<string>("EncryptedCardCvv")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
 
                     b.Property<string>("EncryptedCardNumber")
                         .IsRequired()
@@ -216,7 +214,15 @@ namespace SmartBank.Infrastructure.Migrations
                     b.Property<Guid>("UserId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("CardNumberHash")
+                        .IsUnique()
+                        .HasFilter("[CardNumberHash] IS NOT NULL");
 
                     b.HasIndex("UserId");
 
@@ -376,6 +382,7 @@ namespace SmartBank.Infrastructure.Migrations
                         .HasColumnType("datetime2");
 
                     b.Property<DateTime>("NextExecutionDate")
+                        .IsConcurrencyToken()
                         .HasColumnType("datetime2");
 
                     b.Property<string>("OrderType")
@@ -457,6 +464,9 @@ namespace SmartBank.Infrastructure.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
+                    b.Property<int>("FailedLoginCount")
+                        .HasColumnType("int");
+
                     b.Property<string>("FirstName")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
@@ -470,9 +480,25 @@ namespace SmartBank.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<DateTime?>("LockoutEnd")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("OtpFailedCount")
+                        .HasColumnType("int");
+
                     b.Property<string>("PasswordHash")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("PendingOtpBinding")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<int?>("PendingOtpPurpose")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Role")
+                        .HasColumnType("int");
 
                     b.Property<string>("Tckn")
                         .IsRequired()

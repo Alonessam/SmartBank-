@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "release/**", "v1.1/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # PostgreSQL is the production database. The real-database tests (concurrent transfers, the standing-order worker,
+    # the production upgrade script) run against it. Without this variable they are skipped, as on a fresh clone.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      SMARTBANK_TEST_POSTGRES: Host=localhost;Port=5432;Username=postgres;Password=postgres
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      # System.Random is predictable. Security-relevant values must come from SecureRandom.
+      # MarketRateService uses it only for demo price jitter.
+      - name: Guard against System.Random in security code
+        run: |
+          hits=$(grep -rnE "new Random\(|Random\.Shared" src --include=*.cs | grep -v "MarketRateService.cs" || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::System.Random found outside the allowed files. Use SecureRandom for secrets."
+            exit 1
+          fi
+
+      - name: Restore
+        run: dotnet restore SmartBank.slnx
+
+      - name: Build
+        run: dotnet build SmartBank.slnx --configuration Release --no-restore
+
+      - name: Test
+        run: |
+          set -o pipefail   # without it, `| tee` would hide a failing `dotnet test`
+          dotnet test SmartBank.slnx --configuration Release --no-build \
+            --collect:"XPlat Code Coverage" --results-directory ./TestResults | tee test.log
+
+          # The real-database tests are skipped when no database is configured. A skip here would mean the
+          # PostgreSQL service is not wired up, so CI treats any skipped test as a failure instead of a silent pass.
+          if grep -qE "Skipped: +[1-9]" test.log; then
+            echo "::error::Some tests were skipped: the PostgreSQL service did not reach the database tests."
+            exit 1
+          fi
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: TestResults/**/coverage.cobertura.xml
+          if-no-files-found: ignore
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore SmartBank.slnx
+
+      # `dotnet list package --vulnerable` exits 0 even when it finds something, so grep its report.
+      - name: Fail on known-vulnerable packages
+        run: |
+          dotnet list SmartBank.slnx package --vulnerable --include-transitive | tee vulnerable.txt
+          if grep -q "has the following vulnerable packages" vulnerable.txt; then
+            echo "::error::Vulnerable NuGet packages found, see the report above."
+            exit 1
+          fi

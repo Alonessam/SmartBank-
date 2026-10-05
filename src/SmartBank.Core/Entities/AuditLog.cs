@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 
 namespace SmartBank.Core.Entities
 {
@@ -8,7 +8,7 @@ namespace SmartBank.Core.Entities
         public Guid UserId { get; set; }
         public string Action { get; set; } = string.Empty;
         public string Details { get; set; } = string.Empty;
-        public string IpAddress { get; set; } = "127.0.0.1";
+        public string IpAddress { get; set; } = "unknown";
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     }
 }

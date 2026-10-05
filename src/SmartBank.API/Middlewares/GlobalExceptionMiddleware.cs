@@ -28,7 +28,7 @@ namespace SmartBank.API.Middlewares
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Unhandled exception occurred: {Message}", ex.Message);
+                _logger.LogError(ex, "Unhandled exception for request {TraceId}.", context.TraceIdentifier);
                 await HandleExceptionAsync(context, ex);
             }
         }
@@ -43,8 +43,11 @@ namespace SmartBank.API.Middlewares
                 type = "https://tools.ietf.org/html/rfc7231#section-6.6.1",
                 title = "An unexpected error occurred on the server.",
                 status = StatusCodes.Status500InternalServerError,
-                detail = _env.IsDevelopment() ? exception.ToString() : exception.Message,
-                instance = context.Request.Path.Value
+                // The full exception (type, message, stack, SQL text) only on a developer machine. Everywhere else the
+                // client gets a generic message plus an id to quote, and the details stay in the server log.
+                detail = _env.IsDevelopment() ? exception.ToString() : "An internal error occurred. Please try again later.",
+                instance = context.Request.Path.Value,
+                traceId = context.TraceIdentifier
             };
 
             var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };

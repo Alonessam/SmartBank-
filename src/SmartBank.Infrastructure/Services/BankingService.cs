@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -8,20 +8,27 @@ using SmartBank.Core.DTOs;
 using SmartBank.Core.Entities;
 using SmartBank.Core.Interfaces;
 using SmartBank.Infrastructure.Data;
-using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using SmartBank.Core.Security;
 
 namespace SmartBank.Infrastructure.Services
 {
     public class BankingService : IBankingService
     {
         private readonly SmartBankDbContext _context;
-        private readonly IConfiguration _configuration;
+        private readonly IOtpDelivery _otpDelivery;
+        private readonly IClientInfo? _clientInfo;
+        private readonly ILogger<BankingService> _logger;
         private readonly IMarketRateService _marketRateService;
 
-        public BankingService(SmartBankDbContext context, IConfiguration configuration, IMarketRateService marketRateService)
+        public BankingService(SmartBankDbContext context, IOtpDelivery otpDelivery, IMarketRateService marketRateService,
+            IClientInfo? clientInfo = null, ILogger<BankingService>? logger = null)
         {
             _context = context;
-            _configuration = configuration;
+            _otpDelivery = otpDelivery;
+            _clientInfo = clientInfo;
+            _logger = logger ?? NullLogger<BankingService>.Instance;
             _marketRateService = marketRateService;
         }
 
@@ -50,8 +57,7 @@ namespace SmartBank.Infrastructure.Services
                     Balance = a.Balance,
                     Currency = a.Currency,
                     CreatedAt = a.CreatedAt,
-                    CardNumber = Core.Common.EncryptionHelper.Decrypt(a.EncryptedCardNumber) ?? string.Empty,
-                    CardCvv = Core.Common.EncryptionHelper.Decrypt(a.EncryptedCardCvv) ?? string.Empty,
+                    CardNumber = SafeDecrypt(a.EncryptedCardNumber),
                     CardTheme = a.CardTheme,
                     ExpiryDate = a.ExpiryDate,
                     AccountType = a.AccountType,
@@ -157,18 +163,20 @@ namespace SmartBank.Infrastructure.Services
                     return ServiceResult<TransactionDto>.Failure("UserNotFound", "User details not found.");
                 }
 
-                if (user.TwoFactorSecret != transferRequest.OtpCode || 
-                    !user.TwoFactorExpiry.HasValue || 
-                    user.TwoFactorExpiry.Value < DateTime.UtcNow)
+                // The code only approves the exact transfer it was issued for (same accounts, same amount).
+                var binding = OtpManager.TransferBinding(sourceAccount.AccountNumber, destinationAccount.AccountNumber, transferRequest.Amount);
+                var otpCheck = OtpManager.Verify(user, OtpPurpose.Transfer, transferRequest.OtpCode, DateTime.UtcNow, binding);
+                await _context.SaveChangesAsync(); // persists the failed-attempt counter, or the cleared code on success
+
+                if (otpCheck == OtpCheckResult.TooManyAttempts)
+                {
+                    return ServiceResult<TransactionDto>.Failure("TooManyOtpAttempts", "Too many wrong codes. Start the transfer again to get a new code.");
+                }
+
+                if (otpCheck != OtpCheckResult.Valid)
                 {
                     return ServiceResult<TransactionDto>.Failure("InvalidOtpCode", "Invalid or expired verification code.");
                 }
-
-                // Clear OTP after successful verification
-                user.TwoFactorSecret = null;
-                user.TwoFactorExpiry = null;
-                _context.Users.Update(user);
-                await _context.SaveChangesAsync();
 
                 // Skip fraud/2FA checks because user validated it via OTP
                 checkFraudAnd2FA = false;
@@ -234,27 +242,56 @@ namespace SmartBank.Infrastructure.Services
 
                 if (needsOtp && user != null)
                 {
-                    // Generate 6-digit OTP code
-                    var random = new Random();
-                    var otp = random.Next(100000, 1000000).ToString();
-
-                    user.TwoFactorSecret = otp;
-                    user.TwoFactorExpiry = DateTime.UtcNow.AddMinutes(5);
-
-                    _context.Users.Update(user);
+                    // One-time code, valid for 5 minutes, bound to this exact transfer.
+                    var binding = OtpManager.TransferBinding(sourceAccount.AccountNumber, destinationAccount.AccountNumber, transferRequest.Amount);
+                    var otp = OtpManager.Issue(user, OtpPurpose.Transfer, DateTime.UtcNow, binding);
                     await _context.SaveChangesAsync();
 
-                    // Send email in a background task
-                    _ = Task.Run(async () => {
-                        await Send2FaEmailAsync(user.Email, user.FullName, otp);
-                    });
+                    _otpDelivery.Send(user, otp, OtpPurpose.Transfer);
 
-                    // Print to server console for testing/audit purposes
-                    Console.WriteLine($"[SmartBank 2FA OTP] Generated OTP Code: {otp} for user {user.Username} (Expires: {user.TwoFactorExpiry})");
+                    var message = reasonMessage;
+                    if (_otpDelivery.ExposeCodeInResponse)
+                    {
+                        message += $"|OTP:{otp}"; // demo mode only, see IOtpDelivery.ExposeCodeInResponse
+                    }
 
-                    // Return OTP code inside the message for simulation purposes in frontend
-                    return ServiceResult<TransactionDto>.Failure(reasonKey, $"{reasonMessage}|OTP:{otp}");
+                    return ServiceResult<TransactionDto>.Failure(reasonKey, message);
                 }
+            }
+
+            // Everything above only decides whether this transfer is allowed. The money itself moves below, in a
+            // step that is safe to repeat if another request touches the same accounts at the same moment.
+            return await RunWithConcurrencyRetryAsync(() => ExecuteTransferAsync(userId, transferRequest));
+        }
+
+        private async Task<ServiceResult<TransactionDto>> ExecuteTransferAsync(Guid userId, TransferRequestDto transferRequest)
+        {
+            // Fresh reads on every attempt (the context was cleared first), so balances are current.
+            var sourceAccount = await _context.Accounts
+                .FirstOrDefaultAsync(a => a.AccountNumber == transferRequest.SourceAccountNumber);
+
+            if (sourceAccount == null)
+            {
+                return ServiceResult<TransactionDto>.Failure("SourceAccountNotFound", "Source account was not found.");
+            }
+
+            if (sourceAccount.UserId != userId)
+            {
+                return ServiceResult<TransactionDto>.Failure("UnauthorizedAccountAccess", "You do not have access to this source account.");
+            }
+
+            var destinationAccount = await _context.Accounts
+                .FirstOrDefaultAsync(a => a.AccountNumber == transferRequest.DestinationAccountNumber);
+
+            if (destinationAccount == null)
+            {
+                return ServiceResult<TransactionDto>.Failure("DestinationAccountNotFound", "Destination account was not found.");
+            }
+
+            // The balance may have dropped since the first check, so it is checked again against what is stored now.
+            if (sourceAccount.Balance < transferRequest.Amount)
+            {
+                return ServiceResult<TransactionDto>.Failure("InsufficientFunds", "Insufficient funds in the source account.");
             }
 
             // Using DB Transaction to guarantee atomicity of the money transfer
@@ -262,7 +299,8 @@ namespace SmartBank.Infrastructure.Services
 
             try
             {
-                // 4. Update balances
+                // 4. Update balances. Both rows carry a version: if either was changed by someone else since the read
+                // above, SaveChanges writes nothing and throws DbUpdateConcurrencyException.
                 sourceAccount.Balance -= transferRequest.Amount;
                 destinationAccount.Balance += transferRequest.Amount;
 
@@ -287,7 +325,7 @@ namespace SmartBank.Infrastructure.Services
                     UserId = userId,
                     Action = "TransferMoney",
                     Details = $"Transferred {transferRequest.Amount} TRY from {sourceAccount.AccountNumber} to {destinationAccount.AccountNumber}",
-                    IpAddress = "127.0.0.1",
+                    IpAddress = ClientIp,
                     CreatedAt = DateTime.UtcNow
                 };
                 _context.AuditLogs.Add(audit);
@@ -312,14 +350,20 @@ namespace SmartBank.Infrastructure.Services
 
                 return ServiceResult<TransactionDto>.Success(dto);
             }
+            catch (Exception ex) when (DatabaseConflict.IsRetryable(ex))
+            {
+                // Someone else got in the way (version conflict or deadlock victim): undo and let the retry loop start over.
+                await dbTransaction.RollbackAsync();
+                throw;
+            }
             catch (Exception ex)
             {
                 // Rollback EF transaction changes on general exceptions
                 await dbTransaction.RollbackAsync();
-                return ServiceResult<TransactionDto>.Failure("TransactionFailed", $"An error occurred during transaction: {ex.Message}");
+                _logger.LogError(ex, "Transfer failed.");
+                return ServiceResult<TransactionDto>.Failure("TransactionFailed", "The transfer could not be completed. Please try again.");
             }
         }
-
         public async Task<ServiceResult<AccountDto>> CreateAccountAsync(Guid userId, string currency, string accountType = "DemandDeposit")
         {
             var userExists = await _context.Users.AnyAsync(u => u.Id == userId);
@@ -337,10 +381,10 @@ namespace SmartBank.Infrastructure.Services
             var cardNum = GenerateCardNumber();
             var cvv = GenerateCvv();
 
-            var accountCode = "ACC-" + new Random().Next(1000000, 9999999).ToString();
+            var accountCode = "ACC-" + SecureRandom.Next(1000000, 10000000);
             while (await _context.Accounts.AnyAsync(a => a.AccountCode == accountCode))
             {
-                accountCode = "ACC-" + new Random().Next(1000000, 9999999).ToString();
+                accountCode = "ACC-" + SecureRandom.Next(1000000, 10000000);
             }
 
             var newAccount = new Account
@@ -351,7 +395,6 @@ namespace SmartBank.Infrastructure.Services
                 Balance = 0.00m,
                 Currency = string.IsNullOrEmpty(currency) ? "TRY" : currency.ToUpper(),
                 EncryptedCardNumber = Core.Common.EncryptionHelper.Encrypt(cardNum),
-                EncryptedCardCvv = Core.Common.EncryptionHelper.Encrypt(cvv),
                 CardTheme = "theme-neon-blue",
                 ExpiryDate = DateTime.UtcNow.AddYears(5).ToString("MM/yy"),
                 AccountType = string.IsNullOrEmpty(accountType) ? "DemandDeposit" : accountType
@@ -395,8 +438,7 @@ namespace SmartBank.Infrastructure.Services
             var dtos = cards.Select(cc => new CreditCardDto
             {
                 Id = cc.Id,
-                CardNumber = Core.Common.EncryptionHelper.Decrypt(cc.EncryptedCardNumber),
-                CardCvv = Core.Common.EncryptionHelper.Decrypt(cc.EncryptedCardCvv),
+                CardNumber = SafeDecrypt(cc.EncryptedCardNumber),
                 ExpiryDate = cc.ExpiryDate,
                 CardLimit = cc.CardLimit,
                 CurrentDebt = cc.CurrentDebt,
@@ -463,7 +505,10 @@ namespace SmartBank.Infrastructure.Services
             return ServiceResult<List<CreditCardStatementDto>>.Success(dtos);
         }
 
-        public async Task<ServiceResult<bool>> PayCreditCardDebtAsync(Guid userId, Guid cardId, PayCreditCardDebtDto payRequest)
+        public Task<ServiceResult<bool>> PayCreditCardDebtAsync(Guid userId, Guid cardId, PayCreditCardDebtDto payRequest) =>
+            RunWithConcurrencyRetryAsync(() => PayCreditCardDebtAsyncCore(userId, cardId, payRequest));
+
+        private async Task<ServiceResult<bool>> PayCreditCardDebtAsyncCore(Guid userId, Guid cardId, PayCreditCardDebtDto payRequest)
         {
             if (payRequest.Amount <= 0)
             {
@@ -505,7 +550,7 @@ namespace SmartBank.Infrastructure.Services
                     SourceAccountId = sourceAccount.Id,
                     DestinationAccountId = null,
                     Amount = payRequest.Amount,
-                    Description = $"Kredi Kartı Borç Ödeme - Kart: *{(Core.Common.EncryptionHelper.Decrypt(card.EncryptedCardNumber).Length > 4 ? Core.Common.EncryptionHelper.Decrypt(card.EncryptedCardNumber).Substring(12) : "****")}",
+                    Description = $"Kredi Kartı Borç Ödeme - Kart: *{CardMasking.LastFour(SafeDecrypt(card.EncryptedCardNumber))}",
                     Type = TransactionType.Transfer,
                     Category = "Fatura",
                     CreatedAt = DateTime.UtcNow
@@ -531,14 +576,23 @@ namespace SmartBank.Infrastructure.Services
 
                 return ServiceResult<bool>.Success(true);
             }
+            catch (Exception ex) when (DatabaseConflict.IsRetryable(ex))
+            {
+                await dbTransaction.RollbackAsync();
+                throw;
+            }
             catch (Exception ex)
             {
                 await dbTransaction.RollbackAsync();
-                return ServiceResult<bool>.Failure("PaymentFailed", $"Payment failed: {ex.Message}");
+                _logger.LogError(ex, "Credit card payment failed.");
+                return ServiceResult<bool>.Failure("PaymentFailed", "The payment could not be completed. Please try again.");
             }
         }
 
-        public async Task<ServiceResult<CreditCardDto>> ChargeCreditCardAsync(Guid userId, Guid cardId, decimal amount, string description)
+        public Task<ServiceResult<CreditCardDto>> ChargeCreditCardAsync(Guid userId, Guid cardId, decimal amount, string description) =>
+            RunWithConcurrencyRetryAsync(() => ChargeCreditCardAsyncCore(userId, cardId, amount, description));
+
+        private async Task<ServiceResult<CreditCardDto>> ChargeCreditCardAsyncCore(Guid userId, Guid cardId, decimal amount, string description)
         {
             if (amount <= 0)
             {
@@ -576,7 +630,7 @@ namespace SmartBank.Infrastructure.Services
                     UserId = userId,
                     Action = "CreditCardCharge",
                     Details = $"Kredi kartından harcama yapıldı. Tutar: {amount} TRY, İşyeri: {ccTx.Description}",
-                    IpAddress = "127.0.0.1",
+                    IpAddress = ClientIp,
                     CreatedAt = DateTime.UtcNow
                 };
                 _context.AuditLogs.Add(auditLog);
@@ -587,8 +641,7 @@ namespace SmartBank.Infrastructure.Services
                 var dto = new CreditCardDto
                 {
                     Id = card.Id,
-                    CardNumber = Core.Common.EncryptionHelper.Decrypt(card.EncryptedCardNumber),
-                    CardCvv = Core.Common.EncryptionHelper.Decrypt(card.EncryptedCardCvv),
+                    CardNumber = SafeDecrypt(card.EncryptedCardNumber),
                     ExpiryDate = card.ExpiryDate,
                     CardLimit = card.CardLimit,
                     CurrentDebt = card.CurrentDebt,
@@ -598,14 +651,23 @@ namespace SmartBank.Infrastructure.Services
 
                 return ServiceResult<CreditCardDto>.Success(dto);
             }
+            catch (Exception ex) when (DatabaseConflict.IsRetryable(ex))
+            {
+                await dbTransaction.RollbackAsync();
+                throw;
+            }
             catch (Exception ex)
             {
                 await dbTransaction.RollbackAsync();
-                return ServiceResult<CreditCardDto>.Failure("ChargeFailed", $"Charge failed: {ex.Message}");
+                _logger.LogError(ex, "Credit card charge failed.");
+                return ServiceResult<CreditCardDto>.Failure("ChargeFailed", "The charge could not be completed. Please try again.");
             }
         }
 
-        public async Task<ServiceResult<CreditCardStatementDto>> AdvanceStatementPeriodAsync(Guid userId, Guid cardId)
+        public Task<ServiceResult<CreditCardStatementDto>> AdvanceStatementPeriodAsync(Guid userId, Guid cardId) =>
+            RunWithConcurrencyRetryAsync(() => AdvanceStatementPeriodAsyncCore(userId, cardId));
+
+        private async Task<ServiceResult<CreditCardStatementDto>> AdvanceStatementPeriodAsyncCore(Guid userId, Guid cardId)
         {
             var card = await _context.CreditCards
                 .Include(cc => cc.Statements)
@@ -777,35 +839,55 @@ namespace SmartBank.Infrastructure.Services
             return ServiceResult<CreditCardStatementDto>.Success(dto);
         }
 
-        private string GenerateAccountNumber()
+        // Optimistic concurrency. Accounts and credit cards carry a version number; an UPDATE or DELETE only succeeds if
+        // the row is still at the version that was read. When two requests collide, one of them gets
+        // a conflict error instead of silently overwriting the other's balance (a "lost update"), and the
+        // operation is repeated from fresh reads. Only an operation that is safe to run again may go through here:
+        // nothing before the money step may have side effects (one-time codes are checked before it, not inside it).
+        private const int MaxConcurrencyAttempts = 10;
+
+        private async Task<ServiceResult<T>> RunWithConcurrencyRetryAsync<T>(Func<Task<ServiceResult<T>>> operation)
         {
-            var random = new Random();
-            var sb = new System.Text.StringBuilder("TR");
-            for (int i = 0; i < 16; i++)
+            for (var attempt = 1; ; attempt++)
             {
-                sb.Append(random.Next(0, 10));
+                // Start every attempt from fresh reads: anything the context still tracks may be stale.
+                _context.ChangeTracker.Clear();
+
+                try
+                {
+                    return await operation();
+                }
+                catch (Exception ex) when (DatabaseConflict.IsRetryable(ex))
+                {
+                    _context.ChangeTracker.Clear();
+
+                    if (attempt >= MaxConcurrencyAttempts)
+                    {
+                        return ServiceResult<T>.Failure("ConcurrentModification",
+                            "The account was changed by another operation at the same time. Please try again.");
+                    }
+
+                    // A short, growing, random pause spreads out requests that keep colliding.
+                    await Task.Delay(SecureRandom.Next(2, 20 * attempt));
+                }
             }
-            return sb.ToString();
         }
+        private string ClientIp => _clientInfo?.IpAddress ?? "unknown";
 
-        private string GenerateCardNumber()
-        {
-            var random = new Random();
-            var sb = new System.Text.StringBuilder("4");
-            for (int i = 0; i < 15; i++)
-            {
-                sb.Append(random.Next(0, 10));
-            }
-            return sb.ToString();
-        }
+        // Display paths must not fail because one stored card cannot be decrypted (e.g. legacy rows from before v1.1).
+        private static string SafeDecrypt(string? cipherText) =>
+            EncryptionHelper.TryDecrypt(cipherText, out var plain) ? plain : string.Empty;
 
-        private string GenerateCvv()
-        {
-            var random = new Random();
-            return random.Next(100, 1000).ToString();
-        }
+        private string GenerateAccountNumber() => "TR" + SecureRandom.Digits(16);
 
-        public async Task<ServiceResult<bool>> DeleteAccountAsync(Guid userId, Guid accountId, Guid? transferTargetAccountId = null)
+        private string GenerateCardNumber() => "4" + SecureRandom.Digits(15);
+
+        private string GenerateCvv() => SecureRandom.Next(100, 1000).ToString();
+
+        public Task<ServiceResult<bool>> DeleteAccountAsync(Guid userId, Guid accountId, Guid? transferTargetAccountId = null) =>
+            RunWithConcurrencyRetryAsync(() => DeleteAccountAsyncCore(userId, accountId, transferTargetAccountId));
+
+        private async Task<ServiceResult<bool>> DeleteAccountAsyncCore(Guid userId, Guid accountId, Guid? transferTargetAccountId = null)
         {
             var account = await _context.Accounts
                 .FirstOrDefaultAsync(a => a.Id == accountId && a.UserId == userId);
@@ -895,7 +977,7 @@ namespace SmartBank.Infrastructure.Services
                 UserId = userId,
                 Action = "DeleteAccount",
                 Details = $"Deleted account ID: {accountId}. AccountNumber: {account.AccountNumber}",
-                IpAddress = "127.0.0.1",
+                IpAddress = ClientIp,
                 CreatedAt = DateTime.UtcNow
             };
             _context.AuditLogs.Add(audit);
@@ -976,26 +1058,32 @@ namespace SmartBank.Infrastructure.Services
 
         public async Task<ServiceResult<List<StandingOrderDto>>> GetStandingOrdersAsync(Guid userId)
         {
-            var orders = await _context.StandingOrders
-                .Include(so => so.CreditCard)
+            // Decryption cannot be translated to SQL, so load the encrypted value and map in memory.
+            var rows = await _context.StandingOrders
                 .Where(so => so.UserId == userId)
                 .OrderByDescending(so => so.CreatedAt)
-                .Select(so => new StandingOrderDto
+                .Select(so => new
                 {
-                    Id = so.Id,
-                    SourceAccountNumber = so.SourceAccountNumber,
-                    DestinationAccountNumber = so.DestinationAccountNumber,
-                    Amount = so.Amount,
-                    Frequency = so.Frequency,
-                    MaturityDate = so.MaturityDate,
-                    NextExecutionDate = so.NextExecutionDate,
-                    IsActive = so.IsActive,
-                    OrderType = so.OrderType,
-                    CreditCardId = so.CreditCardId,
-                    CreditCardNumber = so.CreditCard != null ? so.CreditCard.EncryptedCardNumber : null,
-                    CreatedAt = so.CreatedAt
+                    Order = so,
+                    EncryptedCardNumber = so.CreditCard != null ? so.CreditCard.EncryptedCardNumber : null
                 })
                 .ToListAsync();
+
+            var orders = rows.Select(r => new StandingOrderDto
+            {
+                Id = r.Order.Id,
+                SourceAccountNumber = r.Order.SourceAccountNumber,
+                DestinationAccountNumber = r.Order.DestinationAccountNumber,
+                Amount = r.Order.Amount,
+                Frequency = r.Order.Frequency,
+                MaturityDate = r.Order.MaturityDate,
+                NextExecutionDate = r.Order.NextExecutionDate,
+                IsActive = r.Order.IsActive,
+                OrderType = r.Order.OrderType,
+                CreditCardId = r.Order.CreditCardId,
+                CreditCardLast4 = r.EncryptedCardNumber == null ? null : CardMasking.LastFour(SafeDecrypt(r.EncryptedCardNumber)),
+                CreatedAt = r.Order.CreatedAt
+            }).ToList();
 
             return ServiceResult<List<StandingOrderDto>>.Success(orders);
         }
@@ -1057,7 +1145,10 @@ namespace SmartBank.Infrastructure.Services
             return ServiceResult<bool>.Success(true);
         }
 
-        public async Task<ServiceResult<TransactionDto>> ExchangeMoneyAsync(Guid userId, ExchangeDto exchangeDto)
+        public Task<ServiceResult<TransactionDto>> ExchangeMoneyAsync(Guid userId, ExchangeDto exchangeDto) =>
+            RunWithConcurrencyRetryAsync(() => ExchangeMoneyAsyncCore(userId, exchangeDto));
+
+        private async Task<ServiceResult<TransactionDto>> ExchangeMoneyAsyncCore(Guid userId, ExchangeDto exchangeDto)
         {
             if (!Guid.TryParse(exchangeDto.SourceAccountId, out var sourceAccountId))
             {
@@ -1172,7 +1263,7 @@ namespace SmartBank.Infrastructure.Services
                 Details = isBuy 
                     ? $"Bought {exchangeDto.Amount} {asset} with {tryCost} TRY. Rate: {rate}"
                     : $"Sold {exchangeDto.Amount} {asset} for {tryCost} TRY. Rate: {rate}",
-                IpAddress = "127.0.0.1",
+                IpAddress = ClientIp,
                 CreatedAt = DateTime.UtcNow
             };
             _context.AuditLogs.Add(audit);
@@ -1204,21 +1295,24 @@ namespace SmartBank.Infrastructure.Services
                 return ServiceResult<CreditCardDto>.Failure("MaxCreditCardsLimitReached", "En fazla 1 adet kredi kartı sahibi olabilirsiniz.");
             }
 
-            var random = new Random();
-            string cardNumber = "4" + string.Join("", Enumerable.Range(0, 15).Select(_ => random.Next(0, 10).ToString()));
-            while (await _context.CreditCards.AnyAsync(cc => cc.EncryptedCardNumber == Core.Common.EncryptionHelper.Encrypt(cardNumber)))
+            // Duplicate check goes through the keyed hash: ciphertext is randomised, so it cannot be compared.
+            string cardNumber = GenerateCardNumber();
+            string cardHash = EncryptionHelper.HashCardNumber(cardNumber);
+            while (await _context.CreditCards.AnyAsync(cc => cc.CardNumberHash == cardHash))
             {
-                cardNumber = "4" + string.Join("", Enumerable.Range(0, 15).Select(_ => random.Next(0, 10).ToString()));
+                cardNumber = GenerateCardNumber();
+                cardHash = EncryptionHelper.HashCardNumber(cardNumber);
             }
 
-            string cvv = random.Next(100, 1000).ToString();
+            // Shown to the user once in this response and never stored.
+            string cvv = GenerateCvv();
             string expiryDate = DateTime.UtcNow.AddYears(8).ToString("MM/yy");
 
             var creditCard = new CreditCard
             {
                 UserId = userId,
                 EncryptedCardNumber = Core.Common.EncryptionHelper.Encrypt(cardNumber),
-                EncryptedCardCvv = Core.Common.EncryptionHelper.Encrypt(cvv),
+                CardNumberHash = cardHash,
                 ExpiryDate = expiryDate,
                 CardLimit = 10000.00m,
                 CurrentDebt = 0.00m,
@@ -1254,62 +1348,10 @@ namespace SmartBank.Infrastructure.Services
             return ServiceResult<CreditCardDto>.Success(dto);
         }
 
-        private async Task Send2FaEmailAsync(string emailAddress, string username, string otpCode)
-        {
-            try
-            {
-                var smtpHost = _configuration["SmtpSettings:Host"] ?? "localhost";
-                var smtpPortStr = _configuration["SmtpSettings:Port"] ?? "25";
-                int.TryParse(smtpPortStr, out var smtpPort);
-                var smtpUsername = _configuration["SmtpSettings:Username"] ?? "";
-                var smtpPassword = _configuration["SmtpSettings:Password"] ?? "";
-                var enableSsl = bool.Parse(_configuration["SmtpSettings:EnableSsl"] ?? "false");
-                var fromAddress = _configuration["SmtpSettings:FromAddress"] ?? "no-reply@smartbank.com";
+        public Task<ServiceResult<TransactionDto>> DepositMoneyAsync(Guid userId, string accountNumber, decimal amount) =>
+            RunWithConcurrencyRetryAsync(() => DepositMoneyAsyncCore(userId, accountNumber, amount));
 
-                using (var mail = new System.Net.Mail.MailMessage())
-                {
-                    mail.From = new System.Net.Mail.MailAddress(fromAddress, "SmartBank Güvenlik");
-                    mail.To.Add(emailAddress);
-                    mail.Subject = "SmartBank Güvenlik Doğrulama Kodu";
-                    
-                    mail.Body = $@"
-                    <html>
-                    <body style='font-family: Arial, sans-serif; background-color: #0d1b2a; color: #e0e1dd; padding: 2rem;'>
-                        <div style='max-width: 600px; margin: 0 auto; background-color: #1b263b; border-radius: 12px; border: 1px solid #415a77; padding: 2rem;'>
-                            <h2 style='color: #00f260; text-align: center; font-size: 1.8rem; margin-top: 0;'>❖ SmartBank Güvenlik</h2>
-                            <p style='font-size: 1.1rem;'>Merhaba <strong>{username}</strong>,</p>
-                            <p style='font-size: 1.1rem; line-height: 1.6;'>Hesabınızdan başlatılan para transferi işlemini onaylamak için aşağıdaki 6 haneli doğrulama kodunu kullanın:</p>
-                            <div style='text-align: center; margin: 2rem 0;'>
-                                <span style='font-size: 2.2rem; font-weight: bold; background-color: #0d1b2a; color: #00f260; padding: 0.75rem 2rem; border-radius: 8px; letter-spacing: 5px; border: 1px solid #415a77;'>{otpCode}</span>
-                            </div>
-                            <p style='color: #a3b18a; font-size: 0.9rem; line-height: 1.6;'>Bu kod 5 dakika boyunca geçerlidir. İşlemi siz başlatmadıysanız lütfen hemen müşteri hizmetlerimizle iletişime geçiniz.</p>
-                            <hr style='border: 0; border-top: 1px solid #415a77; margin: 2rem 0;' />
-                            <p style='font-size: 0.8rem; text-align: center; color: #a3b18a;'>SmartBank A.Ş. &copy; {DateTime.UtcNow.Year}</p>
-                        </div>
-                    </body>
-                    </html>";
-                    mail.IsBodyHtml = true;
-
-                    using (var smtp = new System.Net.Mail.SmtpClient(smtpHost, smtpPort))
-                    {
-                        if (!string.IsNullOrEmpty(smtpUsername))
-                        {
-                            smtp.Credentials = new System.Net.NetworkCredential(smtpUsername, smtpPassword);
-                        }
-                        smtp.EnableSsl = enableSsl;
-                        
-                        await smtp.SendMailAsync(mail);
-                    }
-                }
-                Console.WriteLine($"[SmartBank 2FA Email] Real verification email successfully sent to {emailAddress}.");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[SmartBank 2FA Email Error] Failed to send email to {emailAddress}: {ex.Message}");
-            }
-        }
-
-        public async Task<ServiceResult<TransactionDto>> DepositMoneyAsync(Guid userId, string accountNumber, decimal amount)
+        private async Task<ServiceResult<TransactionDto>> DepositMoneyAsyncCore(Guid userId, string accountNumber, decimal amount)
         {
             if (amount <= 0)
             {
