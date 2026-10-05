@@ -9,7 +9,7 @@
 #   ./scripts/deploy-pages.ps1            # dry run
 #   ./scripts/deploy-pages.ps1 -Push      # publish
 param(
-    [string]$Version = "1.1.0",
+    [string]$Version = "1.2.0",
     [switch]$Push
 )
 
