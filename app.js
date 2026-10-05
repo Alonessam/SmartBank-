@@ -80,6 +80,14 @@ const i18n = {
         "lbl-new-password": "New Password (6 Digits)",
         "btn-forgot-submit": "Reset Password",
         "link-forgot-to-login": "Back to Sign In",
+        "lbl-forgot-code": "Verification Code",
+        "forgot-code": "6-digit code sent to your e-mail",
+        "btn-forgot-send": "Send Code",
+        "ResetCodeSent": "If this T.C. Identity Number is registered, a verification code has been sent to its e-mail address.",
+        "AccountLocked": "Too many failed attempts. Your account is temporarily locked, please try again later.",
+        "TooManyOtpAttempts": "Too many wrong codes. Please request a new code and try again.",
+        "InvalidOrExpiredCode": "Invalid or expired verification code.",
+        "TooManyRequests": "Too many requests. Please wait a moment and try again.",
         
         // SignalR Status
         "StatusAI": "SmartBank AI",
@@ -213,6 +221,14 @@ const i18n = {
         "lbl-new-password": "Yeni Şifre (6 Haneli)",
         "btn-forgot-submit": "Şifreyi Sıfırla",
         "link-forgot-to-login": "Giriş Ekranına Dön",
+        "lbl-forgot-code": "Doğrulama Kodu",
+        "forgot-code": "E-postanıza gelen 6 haneli kod",
+        "btn-forgot-send": "Kod Gönder",
+        "ResetCodeSent": "Bu T.C. Kimlik Numarası kayıtlıysa, e-posta adresine bir doğrulama kodu gönderildi.",
+        "AccountLocked": "Çok fazla başarısız deneme. Hesabınız geçici olarak kilitlendi, lütfen daha sonra tekrar deneyin.",
+        "TooManyOtpAttempts": "Çok fazla hatalı kod girdiniz. Lütfen yeni bir kod isteyip tekrar deneyin.",
+        "InvalidOrExpiredCode": "Geçersiz veya süresi dolmuş doğrulama kodu.",
+        "TooManyRequests": "Çok fazla istek gönderildi. Lütfen biraz bekleyip tekrar deneyin.",
 
         // SignalR Status
         "StatusAI": "SmartBank Yapay Zeka",
@@ -390,6 +406,11 @@ document.addEventListener("DOMContentLoaded", () => {
             window.location.href = "index.html";
             return;
         }
+        if (currentUser.role !== "Agent") {
+            // Not a support agent: nothing here would load anyway (the API refuses), so do not show the page.
+            window.location.href = "dashboard.html";
+            return;
+        }
         document.getElementById("user-display").textContent = currentUser.fullName;
         loadActiveSessions();
         initAgentEvents();
@@ -407,7 +428,8 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 function redirectByUserRole() {
-    if (currentUser.username.toLowerCase().includes("agent")) {
+    // The role is decided by the server (it is also inside the token); the UI only follows it.
+    if (currentUser.role === "Agent") {
         window.location.href = "agent.html";
     } else {
         window.location.href = "dashboard.html";
@@ -459,10 +481,10 @@ function initAuthEvents() {
                 if (errorDiv) errorDiv.classList.add("hidden");
                 if (successDiv) successDiv.classList.add("hidden");
             }
-            const emailInput = document.getElementById("forgot-email");
-            const passInput = document.getElementById("forgot-new-password");
-            if (emailInput) emailInput.value = "";
-            if (passInput) passInput.value = "";
+            ["forgot-tckn", "forgot-code", "forgot-new-password"].forEach((id) => {
+                const input = document.getElementById(id);
+                if (input) input.value = "";
+            });
         });
     }
 
@@ -515,7 +537,7 @@ function initAuthEvents() {
                         return;
                     }
 
-                    saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName });
+                    saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName, role: data.role });
                     redirectByUserRole();
                 } catch (err) {
                     errorDiv.textContent = getLocalizedText("ConnectionError", "Connection to server failed.");
@@ -533,10 +555,10 @@ function initAuthEvents() {
 
                     if (!response.ok) {
                         if (data.errorKey === "Requires2FA") {
-                            // Split simulated OTP from message if present
-                            const otpCode = (data.message || "").split("|OTP:")[1] || "123456";
-                            
-                            // Show simulated SMS Toast
+                            // The server only appends "|OTP:code" in demo mode (Demo:ExposeOtp). Normally the code
+                            // is e-mailed and the toast just says so; there is no fallback code to type.
+                            const otpCode = (data.message || "").split("|OTP:")[1] || "";
+
                             showMockSMSToast(otpCode);
                             
                             // Transform login card to 2FA verification mode
@@ -553,7 +575,7 @@ function initAuthEvents() {
                         return;
                     }
 
-                    saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName });
+                    saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName, role: data.role });
                     redirectByUserRole();
                 } catch (err) {
                     errorDiv.textContent = getLocalizedText("ConnectionError", "Connection to server failed.");
@@ -614,7 +636,7 @@ function initAuthEvents() {
                     return;
                 }
 
-                saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName });
+                saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName, role: data.role });
                 redirectByUserRole();
             } catch (err) {
                 errorDiv.textContent = getLocalizedText("ConnectionError", "Connection to server failed.");
@@ -623,59 +645,100 @@ function initAuthEvents() {
         });
     }
 
-    // Handle Forgot Password Form
+    // Handle Forgot Password: step 1 e-mails a one-time code, step 2 sets the new PIN with that code.
     const forgotForm = document.getElementById("forgot-form");
     if (forgotForm) {
-        forgotForm.addEventListener("submit", async (e) => {
-            e.preventDefault();
-            const tckn = document.getElementById("forgot-tckn").value;
-            const newPassword = document.getElementById("forgot-new-password").value;
-            const errorDiv = document.getElementById("forgot-error");
-            const successDiv = document.getElementById("forgot-success");
+        const errorDiv = document.getElementById("forgot-error");
+        const successDiv = document.getElementById("forgot-success");
+        const btnSend = document.getElementById("btn-forgot-send");
 
+        const hideMessages = () => {
             if (errorDiv) errorDiv.classList.add("hidden");
             if (successDiv) successDiv.classList.add("hidden");
+        };
+        const showError = (text) => {
+            if (!errorDiv) return;
+            errorDiv.textContent = text;
+            errorDiv.classList.remove("hidden");
+        };
+        const showSuccess = (text) => {
+            if (!successDiv) return;
+            successDiv.textContent = text;
+            successDiv.classList.remove("hidden");
+        };
+        const errorTextFrom = (data, fallback) => {
+            if (data.errors) return Object.values(data.errors).flat().join(" ");
+            if (data.errorKey) return getLocalizedText(data.errorKey, data.message || fallback);
+            return data.message || fallback;
+        };
 
-            try {
-                const response = await fetch(`${API_URL}/auth/forgot-password`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ tckn, newPassword })
-                });
+        if (btnSend) {
+            btnSend.addEventListener("click", async () => {
+                const tckn = document.getElementById("forgot-tckn").value.trim();
+                hideMessages();
 
-                const data = await response.json();
-
-                if (!response.ok) {
-                    let errMsg = "Password reset failed";
-                    if (data.errors) {
-                        errMsg = Object.values(data.errors).flat().join(" ");
-                    } else if (data.errorKey) {
-                        errMsg = getLocalizedText(data.errorKey, data.message || errMsg);
-                    } else if (data.message) {
-                        errMsg = data.message;
-                    }
-                    if (errorDiv) {
-                        errorDiv.textContent = errMsg;
-                        errorDiv.classList.remove("hidden");
-                    }
+                if (!/^\d{11}$/.test(tckn)) {
+                    showError(currentLanguage === "tr" ? "T.C. Kimlik Numarası 11 haneli olmalıdır." : "T.C. Identity Number must be 11 digits.");
                     return;
                 }
 
-                if (successDiv) {
-                    successDiv.textContent = getLocalizedText("PasswordResetSuccess", "Password reset successfully!");
-                    successDiv.classList.remove("hidden");
+                btnSend.disabled = true;
+                try {
+                    const response = await fetch(`${API_URL}/auth/forgot-password`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ tckn })
+                    });
+                    const data = await response.json();
+
+                    if (!response.ok) {
+                        showError(errorTextFrom(data, "Could not send the code"));
+                        btnSend.disabled = false;
+                        return;
+                    }
+
+                    // The answer is the same whether or not the T.C. number is registered.
+                    showSuccess(getLocalizedText("ResetCodeSent", data.message));
+                    const codeInput = document.getElementById("forgot-code");
+                    if (codeInput) codeInput.focus();
+
+                    // The server also throttles repeats; this just keeps the button from being hammered.
+                    setTimeout(() => { btnSend.disabled = false; }, 60000);
+                } catch (err) {
+                    showError(getLocalizedText("ConnectionError", "Connection to server failed."));
+                    btnSend.disabled = false;
                 }
-                
-                // Clear fields
-                const emailInput = document.getElementById("forgot-email");
-                const passInput = document.getElementById("forgot-new-password");
-                if (emailInput) emailInput.value = "";
-                if (passInput) passInput.value = "";
+            });
+        }
+
+        forgotForm.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const tckn = document.getElementById("forgot-tckn").value.trim();
+            const code = document.getElementById("forgot-code").value.trim();
+            const newPassword = document.getElementById("forgot-new-password").value;
+
+            hideMessages();
+
+            try {
+                const response = await fetch(`${API_URL}/auth/reset-password`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ tckn, code, newPassword })
+                });
+                const data = await response.json();
+
+                if (!response.ok) {
+                    showError(errorTextFrom(data, "Password reset failed"));
+                    return;
+                }
+
+                showSuccess(getLocalizedText("PasswordResetSuccess", "Password reset successfully!"));
+                ["forgot-tckn", "forgot-code", "forgot-new-password"].forEach((id) => {
+                    const input = document.getElementById(id);
+                    if (input) input.value = "";
+                });
             } catch (err) {
-                if (errorDiv) {
-                    errorDiv.textContent = getLocalizedText("ConnectionError", "Connection to server failed.");
-                    errorDiv.classList.remove("hidden");
-                }
+                showError(getLocalizedText("ConnectionError", "Connection to server failed."));
             }
         });
     }
@@ -1223,7 +1286,8 @@ function updateCardPreview(cardNumber, cvv, expiryDate, theme, typeText) {
         previewExpiry.textContent = "EXP " + (expiryDate || "12/31");
     }
     if (previewCvv) {
-        previewCvv.textContent = cvv || "000";
+        // The CVV is never stored: it only arrives in the response that issues the card.
+        previewCvv.textContent = cvv || "•••";
     }
     if (previewType) {
         previewType.textContent = typeText || "DEBIT";
@@ -1637,7 +1701,7 @@ function init2FASettings() {
                     "Content-Type": "application/json",
                     "Authorization": `Bearer ${currentToken}`
                 },
-                body: JSON.stringify({ enable })
+                body: JSON.stringify({ Enable: enable })
             });
 
             if (!response.ok) {
@@ -1657,9 +1721,15 @@ function showMockSMSToast(otpCode) {
     const textEl = document.getElementById("sms-text");
     if (!toast || !textEl) return;
 
-    const messageTemplate = currentLanguage === "tr" 
-        ? `SmartBank SMS: Güvenlik doğrulama kodunuz: ${otpCode}. Lütfen bu kodu kimseyle paylaşmayın.` 
-        : `SmartBank SMS: Your security verification code is ${otpCode}. Do not share it.`;
+    // Without a code (the normal case) the server e-mailed it: say so instead of showing a made-up code.
+    // With a code the server is in demo mode (Demo:ExposeOtp) and the toast stands in for the mailbox.
+    const messageTemplate = !otpCode
+        ? (currentLanguage === "tr"
+            ? "SmartBank: Doğrulama kodu kayıtlı e-posta adresinize gönderildi."
+            : "SmartBank: A verification code was sent to your registered e-mail address.")
+        : (currentLanguage === "tr"
+            ? `SmartBank SMS: Güvenlik doğrulama kodunuz: ${otpCode}. Lütfen bu kodu kimseyle paylaşmayın.`
+            : `SmartBank SMS: Your security verification code is ${otpCode}. Do not share it.`);
 
     textEl.textContent = messageTemplate;
     toast.classList.remove("hidden");
@@ -2516,6 +2586,99 @@ function initCreditCardEvents() {
     const advCcBtn = document.getElementById("btn-cc-advance-period");
     if (advCcBtn) {
         advCcBtn.addEventListener("click", handleAdvancePeriod);
+    }
+
+    // Credit Card Charge Form Handler
+    const chargeForm = document.getElementById("cc-charge-form");
+    if (chargeForm) {
+        chargeForm.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            if (!activeCreditCardId) return;
+
+            const desc = document.getElementById("cc-charge-desc").value.trim();
+            const amount = parseFloat(document.getElementById("cc-charge-amount").value);
+            const msgDiv = document.getElementById("cc-charge-message");
+            const submitBtn = document.getElementById("btn-cc-charge-submit");
+
+            if (msgDiv) {
+                msgDiv.classList.add("hidden");
+            }
+            submitBtn.disabled = true;
+
+            try {
+                const response = await fetch(`${API_URL}/banking/credit-cards/${activeCreditCardId}/charge?amount=${amount}&description=${encodeURIComponent(desc)}`, {
+                    method: "POST",
+                    headers: {
+                        "Authorization": `Bearer ${currentToken}`
+                    }
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    if (msgDiv) {
+                        msgDiv.textContent = currentLanguage === "tr" ? "Harcama başarıyla yapıldı!" : "Transaction approved!";
+                        msgDiv.className = "alert alert-success";
+                        msgDiv.classList.remove("hidden");
+                    }
+                    chargeForm.reset();
+                    loadAccounts();
+                    loadCreditCards().then(() => {
+                        if (activeCreditCardId) {
+                            fetch(`${API_URL}/banking/credit-cards`, {
+                                headers: { "Authorization": `Bearer ${currentToken}` }
+                            }).then(r => r.json()).then(cards => {
+                                const c = cards.find(x => x.id === activeCreditCardId);
+                                if (c) {
+                                    const limitEl = document.getElementById("cc-details-limit");
+                                    const availEl = document.getElementById("cc-details-avail");
+                                    const debtEl = document.getElementById("cc-details-debt");
+                                    if (limitEl) limitEl.textContent = `${c.cardLimit.toLocaleString('tr-TR', {minimumFractionDigits:2, maximumFractionDigits:2})} TRY`;
+                                    if (availEl) availEl.textContent = `${(c.cardLimit - c.currentDebt).toLocaleString('tr-TR', {minimumFractionDigits:2, maximumFractionDigits:2})} TRY`;
+                                    if (debtEl) debtEl.textContent = `${c.currentDebt.toLocaleString('tr-TR', {minimumFractionDigits:2, maximumFractionDigits:2})} TRY`;
+                                    
+                                    fetch(`${API_URL}/banking/credit-cards/${activeCreditCardId}/statements`, {
+                                        headers: { "Authorization": `Bearer ${currentToken}` }
+                                    }).then(res => res.json()).then(statements => {
+                                        const latest = statements[statements.length - 1];
+                                        if (latest) {
+                                            const tbody = document.getElementById("cc-stmt-transactions-body");
+                                            if (tbody) {
+                                                if (latest.transactions && latest.transactions.length > 0) {
+                                                    tbody.innerHTML = latest.transactions.map(t => `
+                                                        <tr>
+                                                            <td>${new Date(t.createdAt).toLocaleDateString(currentLanguage === 'tr' ? 'tr-TR' : 'en-US')}</td>
+                                                            <td>${t.description}</td>
+                                                            <td class="text-right" style="color: #ff4b5c;">-${t.amount.toFixed(2)} TRY</td>
+                                                        </tr>
+                                                    `).join("");
+                                                } else {
+                                                    tbody.innerHTML = `<tr><td colspan="3" class="text-center text-muted">Harcama bulunmuyor.</td></tr>`;
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
+                            });
+                        }
+                    });
+                } else {
+                    if (msgDiv) {
+                        msgDiv.textContent = currentLanguage === "tr" ? (data.message || "Harcama reddedildi (Limit yetersiz).") : "Transaction declined (Insufficient limit).";
+                        msgDiv.className = "alert alert-danger";
+                        msgDiv.classList.remove("hidden");
+                    }
+                }
+            } catch (err) {
+                if (msgDiv) {
+                    msgDiv.textContent = "Bağlantı hatası.";
+                    msgDiv.className = "alert alert-danger";
+                    msgDiv.classList.remove("hidden");
+                }
+            } finally {
+                submitBtn.disabled = false;
+            }
+        });
     }
 
     const applyCcBtn = document.getElementById("btn-apply-creditcard");

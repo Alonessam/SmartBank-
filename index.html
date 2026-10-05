@@ -122,7 +122,14 @@
                     <form id="forgot-form" novalidate>
                         <div class="form-group">
                             <label id="lbl-email-forgot" for="forgot-tckn">T.C. Kimlik Numarası</label>
-                            <input type="text" id="forgot-tckn" class="form-control" required maxlength="11" pattern="\d*" placeholder="Enter registered T.C. Kimlik Numarası">
+                            <div style="display: flex; gap: 0.5rem;">
+                                <input type="text" id="forgot-tckn" class="form-control" required maxlength="11" pattern="\d*" placeholder="Enter registered T.C. Kimlik Numarası">
+                                <button type="button" id="btn-forgot-send" class="btn btn-secondary" style="white-space: nowrap;">Send Code</button>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label id="lbl-forgot-code" for="forgot-code">Verification Code</label>
+                            <input type="text" id="forgot-code" class="form-control" required maxlength="6" pattern="\d*" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code sent to your e-mail">
                         </div>
                         <div class="form-group">
                             <label id="lbl-new-password" for="forgot-new-password">New Password</label>
@@ -157,6 +164,6 @@
     </main>
 
     <!-- Core App JS -->
-    <script src="app.js?v=1.0.1"></script>
+    <script src="app.js?v=1.1.0"></script>
 </body>
 </html>
