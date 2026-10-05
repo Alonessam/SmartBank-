@@ -184,7 +184,9 @@ dotnet run --project src/SmartBank.API --launch-profile http
 ```
 
 ### 4. Run the Client Portal
-Open `src/SmartBank.Web/index.html` directly in a browser or host it with any static web server (such as VS Code's Live Server).
+Serve `src/SmartBank.Web` from a local web server, for example VS Code's **Live Server** (right-click `index.html`, *Open with Live Server*, usually `http://127.0.0.1:5500`). On Windows, `baslat.bat` in the repository root starts the API (step 3) in one go.
+
+> **Do not open `index.html` straight from disk.** A page opened from a file has no host name, so `app.js` then talks to the live Render API instead of your local one (it only uses `http://localhost:5038` when the page itself is served from `localhost` or `127.0.0.1`).
 
 ### 5. Run the Tests
 
@@ -390,7 +392,9 @@ dotnet run --project src/SmartBank.API --launch-profile http
 API sunucusu `http://localhost:5038` portunda çalışacaktır.
 
 ### 4. Arayüzü Açın
-`src/SmartBank.Web/index.html` dosyasını tarayıcınızda doğrudan açarak ya da bir Local Web Server (Live Server vb.) üzerinden uygulamayı görüntüleyebilirsiniz.
+`src/SmartBank.Web` klasörünü yerel bir web sunucusundan sunun, örneğin VS Code **Live Server** ile (`index.html`'e sağ tık, *Open with Live Server*, genelde `http://127.0.0.1:5500`). Windows'ta depo kökündeki `baslat.bat` API'yi (3. adım) tek seferde başlatır.
+
+> **`index.html`'i doğrudan diskten açmayın.** Dosyadan açılan sayfanın host adı olmadığı için `app.js` yerel API'niz yerine canlı Render API'sine bağlanır (`http://localhost:5038` adresini yalnızca sayfanın kendisi `localhost` veya `127.0.0.1` üzerinden sunulurken kullanır).
 
 ### 5. Testleri Çalıştırın
 
