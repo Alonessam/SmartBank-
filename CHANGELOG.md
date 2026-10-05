@@ -2,7 +2,21 @@
 
 ## [1.2.0] - unreleased
 
+### Upgrade checklist (v1.2)
+
+1. **Run the database script first:** [`docs/deploy/v1.2-postgres-upgrade.sql`](docs/deploy/v1.2-postgres-upgrade.sql) in the Supabase SQL
+   editor. It creates the `RefreshTokens` table. The new API reads that table at every sign-in, so deploying the API before
+   the script makes sign-in fail with a 500.
+2. Set `Brevo__ApiKey` and `Brevo__SenderEmail` on Render (see Added below), then merge to `main` (Render redeploys).
+3. Publish the frontend with `scripts/deploy-pages.ps1 -Push`. Everybody has to sign in once more.
+
 ### Security
+
+- **Access tokens now last 15 minutes instead of 7 days, and sessions can be ended.** A single-use refresh token (stored only as
+  a SHA-256 hash, rotated on every use) renews the access token. Logging out, resetting the password or locking the account
+  revokes the sessions, and presenting an already-used refresh token revokes the whole session family. New endpoints:
+  `POST /api/auth/refresh` and `POST /api/auth/logout`. The web app refreshes silently and signs the user out when the refresh
+  token is refused. Config: `JwtSettings__AccessTokenMinutes`, `JwtSettings__RefreshTokenDays`. Details: `docs/DEFENSE.md` (T12).
 
 - **Fixed a stored cross-site-scripting hole in the web app.** Text from other users (transfer descriptions, contact aliases,
   chat messages, support titles, statement rows) was inserted into the page as HTML, so a transfer description such as

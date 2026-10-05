@@ -18,5 +18,11 @@ namespace SmartBank.Core.Interfaces
         Task<ServiceResult<bool>> Toggle2FaAsync(Guid userId, bool enable);
         Task<ServiceResult<bool>> Get2FaStatusAsync(Guid userId);
         Task<ServiceResult<AuthResponseDto>> Verify2FaAsync(Verify2FaDto verify2FaDto, string? ipAddress = null);
+
+        /// <summary>Exchanges a refresh token for a new access token and a new refresh token (rotation). The old one stops working.</summary>
+        Task<ServiceResult<AuthResponseDto>> RefreshAsync(string refreshToken, string? ipAddress = null);
+
+        /// <summary>Ends the session the refresh token belongs to. Never reveals whether the token was valid.</summary>
+        Task LogoutAsync(string refreshToken, string? ipAddress = null);
     }
 }

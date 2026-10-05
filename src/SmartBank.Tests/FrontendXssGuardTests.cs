@@ -56,6 +56,25 @@ namespace SmartBank.Tests
         }
 
         [Fact]
+        public void The_access_token_is_never_built_into_a_url_by_hand()
+        {
+            // URLs end up in logs, history and Referer headers. SignalR asks for the token through accessTokenFactory instead.
+            Assert.DoesNotContain("access_token=", Read("chat.js"));
+            Assert.DoesNotContain("access_token=", Read("app.js"));
+            Assert.Contains("accessTokenFactory", Read("chat.js"));
+        }
+
+        [Fact]
+        public void Every_authenticated_call_goes_through_the_refreshing_fetch_wrapper()
+        {
+            var app = Read("app.js");
+
+            Assert.Contains("window.fetch = async function", app);
+            Assert.Contains("/auth/refresh", app);
+            Assert.Contains("/auth/logout", app);
+        }
+
+        [Fact]
         public void The_escaping_helper_exists_and_escapes_quotes_as_well_as_angle_brackets()
         {
             var app = Read("app.js");

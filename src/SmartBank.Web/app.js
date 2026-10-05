@@ -349,16 +349,131 @@ function getLocalizedText(key, defaultFallbackText) {
     return dict[key] || defaultFallbackText;
 }
 
-// Auth Helpers
-function saveAuth(token, user) {
+// ---- Session: a 15-minute access token plus a single-use refresh token (see docs/DEFENSE.md, T12) ----
+// Every authenticated API call goes through the fetch wrapper below: it refreshes the access token shortly before it
+// expires, and once (then retries) when the server answers 401. If the refresh token is refused too, the user is signed out.
+const rawFetch = window.fetch.bind(window);
+let refreshInFlight = null;
+const REFRESH_MARGIN_MS = 30 * 1000;
+
+function saveAuth(token, user, refreshToken, accessTokenExpiresAt) {
     localStorage.setItem("token", token);
     localStorage.setItem("user", JSON.stringify(user));
+    if (refreshToken) localStorage.setItem("refreshToken", refreshToken);
+    else localStorage.removeItem("refreshToken");
+    const expiresMs = accessTokenExpiresAt ? Date.parse(accessTokenExpiresAt) : 0;
+    if (expiresMs) localStorage.setItem("tokenExpiresAt", String(expiresMs));
+    else localStorage.removeItem("tokenExpiresAt");
     currentToken = token;
     currentUser = user;
 }
 
+// Another tab may have refreshed already (the refresh token is single-use): take over what it stored.
+function adoptStoredSession() {
+    const stored = localStorage.getItem("token");
+    if (stored && stored !== currentToken) {
+        currentToken = stored;
+        currentUser = JSON.parse(localStorage.getItem("user")) || currentUser;
+        return true;
+    }
+    return false;
+}
+
+function tokenIsExpiring() {
+    const expiresMs = Number(localStorage.getItem("tokenExpiresAt")) || 0;
+    return expiresMs > 0 && Date.now() > expiresMs - REFRESH_MARGIN_MS;
+}
+
+// Resolves to "ok", "denied" (sign in again) or "error" (server or network problem: keep the session and try later).
+function refreshSession() {
+    if (refreshInFlight) return refreshInFlight;
+
+    refreshInFlight = (async () => {
+        const refreshToken = localStorage.getItem("refreshToken");
+        if (!refreshToken) return "denied";
+
+        try {
+            const response = await rawFetch(`${API_URL}/auth/refresh`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ refreshToken })
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                saveAuth(data.token, currentUser || JSON.parse(localStorage.getItem("user")), data.refreshToken, data.accessTokenExpiresAt);
+                return "ok";
+            }
+
+            if (response.status === 401) {
+                // Lost a race with another tab? Then it already stored a newer token.
+                await new Promise(resolve => setTimeout(resolve, 500));
+                if (localStorage.getItem("refreshToken") !== refreshToken && adoptStoredSession()) return "ok";
+                return "denied";
+            }
+
+            return "error";
+        } catch (err) {
+            return "error";
+        }
+    })().finally(() => { refreshInFlight = null; });
+
+    return refreshInFlight;
+}
+
+// For callers outside fetch (the SignalR connection asks for a token every time it connects).
+async function ensureFreshAccessToken() {
+    adoptStoredSession();
+    if (tokenIsExpiring()) {
+        const outcome = await refreshSession();
+        if (outcome === "denied") logout();
+    }
+    return currentToken;
+}
+
+window.fetch = async function (input, init) {
+    const url = typeof input === "string" ? input : (input && input.url) || "";
+    const headers = new Headers((init && init.headers) || (typeof input !== "string" && input && input.headers) || undefined);
+
+    // Only authenticated calls to our own API: login, register, refresh and the rest stay untouched.
+    if (!url.startsWith(API_URL) || !headers.has("Authorization")) {
+        return rawFetch(input, init);
+    }
+
+    await ensureFreshAccessToken();
+    headers.set("Authorization", `Bearer ${currentToken}`);
+    let response = await rawFetch(input, { ...init, headers });
+
+    if (response.status === 401) {
+        const outcome = await refreshSession();
+        if (outcome === "ok") {
+            headers.set("Authorization", `Bearer ${currentToken}`);
+            response = await rawFetch(input, { ...init, headers });
+        } else if (outcome === "denied") {
+            logout();
+        }
+    }
+
+    return response;
+};
+
 function logout() {
-    localStorage.clear();
+    const refreshToken = localStorage.getItem("refreshToken");
+    if (refreshToken) {
+        // Tell the server to end the session; keepalive lets the request finish while the page navigates away.
+        try {
+            rawFetch(`${API_URL}/auth/logout`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ refreshToken }),
+                keepalive: true
+            }).catch(() => {});
+        } catch (err) { /* signing out locally is what matters */ }
+    }
+
+    ["token", "user", "refreshToken", "tokenExpiresAt"].forEach(key => localStorage.removeItem(key));
+    currentToken = null;
+    currentUser = null;
     window.location.href = "index.html";
 }
 
@@ -555,7 +670,7 @@ function initAuthEvents() {
                         return;
                     }
 
-                    saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName, role: data.role });
+                    saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName, role: data.role }, data.refreshToken, data.accessTokenExpiresAt);
                     redirectByUserRole();
                 } catch (err) {
                     errorDiv.textContent = getLocalizedText("ConnectionError", "Connection to server failed.");
@@ -593,7 +708,7 @@ function initAuthEvents() {
                         return;
                     }
 
-                    saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName, role: data.role });
+                    saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName, role: data.role }, data.refreshToken, data.accessTokenExpiresAt);
                     redirectByUserRole();
                 } catch (err) {
                     errorDiv.textContent = getLocalizedText("ConnectionError", "Connection to server failed.");
@@ -654,7 +769,7 @@ function initAuthEvents() {
                     return;
                 }
 
-                saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName, role: data.role });
+                saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName, role: data.role }, data.refreshToken, data.accessTokenExpiresAt);
                 redirectByUserRole();
             } catch (err) {
                 errorDiv.textContent = getLocalizedText("ConnectionError", "Connection to server failed.");
