@@ -54,7 +54,7 @@ flowchart LR
     end
     Svc --> DB[("PostgreSQL<br/>Supabase")]
     Svc -.-> AI["Ollama / Gemini<br/>+ FAQ retrieval"]
-    Svc -.-> SMTP["SMTP<br/>one-time codes"]
+    Svc -.-> SMTP["Brevo API / SMTP<br/>one-time codes"]
 ```
 
 Layers: `SmartBank.Core` (entities, DTOs, interfaces and the pure security rules for one-time codes and lockout), `SmartBank.Infrastructure` (EF Core, services, background worker), `SmartBank.API` (controllers, SignalR hub, middleware), `SmartBank.Web` (static frontend) and `SmartBank.Tests`.
@@ -169,7 +169,8 @@ This generates random values for `JwtSettings:Key` and `Encryption:Key`. To add 
 | `Encryption__Key` | AES-256 key, base64 of exactly 32 random bytes |
 | `ConnectionStrings__DefaultConnection` | Database connection string |
 | `GeminiSettings__ApiKey` | Optional, Gemini API key |
-| `SmtpSettings__Host`, `__Port`, `__Username`, `__Password`, `__EnableSsl`, `__FromAddress` | SMTP server used to e-mail one-time codes. Without `Host`, no e-mail is sent and **password reset cannot be completed** |
+| `Brevo__ApiKey`, `Brevo__SenderEmail`, `Brevo__SenderName` | **Recommended on Render.** E-mails one-time codes through the [Brevo](https://www.brevo.com) HTTPS API (free tier: 300 mails/day). `SenderEmail` must be a sender address verified in Brevo; the API refuses to start if only the key is set. Free hosts block SMTP ports, which is why this goes over HTTPS. A free-mail sender such as `@gmail.com` cannot be signed by Brevo, so some providers may put the mail in spam |
+| `SmtpSettings__Host`, `__Port`, `__Username`, `__Password`, `__EnableSsl`, `__FromAddress` | Plain SMTP, used only when `Brevo__ApiKey` is not set (local development, or a host that allows SMTP). With neither Brevo nor `Host`, no e-mail is sent and **password reset cannot be completed** |
 | `Demo__ExposeOtp` | `false` by default. If `true`, 2FA/transfer codes are also returned in API responses and written to the log so the demo works without a mailbox. **This removes the value of the second factor. Never enable it where real data lives.** The local `http`/`https` launch profiles enable it |
 | `RateLimiting__Auth__PermitLimit`, `__WindowSeconds` | Per-IP limit on `/api/auth/*` (default 10 requests per 60 s) |
 | `Cors__AllowedOrigins__0`, `__1`, … | Browser origins allowed to call the API (default `https://alonessam.github.io`). Anything else is rejected. In Development, pages opened from disk and `localhost` are also accepted |
@@ -376,7 +377,8 @@ Bu betik `JwtSettings:Key` ve `Encryption:Key` için rastgele değerler üretir.
 | `Encryption__Key` | AES-256 anahtarı, tam 32 rastgele baytın base64 hâli |
 | `ConnectionStrings__DefaultConnection` | Veritabanı bağlantı dizesi |
 | `GeminiSettings__ApiKey` | İsteğe bağlı, Gemini API anahtarı |
-| `SmtpSettings__Host`, `__Port`, `__Username`, `__Password`, `__EnableSsl`, `__FromAddress` | Tek kullanımlık kodları e-postayla göndermek için SMTP sunucusu. `Host` yoksa e-posta gönderilmez ve **parola sıfırlama tamamlanamaz** |
+| `Brevo__ApiKey`, `Brevo__SenderEmail`, `Brevo__SenderName` | **Render için önerilen.** Tek kullanımlık kodları [Brevo](https://www.brevo.com) HTTPS API'si üzerinden e-postayla gönderir (ücretsiz katman: günde 300 e-posta). `SenderEmail`, Brevo'da doğrulanmış bir gönderen adresi olmalıdır; yalnızca anahtar verilirse API başlamayı reddeder. Ücretsiz barındırıcılar SMTP portlarını engeller, bu yüzden HTTPS kullanılır. `@gmail.com` gibi bir gönderen adresini Brevo imzalayamaz, bu yüzden bazı sağlayıcılar postayı spama atabilir |
+| `SmtpSettings__Host`, `__Port`, `__Username`, `__Password`, `__EnableSsl`, `__FromAddress` | Düz SMTP; yalnızca `Brevo__ApiKey` verilmemişse kullanılır (yerel geliştirme veya SMTP'ye izin veren bir sunucu). Brevo da `Host` da yoksa e-posta gönderilmez ve **parola sıfırlama tamamlanamaz** |
 | `Demo__ExposeOtp` | Varsayılan `false`. `true` ise 2FA/transfer kodları API yanıtında da döner ve loga yazılır, böylece demo e-posta kutusu olmadan çalışır. **İkinci faktörün değerini ortadan kaldırır. Gerçek verinin bulunduğu hiçbir yerde açmayın.** Yerel `http`/`https` başlatma profilleri bunu açar |
 | `RateLimiting__Auth__PermitLimit`, `__WindowSeconds` | `/api/auth/*` için IP başına sınır (varsayılan 60 sn'de 10 istek) |
 | `Cors__AllowedOrigins__0`, `__1`, … | API'yi çağırabilecek tarayıcı origin'leri (varsayılan `https://alonessam.github.io`). Başka her şey reddedilir. Geliştirme modunda diskten açılan sayfalar ve `localhost` da kabul edilir |

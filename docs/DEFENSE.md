@@ -351,3 +351,33 @@ Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çe
 - Neden `"` karakterini de kaçırmak gerekiyor? `<` ve `>` yetmez mi?
 - CSP tek başına neden yeterli değil, kaçırma tek başına neden yeterli değil?
 - Token `localStorage` yerine `HttpOnly` çerezde olsaydı bu saldırının etkisi ne olurdu, hangi yeni sorunlar çıkardı (CSRF)?
+
+---
+
+## T11 — Üretimde e-posta hiç gitmiyordu (v1.2): SMTP yerine HTTPS API
+
+**Sorun.** Şifre sıfırlama ve 2FA kodları e-postayla gidiyordu, ama canlı sistemde hiçbir e-posta gelmiyordu. Arayüz "kod gönderildi" diyordu (kod bilerek hata vermiyor), kullanıcı ise bekliyordu. Neden: Render'ın ücretsiz katmanı giden SMTP portlarını (25, 465, 587) engelliyor; `SmtpClient` bağlanamıyor, hata yalnızca arka plan görevinde loglanıyordu. Yani özellik kodda vardı ama üretimde **çalışamazdı**.
+
+**Ne yaptım.**
+- Gönderimi iki parçaya böldüm: `EmailOtpDelivery` (e-postanın içeriğini hazırlar, arka planda gönderir, asla hata fırlatmaz) ve değiştirilebilir bir `IMailTransport`.
+- `BrevoMailTransport`: Brevo'nun `POST /v3/smtp/email` HTTPS ucuna gider (443 portu serbest). Anahtar `api-key` başlığında, gönderen adresi Brevo'da doğrulanmış olmalı. `Brevo__ApiKey` verilirse bu kullanılır; yoksa eski `SmtpMailTransport` (yerel geliştirme için) devreye girer.
+- Yalnızca anahtar verilip gönderen adresi unutulursa uygulama **başlamıyor** (sessizce çalışıyormuş gibi görünüp hiç e-posta göndermemesinden iyidir).
+- Brevo hata verirse log'a yalnızca HTTP durumu ve Brevo'nun hata kodu yazılıyor; yanıt gövdesi yazılmıyor çünkü alıcının adresini içerebilir. Kod ve adres hiçbir zaman loglanmıyor.
+- Testler (`EmailDeliveryTests`): istek doğru adrese, doğru başlık ve gövdeyle gidiyor; reddedilince hata mesajı adres sızdırmıyor; yapılandırma eksikse başlamıyor; taşıyıcı çökse bile istek kırılmıyor; kullanıcı adı HTML'e kaçırılıyor (e-posta içinde XSS olmasın).
+
+**Neden bu seçim (ve eledikler).**
+- *Başka bir SMTP sağlayıcısı veya farklı port (2525)?* Render yalnızca bilinen SMTP portlarını değil, giden SMTP'yi genel olarak kısıtlıyor; HTTPS API her barındırıcıda çalışır.
+- *Brevo SDK paketi?* Tek bir HTTP çağrısı için ek bağımlılık gereksiz; Dependabot/CI yükünü artırır.
+- *Gönderimi istek içinde beklemek?* Sağlayıcı yavaşsa giriş yavaşlar. Arka planda gönderiyoruz; bedeli, hatanın kullanıcıya gösterilmemesi (bilinen sınırlama).
+
+**Bilinen sınırlamalar (dürüst liste).**
+- Gönderen adresi `@gmail.com` gibi ücretsiz bir adres olduğunda Brevo alan adını imzalayamaz (SPF/DKIM hizalanmaz); bazı alıcılar postayı spama atar. Çözüm kendi alan adı ve DNS kayıtları.
+- Gönderim "at ve unut": başarısızlık kullanıcıya bildirilmiyor, yeniden deneme yok. Üretimde kuyruk + yeniden deneme gerekir.
+- Ücretsiz katman günde 300 e-posta; yoğun kullanımda sessizce reddedilir.
+- Kod hâlâ 5 dakikalık, düz metin OTP (README'deki sınırlama sürüyor).
+
+**Mülakat soruları.**
+- Render'da SMTP neden çalışmadı ve bunu nasıl teşhis ettin? (Kod hata vermiyordu.)
+- Gönderimi neden arka planda yapıyorsun, bunun bedeli ne?
+- SPF, DKIM ve DMARC nedir; gmail.com adresinden göndermek neden sorun?
+- Yapılandırma eksikse neden başlangıçta hata veriyorsun, sessizce devam etmiyorsun?
