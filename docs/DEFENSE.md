@@ -381,3 +381,38 @@ Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çe
 - Gönderimi neden arka planda yapıyorsun, bunun bedeli ne?
 - SPF, DKIM ve DMARC nedir; gmail.com adresinden göndermek neden sorun?
 - Yapılandırma eksikse neden başlangıçta hata veriyorsun, sessizce devam etmiyorsun?
+
+---
+
+## T12 — 7 gün geçerli, iptal edilemeyen token (v1.2): kısa ömür + dönen yenileme token'ı
+
+**Sorun.** Giriş token'ı (JWT) 7 gün geçerliydi ve sunucu onu **geri alamıyordu**: JWT kendi içinde doğrulanır, veritabanına bakılmaz. Yani şifre sıfırlansa, hesap kilitlense, kullanıcı "çıkış yap"a bassa bile çalınmış bir token bir hafta boyunca para transferi yapabilirdi. Token `localStorage`'da durduğu için (XSS bölümüne bak, T10) çalınması da gerçekçi bir senaryo. "Çıkış yap" aslında yalnızca tarayıcıdaki kopyayı siliyordu.
+
+**Ne yaptım.**
+- Erişim token'ı artık **15 dakika** yaşıyor. İptal edilemeyen bir şeyin ömrünü kısa tutmak, hasarın üst sınırını belirler.
+- Her girişte ayrıca **yenileme (refresh) token'ı** veriliyor: 256 bit rastgele, ömrü 7 gün, **tek kullanımlık**. `POST /api/auth/refresh` onu yeni bir erişim token'ı ve **yeni** bir yenileme token'ıyla değiştiriyor (rotasyon).
+- Veritabanında token'ın kendisi değil **SHA-256 özeti** duruyor (`RefreshTokens` tablosu). Veritabanı sızsa bile çalışan token çıkmaz. Token zaten 256 bit rastgele olduğu için tuzlu/yavaş özet gerekmez (PIN'in aksine).
+- Aynı girişten türeyen tüm token'lar bir **aile** (`FamilyId`) oluşturuyor. Kullanılmış bir token **tekrar** gelirse bir kopya dolaşıyor demektir: ailenin tamamı iptal edilir (hem hırsız hem gerçek kullanıcı oturumunu kaybeder, kullanıcı yeniden girer). Denetim günlüğüne `RefreshTokenReuse` yazılır.
+- **Çıkış** (`POST /api/auth/logout`), **şifre sıfırlama** ve **hesap kilitlenmesi** oturumları sunucuda iptal ediyor. Aynı anda iki istek aynı token'ı kullanırsa iyimser eşzamanlılık (`Version`, T6'daki desen) yüzünden yalnızca biri kazanıyor; bunu iki veritabanında da gerçek eşzamanlı testle doğruladım (8 istek, tam 1 başarı).
+- 10 saniyelik tolerans: iki sekme aynı anda yenilerse kaybeden sekme **hırsız sayılmaz**, yalnızca reddedilir; ön yüz diğer sekmenin yazdığı yeni token'ı alıp devam eder.
+- Ön yüz: `fetch` sarmalayıcısı süre dolmadan 30 saniye önce sessizce yeniliyor, 401 gelirse bir kez yenileyip isteği tekrarlıyor, yenileme de reddedilirse çıkış yaptırıyor. Aynı anda gelen 5 istek **tek** yenileme yaptırıyor (tarayıcıda doğruladım). SignalR bağlantısı `accessTokenFactory` ile her bağlanışta güncel token alıyor; token artık URL'ye elle yazılmıyor.
+- Süreler yapılandırılabilir (`JwtSettings__AccessTokenMinutes`, `RefreshTokenDays`) ve aralık dışı değer uygulamanın başlamasını engelliyor.
+
+**Neden bu seçim (ve eledikler).**
+- *Her istekte veritabanından "iptal edildi mi" bakmak (güvenlik damgası)?* Anında iptal verir ama JWT'nin ana avantajını (durumsuzluk) kaldırır ve her istekte sorgu ekler. Kısa ömür + yenilemede kontrol, çoğu durumda yeterince küçük bir pencere (en fazla 15 dk) bırakıyor.
+- *Yenileme token'ını HttpOnly çerezde tutmak?* XSS'ten korur, ama ön yüz (github.io) ile API (onrender.com) **farklı site**; üçüncü taraf çerezlerini tarayıcılar giderek engelliyor ve CSRF koruması gerekir. Bu mimaride kırılgan, o yüzden `localStorage` + XSS savunması (T10) tercih edildi; sınırlamayı açıkça yazdım.
+- *Rotasyonsuz uzun yenileme token'ı?* Çalınırsa 7 gün sessizce kullanılır ve fark edilmez. Rotasyon + yeniden kullanım tespiti hırsızı da kullanıcıyı da "ele verir".
+
+**Bilinen sınırlamalar (dürüst liste).**
+- Çalınan bir **erişim** token'ı süresi dolana kadar (en çok 15 dk) geçerli kalır; çıkış yapmak onu anında öldürmez.
+- Token'lar hâlâ `localStorage`'da: bir XSS hatası hem erişim hem yenileme token'ını okuyabilir. Rotasyon sayesinde hırsız ile kullanıcıdan biri ailenin tamamını düşürür, ama saldırgan kısa süre kullanabilir.
+- Rol değişikliği (SQL ile elle) bir sonraki yenilemede etkili olur, anında değil.
+- Açık bir SignalR bağlantısı token süresi dolsa da bağlı kalır; token yalnızca bağlanırken denetlenir.
+- Temizlik bir arka plan işi değil: kullanıcının süresi bir günden fazla geçmiş token'ları bir sonraki girişte siliniyor.
+
+**Mülakat soruları.**
+- JWT neden iptal edilemez? "Çıkış yap" ne işe yarıyordu?
+- Yenileme token'ı neden her kullanımda değişiyor? Eski token tekrar gelirse neden herkesi çıkarıyorsun? İki sekme aynı anda yenilerse ne olur?
+- Neden token'ın kendisini değil özetini saklıyorsun? PIN'i hash'lerken BCrypt, burada neden SHA-256?
+- Token'ı `localStorage` yerine HttpOnly çerezde tutsaydın ne kazanır, ne kaybederdin (CSRF, farklı site çerezleri)?
+- Aynı yenileme token'ını aynı anda 8 istek kullanırsa neden yalnızca biri başarılı olur? (iyimser eşzamanlılık)

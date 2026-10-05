@@ -156,19 +156,7 @@ namespace SmartBank.Infrastructure.Services
             _context.AuditLogs.Add(audit);
             await _context.SaveChangesAsync();
 
-            var token = GenerateJwtToken(user);
-
-            var response = new AuthResponseDto
-            {
-                Token = token,
-                UserId = user.Id,
-                Username = user.Username,
-                Tckn = user.Tckn,
-                FullName = user.FullName,
-                Role = user.Role.ToString()
-            };
-
-            return ServiceResult<AuthResponseDto>.Success(response);
+            return ServiceResult<AuthResponseDto>.Success(await IssueSessionAsync(user, ipAddress));
         }
 
         public async Task<ServiceResult<AuthResponseDto>> LoginAsync(LoginDto loginDto, string? ipAddress = null)
@@ -195,6 +183,12 @@ namespace SmartBank.Infrastructure.Services
                 {
                     LoginLockout.RegisterFailure(user, now);
                     var lockedNow = LoginLockout.IsLocked(user, now);
+                    if (lockedNow)
+                    {
+                        // A locked account must not keep working through sessions that were already open.
+                        await RevokeAllRefreshTokensAsync(user.Id, now);
+                    }
+
                     _context.AuditLogs.Add(NewAuditLog(user.Id, lockedNow ? "AccountLocked" : "LoginFailed",
                         lockedNow ? $"Account locked after {LoginLockout.MaxFailedAttempts} failed logins." : "Wrong PIN.", ipAddress));
                     await _context.SaveChangesAsync();
@@ -225,7 +219,7 @@ namespace SmartBank.Infrastructure.Services
             _context.AuditLogs.Add(NewAuditLog(user.Id, "UserLoggedIn", $"User logged in. Username: {user.Username}", ipAddress));
             await _context.SaveChangesAsync();
 
-            return ServiceResult<AuthResponseDto>.Success(ToAuthResponse(user));
+            return ServiceResult<AuthResponseDto>.Success(await IssueSessionAsync(user, ipAddress));
         }
 
         public async Task<ServiceResult<bool>> RequestPasswordResetAsync(ForgotPasswordDto forgotPasswordDto, string? ipAddress = null)
@@ -267,6 +261,7 @@ namespace SmartBank.Infrastructure.Services
 
             user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(resetPasswordDto.NewPassword);
             LoginLockout.Reset(user); // proving control of the mailbox also lifts a lockout
+            await RevokeAllRefreshTokensAsync(user.Id, now); // whoever had a session (including a thief) is signed out
 
             _context.AuditLogs.Add(NewAuditLog(user.Id, "PasswordReset", $"User password reset. Username: {user.Username}", ipAddress));
             await _context.SaveChangesAsync();
@@ -326,7 +321,65 @@ public async Task<ServiceResult<bool>> Toggle2FaAsync(Guid userId, bool enable)
             _context.AuditLogs.Add(NewAuditLog(user.Id, "UserLoggedIn", $"User logged in with 2FA. Username: {user.Username}", ipAddress));
             await _context.SaveChangesAsync();
 
-            return ServiceResult<AuthResponseDto>.Success(ToAuthResponse(user));
+            return ServiceResult<AuthResponseDto>.Success(await IssueSessionAsync(user, ipAddress));
+        }
+
+        public async Task<ServiceResult<AuthResponseDto>> RefreshAsync(string refreshToken, string? ipAddress = null)
+        {
+            var now = DateTime.UtcNow;
+            var invalid = ServiceResult<AuthResponseDto>.Failure("InvalidRefreshToken", "The session has expired. Please sign in again.");
+
+            var stored = await _context.RefreshTokens.FirstOrDefaultAsync(t => t.TokenHash == HashRefreshToken(refreshToken));
+            if (stored == null || stored.RevokedAt != null || stored.ExpiresAt <= now)
+            {
+                return invalid;
+            }
+
+            if (stored.UsedAt != null)
+            {
+                // A token is single-use. Within a few seconds this is a second tab or a retry that lost the response, so
+                // it is simply refused. Later, somebody is replaying a copy: end the whole session family.
+                if (now - stored.UsedAt.Value > RefreshReuseGrace)
+                {
+                    await RevokeFamilyAsync(stored.FamilyId, now);
+                    _context.AuditLogs.Add(NewAuditLog(stored.UserId, "RefreshTokenReuse", "A used refresh token was presented again; the session family was revoked.", ipAddress));
+                    await _context.SaveChangesAsync();
+                }
+
+                return invalid;
+            }
+
+            var user = await _context.Users.FirstOrDefaultAsync(u => u.Id == stored.UserId);
+            if (user == null || LoginLockout.IsLocked(user, now))
+            {
+                await RevokeFamilyAsync(stored.FamilyId, now);
+                await _context.SaveChangesAsync();
+                return invalid;
+            }
+
+            stored.UsedAt = now;
+            try
+            {
+                var response = BuildResponse(user);
+                response.RefreshToken = AddRefreshToken(user.Id, stored.FamilyId, ipAddress, now);
+                await _context.SaveChangesAsync();
+                return ServiceResult<AuthResponseDto>.Success(response);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // Another request used the same token at the same moment and won.
+                return invalid;
+            }
+        }
+
+        public async Task LogoutAsync(string refreshToken, string? ipAddress = null)
+        {
+            var stored = await _context.RefreshTokens.FirstOrDefaultAsync(t => t.TokenHash == HashRefreshToken(refreshToken));
+            if (stored == null) return;
+
+            await RevokeFamilyAsync(stored.FamilyId, DateTime.UtcNow);
+            _context.AuditLogs.Add(NewAuditLog(stored.UserId, "UserLoggedOut", "The session was ended by the user.", ipAddress));
+            await _context.SaveChangesAsync();
         }
 
         private static ServiceResult<T> OtpFailure<T>(OtpCheckResult check) => check == OtpCheckResult.TooManyAttempts
@@ -343,16 +396,76 @@ public async Task<ServiceResult<bool>> Toggle2FaAsync(Guid userId, bool enable)
             CreatedAt = DateTime.UtcNow
         };
 
-        private AuthResponseDto ToAuthResponse(User user) => new()
+        // A used refresh token is refused (not treated as theft) for this long, to tolerate two tabs refreshing at once.
+        private static readonly TimeSpan RefreshReuseGrace = TimeSpan.FromSeconds(10);
+
+        /// <summary>Signs the user in: a short-lived access token plus the first refresh token of a new session family.</summary>
+        private async Task<AuthResponseDto> IssueSessionAsync(User user, string? ipAddress)
         {
-            Token = GenerateJwtToken(user),
-            UserId = user.Id,
-            Username = user.Username,
-            Tckn = user.Tckn,
-            FullName = user.FullName,
-            Role = user.Role.ToString()
-        };
-private string GenerateJwtToken(User user)
+            var now = DateTime.UtcNow;
+
+            // Housekeeping instead of a background job: drop this user's tokens that expired more than a day ago.
+            var stale = await _context.RefreshTokens.Where(t => t.UserId == user.Id && t.ExpiresAt < now.AddDays(-1)).ToListAsync();
+            _context.RefreshTokens.RemoveRange(stale);
+
+            var response = BuildResponse(user);
+            response.RefreshToken = AddRefreshToken(user.Id, Guid.NewGuid(), ipAddress, now);
+            await _context.SaveChangesAsync();
+            return response;
+        }
+
+        private AuthResponseDto BuildResponse(User user)
+        {
+            var token = GenerateJwtToken(user, out var accessTokenExpiresAt);
+            return new AuthResponseDto
+            {
+                Token = token,
+                AccessTokenExpiresAt = accessTokenExpiresAt,
+                UserId = user.Id,
+                Username = user.Username,
+                Tckn = user.Tckn,
+                FullName = user.FullName,
+                Role = user.Role.ToString()
+            };
+        }
+
+        /// <summary>Creates a refresh token row and returns the raw value, which only the client will ever see.</summary>
+        private string AddRefreshToken(Guid userId, Guid familyId, string? ipAddress, DateTime now)
+        {
+            var raw = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32))
+                .Replace('+', '-').Replace('/', '_').TrimEnd('=');
+
+            _context.RefreshTokens.Add(new RefreshToken
+            {
+                Id = Guid.NewGuid(),
+                UserId = userId,
+                FamilyId = familyId,
+                TokenHash = HashRefreshToken(raw),
+                CreatedAt = now,
+                ExpiresAt = now.Add(_jwtSettings.RefreshTokenLifetime),
+                CreatedByIp = string.IsNullOrWhiteSpace(ipAddress) ? "unknown" : ipAddress
+            });
+
+            return raw;
+        }
+
+        // The token is 256 random bits, so a plain SHA-256 is enough (no salt or slow hash needed, unlike a PIN).
+        private static string HashRefreshToken(string raw) =>
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(raw))).ToLowerInvariant();
+
+        private async Task RevokeFamilyAsync(Guid familyId, DateTime now)
+        {
+            var live = await _context.RefreshTokens.Where(t => t.FamilyId == familyId && t.RevokedAt == null).ToListAsync();
+            foreach (var token in live) token.RevokedAt = now;
+        }
+
+        private async Task RevokeAllRefreshTokensAsync(Guid userId, DateTime now)
+        {
+            var live = await _context.RefreshTokens.Where(t => t.UserId == userId && t.RevokedAt == null).ToListAsync();
+            foreach (var token in live) token.RevokedAt = now;
+        }
+
+        private string GenerateJwtToken(User user, out DateTime expires)
         {
             var tokenHandler = new JwtSecurityTokenHandler();
 
@@ -364,10 +477,11 @@ private string GenerateJwtToken(User user)
                 new Claim("tckn", user.Tckn)
             };
 
+            expires = DateTime.UtcNow.Add(_jwtSettings.AccessTokenLifetime);
             var tokenDescriptor = new SecurityTokenDescriptor
             {
                 Subject = new ClaimsIdentity(claims),
-                Expires = DateTime.UtcNow.AddDays(7),
+                Expires = expires,
                 Issuer = _jwtSettings.Issuer,
                 Audience = _jwtSettings.Audience,
                 SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(_jwtSettings.KeyBytes), SecurityAlgorithms.HmacSha256Signature)
