@@ -54,7 +54,7 @@ flowchart LR
     end
     Svc --> DB[("PostgreSQL<br/>Supabase")]
     Svc -.-> AI["Ollama / Gemini<br/>+ FAQ retrieval"]
-    Svc -.-> SMTP["SMTP<br/>one-time codes"]
+    Svc -.-> SMTP["Brevo API / SMTP<br/>one-time codes"]
 ```
 
 Layers: `SmartBank.Core` (entities, DTOs, interfaces and the pure security rules for one-time codes and lockout), `SmartBank.Infrastructure` (EF Core, services, background worker), `SmartBank.API` (controllers, SignalR hub, middleware), `SmartBank.Web` (static frontend) and `SmartBank.Tests`.
@@ -130,7 +130,7 @@ Things to know about the demo: the API runs on a free tier, so the **first reque
 Be honest about what this is: a portfolio project with a simulated bank. In particular:
 
 * **The `deposit` endpoint is a demo faucet.** Any signed-in user can add money to their own account (up to 10,000,000 TRY). A real system has nothing like it.
-* **Tokens last 7 days and cannot be revoked.** A role change, a lockout or a password reset does not invalidate tokens that were already issued. Tokens are kept in `localStorage`, so a cross-site-scripting bug would expose them; there is no Content-Security-Policy.
+* **Tokens last 7 days and cannot be revoked.** A role change, a lockout or a password reset does not invalidate tokens that were already issued. Tokens are kept in `localStorage`, so a cross-site-scripting bug would expose them. Since v1.2 every value that comes from another user is HTML-escaped before it reaches the page and the pages carry a Content-Security-Policy without inline scripts, but a `<meta>` CSP cannot set `frame-ancestors` and any future XSS bug would still be able to read the token.
 * **The rate limiter is per instance.** Behind several instances the limit is not shared (that would need a shared store or a gateway).
 * **One-time codes are stored in plain text** in the database for their five-minute life (hashing them is the production choice).
 * **Cards are simulated:** numbers carry no check digit, the credit card number is returned in full by the API (the UI masks it), and nothing here is PCI-certified.
@@ -169,7 +169,8 @@ This generates random values for `JwtSettings:Key` and `Encryption:Key`. To add 
 | `Encryption__Key` | AES-256 key, base64 of exactly 32 random bytes |
 | `ConnectionStrings__DefaultConnection` | Database connection string |
 | `GeminiSettings__ApiKey` | Optional, Gemini API key |
-| `SmtpSettings__Host`, `__Port`, `__Username`, `__Password`, `__EnableSsl`, `__FromAddress` | SMTP server used to e-mail one-time codes. Without `Host`, no e-mail is sent and **password reset cannot be completed** |
+| `Brevo__ApiKey`, `Brevo__SenderEmail`, `Brevo__SenderName` | **Recommended on Render.** E-mails one-time codes through the [Brevo](https://www.brevo.com) HTTPS API (free tier: 300 mails/day). `SenderEmail` must be a sender address verified in Brevo; the API refuses to start if only the key is set. Free hosts block SMTP ports, which is why this goes over HTTPS. A free-mail sender such as `@gmail.com` cannot be signed by Brevo, so some providers may put the mail in spam |
+| `SmtpSettings__Host`, `__Port`, `__Username`, `__Password`, `__EnableSsl`, `__FromAddress` | Plain SMTP, used only when `Brevo__ApiKey` is not set (local development, or a host that allows SMTP). With neither Brevo nor `Host`, no e-mail is sent and **password reset cannot be completed** |
 | `Demo__ExposeOtp` | `false` by default. If `true`, 2FA/transfer codes are also returned in API responses and written to the log so the demo works without a mailbox. **This removes the value of the second factor. Never enable it where real data lives.** The local `http`/`https` launch profiles enable it |
 | `RateLimiting__Auth__PermitLimit`, `__WindowSeconds` | Per-IP limit on `/api/auth/*` (default 10 requests per 60 s) |
 | `Cors__AllowedOrigins__0`, `__1`, … | Browser origins allowed to call the API (default `https://alonessam.github.io`). Anything else is rejected. In Development, pages opened from disk and `localhost` are also accepted |
@@ -337,7 +338,7 @@ Demo hakkında bilmeniz gerekenler: API ücretsiz katmanda çalışıyor, bu yü
 Bunun ne olduğu konusunda dürüst olalım: simüle edilmiş bir bankaya sahip bir portfolyo projesi. Özellikle:
 
 * **`deposit` ucu bir demo musluğudur.** Giriş yapan herkes kendi hesabına para ekleyebilir (10.000.000 TL'ye kadar). Gerçek bir sistemde buna benzer bir şey olmaz.
-* **Token'lar 7 gün geçerlidir ve iptal edilemez.** Rol değişikliği, kilitlenme veya şifre sıfırlama zaten verilmiş token'ları geçersiz kılmaz. Token'lar `localStorage`'da tutulur, bu yüzden bir siteler arası betik (XSS) hatası bunları açığa çıkarır; Content-Security-Policy yok.
+* **Token'lar 7 gün geçerlidir ve iptal edilemez.** Rol değişikliği, kilitlenme veya şifre sıfırlama zaten verilmiş token'ları geçersiz kılmaz. Token'lar `localStorage`'da tutulur, bu yüzden bir siteler arası betik (XSS) hatası bunları açığa çıkarır. v1.2'den beri başka bir kullanıcıdan gelen her değer sayfaya girmeden önce HTML'e kaçırılıyor ve sayfalar satır içi betiğe izin vermeyen bir Content-Security-Policy taşıyor; ancak `<meta>` ile verilen CSP `frame-ancestors` ayarlayamaz ve ileride çıkacak bir XSS hatası yine token'ı okuyabilir.
 * **Hız sınırlayıcı örnek başınadır.** Birden fazla örnek arkasında sınır paylaşılmaz (bunun için ortak bir depo veya ağ geçidi gerekir).
 * **Tek kullanımlık kodlar** beş dakikalık ömürleri boyunca veritabanında düz metin saklanır (üretimde özetlenmesi tercih edilir).
 * **Kartlar simülasyondur:** numaralarda kontrol basamağı yok, kredi kartı numarası API'den tam döner (arayüz maskeler), hiçbir şey PCI sertifikalı değildir.
@@ -376,7 +377,8 @@ Bu betik `JwtSettings:Key` ve `Encryption:Key` için rastgele değerler üretir.
 | `Encryption__Key` | AES-256 anahtarı, tam 32 rastgele baytın base64 hâli |
 | `ConnectionStrings__DefaultConnection` | Veritabanı bağlantı dizesi |
 | `GeminiSettings__ApiKey` | İsteğe bağlı, Gemini API anahtarı |
-| `SmtpSettings__Host`, `__Port`, `__Username`, `__Password`, `__EnableSsl`, `__FromAddress` | Tek kullanımlık kodları e-postayla göndermek için SMTP sunucusu. `Host` yoksa e-posta gönderilmez ve **parola sıfırlama tamamlanamaz** |
+| `Brevo__ApiKey`, `Brevo__SenderEmail`, `Brevo__SenderName` | **Render için önerilen.** Tek kullanımlık kodları [Brevo](https://www.brevo.com) HTTPS API'si üzerinden e-postayla gönderir (ücretsiz katman: günde 300 e-posta). `SenderEmail`, Brevo'da doğrulanmış bir gönderen adresi olmalıdır; yalnızca anahtar verilirse API başlamayı reddeder. Ücretsiz barındırıcılar SMTP portlarını engeller, bu yüzden HTTPS kullanılır. `@gmail.com` gibi bir gönderen adresini Brevo imzalayamaz, bu yüzden bazı sağlayıcılar postayı spama atabilir |
+| `SmtpSettings__Host`, `__Port`, `__Username`, `__Password`, `__EnableSsl`, `__FromAddress` | Düz SMTP; yalnızca `Brevo__ApiKey` verilmemişse kullanılır (yerel geliştirme veya SMTP'ye izin veren bir sunucu). Brevo da `Host` da yoksa e-posta gönderilmez ve **parola sıfırlama tamamlanamaz** |
 | `Demo__ExposeOtp` | Varsayılan `false`. `true` ise 2FA/transfer kodları API yanıtında da döner ve loga yazılır, böylece demo e-posta kutusu olmadan çalışır. **İkinci faktörün değerini ortadan kaldırır. Gerçek verinin bulunduğu hiçbir yerde açmayın.** Yerel `http`/`https` başlatma profilleri bunu açar |
 | `RateLimiting__Auth__PermitLimit`, `__WindowSeconds` | `/api/auth/*` için IP başına sınır (varsayılan 60 sn'de 10 istek) |
 | `Cors__AllowedOrigins__0`, `__1`, … | API'yi çağırabilecek tarayıcı origin'leri (varsayılan `https://alonessam.github.io`). Başka her şey reddedilir. Geliştirme modunda diskten açılan sayfalar ve `localhost` da kabul edilir |
