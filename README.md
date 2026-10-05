@@ -130,7 +130,7 @@ Things to know about the demo: the API runs on a free tier, so the **first reque
 Be honest about what this is: a portfolio project with a simulated bank. In particular:
 
 * **The `deposit` endpoint is a demo faucet.** Any signed-in user can add money to their own account (up to 10,000,000 TRY). A real system has nothing like it.
-* **Tokens last 7 days and cannot be revoked.** A role change, a lockout or a password reset does not invalidate tokens that were already issued. Tokens are kept in `localStorage`, so a cross-site-scripting bug would expose them; there is no Content-Security-Policy.
+* **Tokens last 7 days and cannot be revoked.** A role change, a lockout or a password reset does not invalidate tokens that were already issued. Tokens are kept in `localStorage`, so a cross-site-scripting bug would expose them. Since v1.2 every value that comes from another user is HTML-escaped before it reaches the page and the pages carry a Content-Security-Policy without inline scripts, but a `<meta>` CSP cannot set `frame-ancestors` and any future XSS bug would still be able to read the token.
 * **The rate limiter is per instance.** Behind several instances the limit is not shared (that would need a shared store or a gateway).
 * **One-time codes are stored in plain text** in the database for their five-minute life (hashing them is the production choice).
 * **Cards are simulated:** numbers carry no check digit, the credit card number is returned in full by the API (the UI masks it), and nothing here is PCI-certified.
@@ -337,7 +337,7 @@ Demo hakkında bilmeniz gerekenler: API ücretsiz katmanda çalışıyor, bu yü
 Bunun ne olduğu konusunda dürüst olalım: simüle edilmiş bir bankaya sahip bir portfolyo projesi. Özellikle:
 
 * **`deposit` ucu bir demo musluğudur.** Giriş yapan herkes kendi hesabına para ekleyebilir (10.000.000 TL'ye kadar). Gerçek bir sistemde buna benzer bir şey olmaz.
-* **Token'lar 7 gün geçerlidir ve iptal edilemez.** Rol değişikliği, kilitlenme veya şifre sıfırlama zaten verilmiş token'ları geçersiz kılmaz. Token'lar `localStorage`'da tutulur, bu yüzden bir siteler arası betik (XSS) hatası bunları açığa çıkarır; Content-Security-Policy yok.
+* **Token'lar 7 gün geçerlidir ve iptal edilemez.** Rol değişikliği, kilitlenme veya şifre sıfırlama zaten verilmiş token'ları geçersiz kılmaz. Token'lar `localStorage`'da tutulur, bu yüzden bir siteler arası betik (XSS) hatası bunları açığa çıkarır. v1.2'den beri başka bir kullanıcıdan gelen her değer sayfaya girmeden önce HTML'e kaçırılıyor ve sayfalar satır içi betiğe izin vermeyen bir Content-Security-Policy taşıyor; ancak `<meta>` ile verilen CSP `frame-ancestors` ayarlayamaz ve ileride çıkacak bir XSS hatası yine token'ı okuyabilir.
 * **Hız sınırlayıcı örnek başınadır.** Birden fazla örnek arkasında sınır paylaşılmaz (bunun için ortak bir depo veya ağ geçidi gerekir).
 * **Tek kullanımlık kodlar** beş dakikalık ömürleri boyunca veritabanında düz metin saklanır (üretimde özetlenmesi tercih edilir).
 * **Kartlar simülasyondur:** numaralarda kontrol basamağı yok, kredi kartı numarası API'den tam döner (arayüz maskeler), hiçbir şey PCI sertifikalı değildir.

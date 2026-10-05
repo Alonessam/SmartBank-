@@ -201,8 +201,8 @@ function appendMessage(msgDto) {
         }
 
         const descText = currentLanguage === "tr"
-            ? `Sohbet başarıyla <strong>${displayDept}</strong> birimine aktarıldı.`
-            : `Sohbet has been transferred to <strong>${displayDept}</strong> department.`;
+            ? `Sohbet başarıyla <strong>${esc(displayDept)}</strong> birimine aktarıldı.`
+            : `Sohbet has been transferred to <strong>${esc(displayDept)}</strong> department.`;
 
         card.innerHTML = `
             <div class="system-status-title">🔄 ${titleText}</div>
@@ -247,10 +247,10 @@ function appendMessage(msgDto) {
             <div class="transfer-confirm-title">
                 <i class="logo-icon font-semibold">🔄</i> ${titleText}
             </div>
-            <div class="transfer-confirm-item">${srcLabel}: <strong>${source}</strong></div>
-            <div class="transfer-confirm-item">${destLabel}: <strong>${destination}</strong></div>
-            <div class="transfer-confirm-item">${descLabel}: <strong>${description}</strong></div>
-            <div class="transfer-confirm-amount">${amount} TRY</div>
+            <div class="transfer-confirm-item">${srcLabel}: <strong>${esc(source)}</strong></div>
+            <div class="transfer-confirm-item">${destLabel}: <strong>${esc(destination)}</strong></div>
+            <div class="transfer-confirm-item">${descLabel}: <strong>${esc(description)}</strong></div>
+            <div class="transfer-confirm-amount">${esc(amount)} TRY</div>
             <div class="transfer-confirm-actions">
                 <button class="btn-confirm btn-confirm-yes" ${isAgentPanel ? "disabled" : ""}>${confirmBtnText}</button>
                 <button class="btn-confirm btn-confirm-no" ${isAgentPanel ? "disabled" : ""}>${cancelBtnText}</button>
@@ -299,8 +299,8 @@ function appendMessage(msgDto) {
         
         const titleText = currentLanguage === "tr" ? "İşlem Başarılı" : "Transfer Successful";
         const descText = currentLanguage === "tr" 
-            ? `${amount} TRY, ${destination} numaralı hesaba başarıyla gönderildi.` 
-            : `${amount} TRY has been successfully sent to ${destination}.`;
+            ? `${esc(amount)} TRY, ${esc(destination)} numaralı hesaba başarıyla gönderildi.` 
+            : `${esc(amount)} TRY has been successfully sent to ${esc(destination)}.`;
 
         card.innerHTML = `
             <div class="system-status-title">✅ ${titleText}</div>
@@ -397,7 +397,7 @@ function appendMessage(msgDto) {
 
         card.innerHTML = `
             <div class="system-status-title">❌ ${titleText}</div>
-            <div>${translatedMsg}</div>
+            <div>${esc(translatedMsg)}</div>
             <span class="message-timestamp">${time}</span>
         `;
 
@@ -412,7 +412,7 @@ function appendMessage(msgDto) {
     bubble.className = `message-bubble ${roleClass}`;
 
     bubble.innerHTML = `
-        ${msgDto.content}
+        ${esc(msgDto.content)}
         <span class="message-timestamp">${time}</span>
     `;
 
