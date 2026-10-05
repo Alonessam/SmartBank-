@@ -85,7 +85,24 @@ builder.Services.AddAuthentication(options =>
 
 // Register Core & Infrastructure Services
 // One-time codes are delivered by e-mail; Demo:ExposeOtp (off by default) additionally exposes them for a mailbox-less demo.
-builder.Services.AddSingleton<IOtpDelivery, SmtpOtpDelivery>();
+// Transport: the Brevo HTTPS API when Brevo:ApiKey is set (free hosts such as Render block SMTP ports), otherwise plain SMTP.
+if (!string.IsNullOrWhiteSpace(builder.Configuration["Brevo:ApiKey"]))
+{
+    if (string.IsNullOrWhiteSpace(builder.Configuration["Brevo:SenderEmail"]))
+    {
+        throw new InvalidOperationException("Brevo:ApiKey is set but Brevo:SenderEmail is empty. Set it to the sender address you verified in Brevo.");
+    }
+
+    // The transport (and its HttpClient) lives as long as the app, so the handler recycles connections itself to pick up DNS changes.
+    builder.Services.AddHttpClient<BrevoMailTransport>(client => client.Timeout = TimeSpan.FromSeconds(10))
+        .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(5) });
+    builder.Services.AddSingleton<IMailTransport>(sp => sp.GetRequiredService<BrevoMailTransport>());
+}
+else
+{
+    builder.Services.AddSingleton<IMailTransport, SmtpMailTransport>();
+}
+builder.Services.AddSingleton<IOtpDelivery, EmailOtpDelivery>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IBankingService, BankingService>();
 builder.Services.AddScoped<IChatService, ChatService>();

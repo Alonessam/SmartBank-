@@ -7,6 +7,14 @@ const API_URL = window.location.hostname === "localhost" || window.location.host
     ? "http://localhost:5038/api"
     : "https://smartbank-fintech-api.onrender.com/api";
 
+// Escapes text before it is placed inside an innerHTML template (element text AND quoted attribute values).
+// Everything that comes from the server or from another user (descriptions, aliases, names, chat text) must go through this.
+function esc(value) {
+    return String(value ?? "").replace(/[&<>"'`]/g, ch => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;", "`": "&#96;"
+    }[ch]));
+}
+
 // Localization Dictionary
 const i18n = {
     en: {
@@ -355,6 +363,15 @@ function logout() {
 
 // Initialize Language Switch Event
 document.addEventListener("DOMContentLoaded", () => {
+    // The HTML has no inline event attributes (the CSP forbids them): the former onclick/onsubmit handlers are wired here.
+    document.querySelectorAll("[data-optab]").forEach(btn => btn.addEventListener("click", () => window.switchOperationsTab(btn.dataset.optab)));
+    ["exchange-form", "cc-pay-debt-form", "cc-charge-form", "standing-order-form"].forEach(id => {
+        const form = document.getElementById(id);
+        if (form) form.addEventListener("submit", e => e.preventDefault());
+    });
+    const debitCard = document.getElementById("debit-card-wrapper-hover");
+    if (debitCard) debitCard.addEventListener("click", () => debitCard.classList.toggle("flipped"));
+
     const langBtn = document.getElementById("lang-toggle");
     if (langBtn) {
         langBtn.addEventListener("click", () => {
@@ -817,15 +834,15 @@ async function loadAccounts() {
 
             card.innerHTML = `
                 <div class="account-header">
-                    <span>${cardTitle}</span>
-                    <span class="account-currency">${acc.currency}</span>
+                    <span>${esc(cardTitle)}</span>
+                    <span class="account-currency">${esc(acc.currency)}</span>
                 </div>
                 <div class="account-balance">${balanceStr}</div>
-                <div class="account-number">${acc.accountNumber}</div>
-                <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 0.25rem;">Hesap Kodu: <span style="font-weight: 600; color: var(--text-main);">${acc.accountCode || '-'}</span></div>
+                <div class="account-number">${esc(acc.accountNumber)}</div>
+                <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 0.25rem;">Hesap Kodu: <span style="font-weight: 600; color: var(--text-main);">${esc(acc.accountCode || '-')}</span></div>
                 ${extraHtml}
                 <div class="account-actions" style="display: flex; gap: 0.5rem; margin-top: 0.75rem; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 0.5rem;">
-                    <button class="btn btn-danger btn-xs btn-acc-delete" data-accid="${acc.id}" style="padding: 0.2rem 0.5rem; font-size: 0.7rem; background: rgba(255, 75, 92, 0.1); border-color: rgba(255, 75, 92, 0.2); color: #ff4b5c; font-weight: 600; margin-left: auto;">Sil</button>
+                    <button class="btn btn-danger btn-xs btn-acc-delete" data-accid="${esc(acc.id)}" style="padding: 0.2rem 0.5rem; font-size: 0.7rem; background: rgba(255, 75, 92, 0.1); border-color: rgba(255, 75, 92, 0.2); color: #ff4b5c; font-weight: 600; margin-left: auto;">Sil</button>
                 </div>
             `;
 
@@ -901,7 +918,7 @@ async function loadAccounts() {
                             transition: all 0.3s ease;
                         `;
 
-                        const optionsHtml = otherAccounts.map(a => `<option value="${a.id}">${a.accountNumber} (${a.balance.toFixed(2)} ${a.currency})</option>`).join("");
+                        const optionsHtml = otherAccounts.map(a => `<option value="${esc(a.id)}">${esc(a.accountNumber)} (${a.balance.toFixed(2)} ${esc(a.currency)})</option>`).join("");
 
                         modalEl.innerHTML = `
                             <div class="card glassmorphism" style="width: 440px; padding: 2rem; border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; background: rgba(15, 23, 42, 0.98); box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); animation: modalFadeIn 0.3s ease;">
@@ -909,7 +926,7 @@ async function loadAccounts() {
                                     ${currentLanguage === "tr" ? "Hesap Kapatma Bakiye Aktarımı" : "Account Closure Balance Transfer"}
                                 </h3>
                                 <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.5rem; line-height: 1.5;">
-                                    ${currentLanguage === "tr" ? `Silmek istediğiniz hesapta <strong>${acc.balance.toFixed(2)} ${acc.currency}</strong> bakiye bulunmaktadır. Silmeden önce bakiyenizin aktarılacağı diğer hesabınızı seçin:` : `The account you want to delete has a balance of <strong>${acc.balance.toFixed(2)} ${acc.currency}</strong>. Please select the target account to transfer your balance:`}
+                                    ${currentLanguage === "tr" ? `Silmek istediğiniz hesapta <strong>${acc.balance.toFixed(2)} ${esc(acc.currency)}</strong> bakiye bulunmaktadır. Silmeden önce bakiyenizin aktarılacağı diğer hesabınızı seçin:` : `The account you want to delete has a balance of <strong>${acc.balance.toFixed(2)} ${esc(acc.currency)}</strong>. Please select the target account to transfer your balance:`}
                                 </p>
                                 <div class="form-group" style="margin-bottom: 1.5rem;">
                                     <label style="font-size: 0.75rem; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em;">
@@ -1073,8 +1090,8 @@ async function loadTransactions(accountId) {
                 row.style.cursor = "pointer";
                 row.innerHTML = `
                     <td>${date}</td>
-                    <td><span class="badge-role">${getLocalizedText(tx.type, tx.type)}</span></td>
-                    <td><span style="margin-right: 0.5rem; font-size: 1.1rem;">${icon}</span>${tx.description || "-"}</td>
+                    <td><span class="badge-role">${esc(getLocalizedText(tx.type, tx.type))}</span></td>
+                    <td><span style="margin-right: 0.5rem; font-size: 1.1rem;">${icon}</span>${esc(tx.description || "-")}</td>
                     <td class="text-right ${amountClass}">${amountPrefix}${tx.amount.toFixed(2)}</td>
                 `;
                 row.addEventListener("click", () => {
@@ -1539,8 +1556,8 @@ async function loadActiveSessions() {
             });
 
             item.innerHTML = `
-                <h5>${sess.title}</h5>
-                <p>User: <strong>${sess.username}</strong> | ${date}</p>
+                <h5>${esc(sess.title)}</h5>
+                <p>User: <strong>${esc(sess.username)}</strong> | ${date}</p>
             `;
 
             item.addEventListener("click", () => {
@@ -1595,7 +1612,7 @@ async function loadAgentChat(sessionId, title) {
             });
 
             bubble.innerHTML = `
-                ${msg.content}
+                ${esc(msg.content)}
                 <span class="message-timestamp">${time}</span>
             `;
             msgContainer.appendChild(bubble);
@@ -2065,8 +2082,8 @@ async function loadMarketRates() {
                             ${rate.code === 'USD' ? '💵' : rate.code === 'EUR' ? '💶' : rate.code === 'XAU' ? '🪙' : '🥈'}
                         </div>
                         <div class="rate-name-wrapper">
-                            <span class="rate-code">${rate.code}</span>
-                            <span class="rate-name">${displayName}</span>
+                            <span class="rate-code">${esc(rate.code)}</span>
+                            <span class="rate-name">${esc(displayName)}</span>
                         </div>
                     </div>
                     <div class="rate-prices">
@@ -2169,7 +2186,7 @@ async function loadCreditCards() {
                     <span class="account-currency">TRY</span>
                 </div>
                 <div class="account-balance">${card.currentDebt.toFixed(2)} TRY</div>
-                <div class="account-number">${maskedNo}</div>
+                <div class="account-number">${esc(maskedNo)}</div>
                 <div class="credit-limit-info">
                     <span>Limit: ${card.cardLimit.toFixed(2)} TRY</span>
                     <span>Kalan: ${card.availableLimit.toFixed(2)} TRY</span>
@@ -2324,7 +2341,7 @@ async function showStatementModal(card) {
                 const tr = document.createElement("tr");
                 tr.innerHTML = `
                     <td>${date}</td>
-                    <td>${t.description}</td>
+                    <td>${esc(t.description)}</td>
                     <td class="text-right tx-amount-negative">-${t.amount.toFixed(2)}</td>
                 `;
                 const trCopy = tr.cloneNode(true);
@@ -2648,7 +2665,7 @@ function initCreditCardEvents() {
                                                     tbody.innerHTML = latest.transactions.map(t => `
                                                         <tr>
                                                             <td>${new Date(t.createdAt).toLocaleDateString(currentLanguage === 'tr' ? 'tr-TR' : 'en-US')}</td>
-                                                            <td>${t.description}</td>
+                                                            <td>${esc(t.description)}</td>
                                                             <td class="text-right" style="color: #ff4b5c;">-${t.amount.toFixed(2)} TRY</td>
                                                         </tr>
                                                     `).join("");
@@ -3071,12 +3088,12 @@ function initSavedContacts() {
             const rowsHtml = savedContacts.map(c => `
                 <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); border-radius: 8px; margin-bottom: 0.5rem; gap: 1rem;">
                     <div style="display: flex; flex-direction: column; flex: 1; min-width: 0;">
-                        <span style="font-weight: 700; color: #fff; font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${c.alias}</span>
-                        <span style="font-size: 0.75rem; color: var(--text-muted); font-family: monospace;">${c.accountNumber}</span>
+                        <span style="font-weight: 700; color: #fff; font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(c.alias)}</span>
+                        <span style="font-size: 0.75rem; color: var(--text-muted); font-family: monospace;">${esc(c.accountNumber)}</span>
                     </div>
                     <div style="display: flex; gap: 0.35rem; flex-shrink: 0;">
-                        <button class="btn-contact-edit btn btn-secondary btn-xs" data-accno="${c.accountNumber}" data-alias="${c.alias}" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; border-radius: 6px; cursor: pointer;">✏️</button>
-                        <button class="btn-contact-delete btn btn-danger btn-xs" data-id="${c.id}" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; border-radius: 6px; cursor: pointer;">🗑️</button>
+                        <button class="btn-contact-edit btn btn-secondary btn-xs" data-accno="${esc(c.accountNumber)}" data-alias="${esc(c.alias)}" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; border-radius: 6px; cursor: pointer;">✏️</button>
+                        <button class="btn-contact-delete btn btn-danger btn-xs" data-id="${esc(c.id)}" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; border-radius: 6px; cursor: pointer;">🗑️</button>
                     </div>
                 </div>
             `).join("");
@@ -3300,8 +3317,8 @@ function initStandingOrders() {
                                     order.frequency === "Weekly" ? (currentLanguage === "tr" ? "Haftalık" : "Weekly") :
                                     (currentLanguage === "tr" ? "Aylık" : "Monthly");
                     orderDesc = currentLanguage === "tr" ? 
-                        `${freqStr} Düzenli Transfer (${order.amount.toFixed(2)} TRY -> ${order.destinationAccountNumber})` :
-                        `${freqStr} Scheduled Transfer (${order.amount.toFixed(2)} TRY -> ${order.destinationAccountNumber})`;
+                        `${freqStr} Düzenli Transfer (${order.amount.toFixed(2)} TRY -> ${esc(order.destinationAccountNumber)})` :
+                        `${freqStr} Scheduled Transfer (${order.amount.toFixed(2)} TRY -> ${esc(order.destinationAccountNumber)})`;
                 }
 
                 el.innerHTML = `
@@ -3310,9 +3327,9 @@ function initStandingOrders() {
                     </div>
                     <div style="font-size: 0.8rem; line-height: 1.3;">${orderDesc}</div>
                     <div style="font-size: 0.7rem; color: var(--text-muted);">
-                        Kaynak: ${order.sourceAccountNumber}
+                        Kaynak: ${esc(order.sourceAccountNumber)}
                     </div>
-                    <button class="btn btn-danger btn-xs btn-so-delete" data-soid="${order.id}" style="align-self: flex-end; margin-top: 0.25rem; font-size: 0.7rem; padding: 0.2rem 0.5rem;">İptal Et</button>
+                    <button class="btn btn-danger btn-xs btn-so-delete" data-soid="${esc(order.id)}" style="align-self: flex-end; margin-top: 0.25rem; font-size: 0.7rem; padding: 0.2rem 0.5rem;">İptal Et</button>
                 `;
 
                 el.querySelector(".btn-so-delete").addEventListener("click", async () => {

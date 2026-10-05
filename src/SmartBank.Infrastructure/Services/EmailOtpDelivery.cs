@@ -1,5 +1,4 @@
 using System.Net;
-using System.Net.Mail;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using SmartBank.Core.Entities;
@@ -7,16 +6,20 @@ using SmartBank.Core.Interfaces;
 
 namespace SmartBank.Infrastructure.Services
 {
-    public sealed class SmtpOtpDelivery : IOtpDelivery
+    /// <summary>
+    /// Builds the one-time-code e-mail and hands it to an <see cref="IMailTransport"/> (Brevo HTTPS API, or plain SMTP).
+    /// Sending runs in the background and never throws, so a mail outage cannot break a login or a transfer.
+    /// </summary>
+    public sealed class EmailOtpDelivery : IOtpDelivery
     {
-        private readonly IConfiguration _configuration;
-        private readonly ILogger<SmtpOtpDelivery> _logger;
+        private readonly IMailTransport _transport;
+        private readonly ILogger<EmailOtpDelivery> _logger;
 
         public bool ExposeCodeInResponse { get; }
 
-        public SmtpOtpDelivery(IConfiguration configuration, ILogger<SmtpOtpDelivery> logger)
+        public EmailOtpDelivery(IConfiguration configuration, IMailTransport transport, ILogger<EmailOtpDelivery> logger)
         {
-            _configuration = configuration;
+            _transport = transport;
             _logger = logger;
             ExposeCodeInResponse = bool.TryParse(configuration["Demo:ExposeOtp"], out var expose) && expose;
         }
@@ -29,55 +32,37 @@ namespace SmartBank.Infrastructure.Services
             }
 
             // Capture plain values: the request (and its DbContext) may be gone by the time the mail is sent.
-            var email = user.Email;
-            var name = user.FullName;
+            var mail = BuildMail(user.Email, user.FullName, code, purpose);
             var userId = user.Id;
 
-            _ = Task.Run(() => SendEmailAsync(email, name, code, purpose, userId));
+            _ = Task.Run(() => DeliverAsync(mail, purpose, userId));
         }
 
-        private async Task SendEmailAsync(string emailAddress, string fullName, string code, OtpPurpose purpose, Guid userId)
+        /// <summary>Awaitable core of <see cref="Send"/>; kept separate so tests can wait for it.</summary>
+        public async Task DeliverAsync(OutgoingMail mail, OtpPurpose purpose, Guid userId)
         {
             try
             {
-                var host = _configuration["SmtpSettings:Host"];
-                if (string.IsNullOrWhiteSpace(host))
+                if (await _transport.SendAsync(mail))
                 {
-                    _logger.LogInformation("SMTP is not configured; the {Purpose} code for user {UserId} was not e-mailed.", purpose, userId);
-                    return;
+                    _logger.LogInformation("{Purpose} code e-mailed to user {UserId}.", purpose, userId);
                 }
-
-                int.TryParse(_configuration["SmtpSettings:Port"], out var port);
-                var username = _configuration["SmtpSettings:Username"] ?? string.Empty;
-                var password = _configuration["SmtpSettings:Password"] ?? string.Empty;
-                var enableSsl = bool.TryParse(_configuration["SmtpSettings:EnableSsl"], out var ssl) && ssl;
-                var from = _configuration["SmtpSettings:FromAddress"] ?? "no-reply@smartbank.com";
-
-                var (subject, heading, intro) = Describe(purpose);
-
-                using var mail = new MailMessage
+                else
                 {
-                    From = new MailAddress(from, "SmartBank Güvenlik"),
-                    Subject = subject,
-                    Body = BuildBody(WebUtility.HtmlEncode(fullName), heading, intro, code),
-                    IsBodyHtml = true
-                };
-                mail.To.Add(emailAddress);
-
-                using var smtp = new SmtpClient(host, port == 0 ? 25 : port) { EnableSsl = enableSsl };
-                if (!string.IsNullOrEmpty(username))
-                {
-                    smtp.Credentials = new NetworkCredential(username, password);
+                    _logger.LogInformation("No mail transport is configured; the {Purpose} code for user {UserId} was not e-mailed.", purpose, userId);
                 }
-
-                await smtp.SendMailAsync(mail);
-                _logger.LogInformation("{Purpose} code e-mailed to user {UserId}.", purpose, userId);
             }
             catch (Exception ex)
             {
                 // Never log the code or the address, only that delivery failed.
                 _logger.LogError(ex, "Could not e-mail the {Purpose} code to user {UserId}.", purpose, userId);
             }
+        }
+
+        public static OutgoingMail BuildMail(string emailAddress, string fullName, string code, OtpPurpose purpose)
+        {
+            var (subject, heading, intro) = Describe(purpose);
+            return new OutgoingMail(emailAddress, fullName, subject, BuildBody(WebUtility.HtmlEncode(fullName), heading, intro, code));
         }
 
         private static (string Subject, string Heading, string Intro) Describe(OtpPurpose purpose) => purpose switch
