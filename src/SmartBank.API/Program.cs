@@ -1,8 +1,14 @@
-using System.Text;
+﻿using System.Text;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using SmartBank.API.Health;
 using SmartBank.API.Hubs;
+using SmartBank.API.Security;
+using SmartBank.API.Services;
 using SmartBank.Core.Interfaces;
 using SmartBank.Infrastructure.Data;
 using SmartBank.Infrastructure.Services;
@@ -10,9 +16,14 @@ using SmartBank.Infrastructure.BackgroundServices;
 using SmartBank.API.Middlewares;
 using FluentValidation;
 using SmartBank.Core.Validators;
+using SmartBank.Core.Common;
 using SmartBank.Core.Entities;
+using SmartBank.Infrastructure.Security;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Card-data encryption key (base64, 32 bytes) comes from user-secrets / Encryption__Key, never from the repo.
+EncryptionHelper.Configure(builder.Configuration["Encryption:Key"]);
 
 // Add DbContext (Supports local SQL Server and Cloud PostgreSQL)
 builder.Services.AddDbContext<SmartBankDbContext>(options =>
@@ -31,8 +42,9 @@ builder.Services.AddDbContext<SmartBankDbContext>(options =>
 });
 
 // Add JWT Authentication
-var jwtKey = builder.Configuration["JwtSettings:Key"] ?? "SuperSecretKeyForDevelopmentSmartBankSupportMesh2026";
-var key = Encoding.ASCII.GetBytes(jwtKey);
+// The signing key has no default on purpose: JwtSettings.From throws at startup if it is missing or weak.
+var jwtSettings = JwtSettings.From(builder.Configuration);
+var key = jwtSettings.KeyBytes;
 
 builder.Services.AddAuthentication(options =>
 {
@@ -41,16 +53,16 @@ builder.Services.AddAuthentication(options =>
 })
 .AddJwtBearer(options =>
 {
-    options.RequireHttpsMetadata = false;
+    options.RequireHttpsMetadata = !builder.Environment.IsDevelopment();
     options.SaveToken = true;
     options.TokenValidationParameters = new TokenValidationParameters
     {
         ValidateIssuerSigningKey = true,
         IssuerSigningKey = new SymmetricSecurityKey(key),
         ValidateIssuer = true,
-        ValidIssuer = builder.Configuration["JwtSettings:Issuer"] ?? "SmartBankAPI",
+        ValidIssuer = jwtSettings.Issuer,
         ValidateAudience = true,
-        ValidAudience = builder.Configuration["JwtSettings:Audience"] ?? "SmartBankApp",
+        ValidAudience = jwtSettings.Audience,
         ValidateLifetime = true,
         ClockSkew = TimeSpan.Zero
     };
@@ -72,6 +84,8 @@ builder.Services.AddAuthentication(options =>
 });
 
 // Register Core & Infrastructure Services
+// One-time codes are delivered by e-mail; Demo:ExposeOtp (off by default) additionally exposes them for a mailbox-less demo.
+builder.Services.AddSingleton<IOtpDelivery, SmtpOtpDelivery>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IBankingService, BankingService>();
 builder.Services.AddScoped<IChatService, ChatService>();
@@ -91,17 +105,64 @@ builder.Services.AddValidatorsFromAssemblyContaining<RegisterDtoValidator>();
 builder.Services.AddControllers();
 builder.Services.AddSignalR();
 
+// Per-IP rate limit on the auth endpoints (login, 2FA, password reset, register). This is the coarse layer;
+// the per-account lockout and the OTP attempt counter in the services are the precise ones.
+// Behind a reverse proxy the IP is only the real client address if forwarded headers are enabled (see Dockerfile).
+var authPermitLimit = builder.Configuration.GetValue("RateLimiting:Auth:PermitLimit", 10);
+var authWindowSeconds = builder.Configuration.GetValue("RateLimiting:Auth:WindowSeconds", 60);
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    options.AddPolicy("auth", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = authPermitLimit,
+                Window = TimeSpan.FromSeconds(authWindowSeconds),
+                QueueLimit = 0
+            }));
+
+    options.OnRejected = async (context, cancellationToken) =>
+    {
+        if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
+        {
+            context.HttpContext.Response.Headers.RetryAfter = ((int)Math.Ceiling(retryAfter.TotalSeconds)).ToString();
+        }
+
+        await context.HttpContext.Response.WriteAsJsonAsync(new
+        {
+            IsSuccess = false,
+            ErrorKey = "TooManyRequests",
+            Message = "Too many requests. Please wait a moment and try again."
+        }, cancellationToken);
+    };
+});
+
+// Browsers may only call this API from the origins listed in configuration (Cors:AllowedOrigins, or the environment
+// variable Cors__AllowedOrigins__0). The old policy accepted every origin together with credentials, which let any
+// website a signed-in customer visited call the API with that customer's token.
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? Array.Empty<string>();
+var isDevelopment = builder.Environment.IsDevelopment();
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
         policy.AllowAnyHeader()
               .AllowAnyMethod()
-              .SetIsOriginAllowed(origin => true)
+              .SetIsOriginAllowed(origin => CorsOriginPolicy.IsAllowed(origin, allowedOrigins, isDevelopment))
               .AllowCredentials();
     });
 });
 
+// Liveness (/health) touches nothing; readiness (/health/ready) checks the database. Both answer only Healthy/Unhealthy.
+builder.Services.AddHealthChecks()
+    .AddCheck<DatabaseHealthCheck>("database", tags: new[] { "ready" });
+
+// Lets services write the caller's real IP into the audit trail.
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<IClientInfo, HttpContextClientInfo>();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 
@@ -119,45 +180,17 @@ app.UseHttpsRedirection();
 
 app.UseCors();
 
+app.UseRateLimiter();
+
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
 app.MapHub<SupportHub>("/hubs/support");
 
-app.MapGet("/db-check", async (SmartBankDbContext db) =>
-{
-    try
-    {
-        var canConnect = await db.Database.CanConnectAsync();
-        return Results.Ok(new { DatabaseConnection = canConnect, Message = "Successfully connected to SmartBankDb on LocalDB!" });
-    }
-    catch (Exception ex)
-    {
-        return Results.Problem(ex.Message);
-    }
-})
-.WithName("DbCheck");
-
-var summaries = new[]
-{
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
-
-app.MapGet("/weatherforecast", () =>
-{
-    var forecast =  Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
-})
-.WithName("GetWeatherForecast");
-
+// Replaces the old /db-check (which returned the database exception message) and the /weatherforecast template.
+app.MapHealthChecks("/health", new HealthCheckOptions { Predicate = _ => false });
+app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = check => check.Tags.Contains("ready") });
 // Automatic Database Setup & Seeding on Startup
 using (var scope = app.Services.CreateScope())
 {
@@ -189,9 +222,5 @@ using (var scope = app.Services.CreateScope())
 
 app.Run();
 
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}
-
-
+// Lets the integration tests start the whole application (WebApplicationFactory<Program>).
+public partial class Program { }

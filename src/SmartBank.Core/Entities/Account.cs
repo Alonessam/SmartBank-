@@ -3,9 +3,12 @@ using System.Collections.Generic;
 
 namespace SmartBank.Core.Entities
 {
-    public class Account
+    public class Account : IConcurrencyVersioned
     {
         public Guid Id { get; set; } = Guid.NewGuid();
+
+        // Optimistic-concurrency token, see IConcurrencyVersioned. Protects Balance against lost updates.
+        public int Version { get; set; }
         public Guid UserId { get; set; }
         public string AccountNumber { get; set; } = string.Empty;
         public string AccountCode { get; set; } = string.Empty;
@@ -13,9 +16,8 @@ namespace SmartBank.Core.Entities
         public string Currency { get; set; } = "TRY"; // Default TRY
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
-        // Debit Card encrypted details (Phase 3 AES)
+        // Debit card number, encrypted with AES-GCM. The CVV is deliberately NOT stored: it is shown once at issuance.
         public string EncryptedCardNumber { get; set; } = string.Empty;
-        public string EncryptedCardCvv { get; set; } = string.Empty;
         public string CardTheme { get; set; } = "theme-neon-blue";
         public string ExpiryDate { get; set; } = DateTime.UtcNow.AddYears(5).ToString("MM/yy");
 

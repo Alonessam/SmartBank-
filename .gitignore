@@ -1,5 +1,4 @@
-## Ignore Visual Studio / VS Code temporary files and build outputs
-[Db]
+## Visual Studio / VS Code temporary files and build outputs
 *.msf
 *.db
 *.localdb
@@ -19,14 +18,15 @@ x64/
 x86/
 [Aa]rm/
 [Aa]rm64/
-bbin/
 obj/
 bin/
-[Log]s/
 [Tt]emp/
 
-# Roslyn cache directories
-*.副本
+# Logs and test output
+[Ll]og/
+[Ll]ogs/
+*.log
+TestResults/
 
 # Visual Studio 2015/2017 cache directory
 .vs/
@@ -46,7 +46,7 @@ bin/
 appsettings.Local.json
 appsettings.Development.json
 
-# Gemini / Antigravity AI Logs and Cache
+# AI assistant logs and scratch files
 .gemini/
 brain/
 scratch/
@@ -59,3 +59,10 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 .DS_Store
+
+# Secrets (never commit)
+.env
+.env.*
+*.pfx
+*.key
+secrets.json
