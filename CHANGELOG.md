@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.2.0] - unreleased
+
+### Security
+
+- **Fixed a stored cross-site-scripting hole in the web app.** Text from other users (transfer descriptions, contact aliases,
+  chat messages, support titles, statement rows) was inserted into the page as HTML, so a transfer description such as
+  `<img onerror=...>` ran in the recipient's browser and could read the session token. All such values are now escaped, the
+  pages carry a Content-Security-Policy without inline scripts, and tests guard both. Details: `docs/DEFENSE.md` (T10).
+  Frontend only: publish it with `scripts/deploy-pages.ps1 -Push`; the API does not need a redeploy for this change.
+
+
 ## [1.1.0] - unreleased
 
 A security and reliability release. Almost every item below was found by reading the v1.0 code and was then reproduced

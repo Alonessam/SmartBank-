@@ -319,3 +319,35 @@ Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çe
 - Dokümantasyondaki abartı neden bir güvenlik riski? "Immutable" ile "append-only by convention" farkı nedir?
 - Bu projenin sınırlamalarını sayabilir misin? Hangisini ilk düzeltirdin ve nasıl?
 - Karakter kodlaması hatası nasıl oluştu ve neden testler yakalamadı? Nasıl önledin?
+
+---
+
+## T10 — Saklı XSS (v1.2): başka bir kullanıcının metni sayfada çalışıyordu
+
+**Sorun.** Ön yüz HTML'i `innerHTML` ve şablon dizeleriyle üretiyordu ve başka bir kullanıcıdan gelen metni olduğu gibi içine koyuyordu. En açık örnek havale açıklamasıydı: saldırgan, kurbana 1 TL gönderirken açıklamaya `<img src=x onerror="...">` yazıyor, kurban işlem geçmişini açtığı anda bu kod **kurbanın tarayıcısında, kurbanın oturumuyla** çalışıyordu. Token `localStorage`'da olduğu için `localStorage.getItem('token')` ile okunabiliyordu (yerelde kanıtladım: yük çalıştı, token okundu). Aynı desen kayıtlı alıcı takma adında, sohbet mesajlarında, destek oturumu başlığında, kredi kartı ekstre satırlarında ve borsa adlarında da vardı.
+
+**Neden bu kadar ciddi.** Bu bir "saklı" (stored) XSS: kurbanın bir bağlantıya tıklaması gerekmiyor, sadece kendi hesabına bakması yeterli. Saldırgan, kurban adına istediği API çağrısını yapabilir (para transferi dahil).
+
+**Ne yaptım.**
+- `app.js` içine `esc()` yardımcısı ekledim (`& < > " ' \`` karakterlerini kaçırır). Özellikle tırnakları da kaçırıyor, çünkü `data-alias="${c.alias}"` gibi öznitelik bağlamlarında `"` ile öznitelikten çıkıp yeni bir `onmouseover=` eklemek mümkündü.
+- Sunucudan veya başka kullanıcıdan gelen **her** şablon enterpolasyonunu `esc(...)` ile sardım (`app.js` ve `chat.js`). Sayılar `toFixed()` ile üretildiği, sabit metinler kodun içinde olduğu için onlara dokunmadım.
+- İkinci katman olarak üç sayfaya da **Content-Security-Policy** (`<meta>`) ekledim: `script-src` yalnızca kendi dosyalarımıza ve üç CDN'e izin verir, `unsafe-inline` ve `unsafe-eval` yok, `object-src 'none'`, `base-uri 'self'`. Bunun için `dashboard.html` içindeki yedi satır içi `onclick`/`onsubmit` özniteliğini `addEventListener`'a taşıdım; aksi halde katı bir CSP sayfayı bozardı.
+- Aynı saldırıyı yeniden denedim: yük artık işlem satırında düz metin olarak görünüyor, hiçbir `<img>` oluşmuyor, bayrak ve token okuması çalışmıyor.
+- `FrontendXssGuardTests`: bilinen tehlikeli enterpolasyonların (`${tx.description`, `${msg.content}`, `${c.alias}` …) ham halde bulunmamasını, `esc()` yardımcısının tırnakları kaçırdığını, her sayfada `unsafe-inline` içermeyen bir CSP olduğunu ve HTML'de satır içi betik/olay özniteliği bulunmadığını doğrular.
+
+**Neden bu seçim (ve eledikler).**
+- *`innerHTML` yerine `textContent`?* En sağlam yol bu, ama arayüzün büyük kısmı şablon dizeleriyle yazılmış; hepsini DOM API'sine çevirmek büyük ve riskli bir yeniden yazım olurdu. Kaçırma + CSP aynı korumayı çok daha küçük bir değişiklikle sağlıyor.
+- *Sunucuda temizlemek (girişte HTML'i silmek)?* Veri bozulur ve bağlam bilmeden doğru yapılamaz (aynı metin HTML'de, öznitelikte ve JS'te farklı kaçırılır). Doğru yer, çıktının üretildiği yerdir.
+- *DOMPurify?* Zengin HTML'e izin vermek gerekirse doğru araç budur; burada hiç HTML'e ihtiyaç yok, düz metin yeterli.
+
+**Bilinen sınırlamalar (dürüst liste).**
+- Guard testleri bir *listeyi* denetler; yeni bir enterpolasyon eklenip `esc()` unutulursa test bunu otomatik yakalamaz. Gerçek çözüm şablonları DOM API'sine taşımak ya da bir lint kuralıdır.
+- `<meta>` CSP'si `frame-ancestors` ve rapor ayarlayamaz; bunlar yanıt başlığı ister. GitHub Pages özel başlık eklemeye izin vermiyor.
+- Token hâlâ `localStorage`'da. XSS'in en kötü sonucu (token çalmak) ancak ömrü kısaltılıp iptal edilebilir yapılırsa küçülür (v1.2'nin sıradaki işi).
+- Zincirleme risk: sohbetteki `[CONFIRM_TRANSFER:...]` gibi işaretler mesaj içeriğinden ayrıştırılıyor; sunucunun bunları yalnızca güvenilir kaynaktan kabul ettiği ayrıca gözden geçirilmeli.
+
+**Mülakat soruları.**
+- Saklı, yansıyan ve DOM tabanlı XSS arasındaki fark nedir? Bu hangisiydi?
+- Neden `"` karakterini de kaçırmak gerekiyor? `<` ve `>` yetmez mi?
+- CSP tek başına neden yeterli değil, kaçırma tek başına neden yeterli değil?
+- Token `localStorage` yerine `HttpOnly` çerezde olsaydı bu saldırının etkisi ne olurdu, hangi yeni sorunlar çıkardı (CSRF)?
