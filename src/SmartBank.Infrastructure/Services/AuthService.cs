@@ -49,6 +49,13 @@ namespace SmartBank.Infrastructure.Services
                 return ServiceResult<AuthResponseDto>.Failure("TcknAlreadyExists", "T.C. Kimlik Numarası is already registered.");
             }
 
+            // The e-mail address is unique in the database; without this check a repeat registration ended in a 500.
+            var email = registerDto.Email.Trim().ToLower();
+            if (await _context.Users.AnyAsync(u => u.Email.ToLower() == email))
+            {
+                return ServiceResult<AuthResponseDto>.Failure("EmailAlreadyExists", "This e-mail address is already registered.");
+            }
+
             // Hash password
             var passwordHash = BCrypt.Net.BCrypt.HashPassword(registerDto.Password);
 
