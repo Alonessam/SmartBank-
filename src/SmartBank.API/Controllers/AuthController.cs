@@ -85,6 +85,42 @@ namespace SmartBank.API.Controllers
             return Ok(result.Data);
         }
 
+        // Exchanges the single-use refresh token for a new access token and a new refresh token. The token itself is the
+        // credential (256 random bits), so this is anonymous; it has its own, more generous limit because every client
+        // calls it every few minutes.
+        [HttpPost("refresh")]
+        [EnableRateLimiting("refresh")]
+        public async Task<IActionResult> Refresh([FromBody] RefreshRequestDto request)
+        {
+            if (!ModelState.IsValid)
+            {
+                return BadRequest(ModelState);
+            }
+
+            var result = await _authService.RefreshAsync(request.RefreshToken, ClientIp());
+
+            if (!result.IsSuccess)
+            {
+                return Unauthorized(new { result.IsSuccess, result.ErrorKey, result.Message });
+            }
+
+            return Ok(result.Data);
+        }
+
+        // Ends the session. Always 204, so the endpoint does not reveal whether a token was valid.
+        [HttpPost("logout")]
+        [EnableRateLimiting("refresh")]
+        public async Task<IActionResult> Logout([FromBody] RefreshRequestDto request)
+        {
+            if (!ModelState.IsValid)
+            {
+                return BadRequest(ModelState);
+            }
+
+            await _authService.LogoutAsync(request.RefreshToken, ClientIp());
+            return NoContent();
+        }
+
         [HttpPost("forgot-password")]
         public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordDto forgotPasswordDto)
         {

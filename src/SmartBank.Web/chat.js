@@ -10,13 +10,14 @@ let signalRConnection = null;
 let activeChatSessionId = null;
 
 // Initialize SignalR Connection with Access Token
-async function startSignalRConnection(token) {
+async function startSignalRConnection() {
     if (signalRConnection) {
         await signalRConnection.stop();
     }
 
     signalRConnection = new signalR.HubConnectionBuilder()
-        .withUrl(`${HUBS_URL}/support?access_token=${token}`)
+        // The factory runs on every (re)connect, so a reconnect after the access token expired gets a fresh one.
+        .withUrl(`${HUBS_URL}/support`, { accessTokenFactory: () => ensureFreshAccessToken() })
         .withAutomaticReconnect()
         .build();
 
@@ -108,7 +109,7 @@ async function startSignalRConnection(token) {
 // Start customer support session from floating chat widget
 async function initiateCustomerSupportSession() {
     if (!signalRConnection || signalRConnection.state !== "Connected") {
-        await startSignalRConnection(currentToken);
+        await startSignalRConnection();
     }
 
     if (signalRConnection.state === "Connected") {
@@ -119,7 +120,7 @@ async function initiateCustomerSupportSession() {
 // Agent joins customer session group
 async function joinAgentChatSession(sessionId) {
     if (!signalRConnection || signalRConnection.state !== "Connected") {
-        await startSignalRConnection(currentToken);
+        await startSignalRConnection();
     }
 
     if (signalRConnection.state === "Connected") {
@@ -469,7 +470,7 @@ document.addEventListener("DOMContentLoaded", () => {
             
             // If chat opened and connection not started, connect
             if (!chatBox.classList.contains("hidden") && !signalRConnection) {
-                await startSignalRConnection(currentToken);
+                await startSignalRConnection();
                 
                 // If there's an active session from sessionStorage, load it
                 const savedSessionId = sessionStorage.getItem("activeChatSessionId");
@@ -512,7 +513,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // Auto-connect SignalR when Representative Agent page opens
     if (path.includes("agent.html")) {
         if (currentToken) {
-            startSignalRConnection(currentToken);
+            startSignalRConnection();
         }
     }
 });
