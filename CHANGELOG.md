@@ -15,6 +15,10 @@
 - **One-time codes can be e-mailed through Brevo's HTTPS API** (`Brevo__ApiKey`, `Brevo__SenderEmail`, `Brevo__SenderName`).
   The old SMTP path only worked where outgoing SMTP ports are open; Render's free tier blocks them, so password reset and 2FA
   e-mails never arrived in production. SMTP is still used when no Brevo key is set. Details: `docs/DEFENSE.md` (T11).
+### Fixed
+
+- **Registering with an e-mail address that is already taken returned a 500** ("Registration failed" in the UI) because only the
+  database unique index caught it. It is now a clean 400 `EmailAlreadyExists` with a localized message (case-insensitive).
 
 ## [1.1.0] - unreleased
 

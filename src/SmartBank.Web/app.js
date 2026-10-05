@@ -211,6 +211,7 @@ const i18n = {
         // API Localization Keys
         "UsernameAlreadyExists": "Bu kullanıcı adı zaten alınmış.",
         "TcknAlreadyExists": "Bu T.C. Kimlik Numarası zaten kayıtlı.",
+        "EmailAlreadyExists": "Bu e-posta adresi zaten kayıtlı.",
         "InvalidCredentials": "Hatalı T.C. Kimlik Numarası veya şifre.",
         "InsufficientFunds": "Gönderen hesapta yetersiz bakiye.",
         "SourceAccountNotFound": "Kaynak hesap bulunamadı.",
