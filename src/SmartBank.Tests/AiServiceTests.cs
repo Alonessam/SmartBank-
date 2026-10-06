@@ -273,11 +273,11 @@ namespace SmartBank.Tests
         }
 
         [Fact]
-        public void The_service_with_no_faq_file_is_empty_but_working()
+        public async Task The_service_with_no_faq_file_is_empty_but_working()
         {
             var rag = new RAGService(new HttpClient(new ScriptedHandler(_ => new HttpResponseMessage())), Config(), Array.Empty<RAGService.FaqDocument>());
 
-            Assert.Null(rag.SearchFAQAsync("kartımı kaybettim").Result);
+            Assert.Null(await rag.SearchFAQAsync("kartımı kaybettim"));
         }
 
         // ---- the failover chatbot ----------------------------------------------------------------------------
