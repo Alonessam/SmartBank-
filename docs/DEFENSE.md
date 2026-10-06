@@ -458,3 +458,34 @@ Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çe
 - Prompt injection nedir? Burada neden "modele güvenme, çıktısını komut sayma" ilkesi yeterli?
 - Kültür duyarlı büyük/küçük harf eşleştirmesi bir güvenlik sorununa nasıl dönüşebilir? (Türkçe I/ı)
 - Kayan pencere ile sabit pencere hız sınırı arasındaki fark nedir?
+
+
+---
+
+## T14 — Üretim şeması modelle uyuşmuyordu (v1.2): "Start Session" hiçbir şey yapmıyordu
+
+**Sorun.** Canlı sitede sohbet penceresindeki **Start Session** düğmesi hiçbir şey yapmıyordu. Arayüzde hata yoktu; sunucu `StartSessionAsync` içinde bir istisna fırlatıyordu. Aynı kodu yerelde SQL Server'da ve PostgreSQL'de (modelden üretilmiş tablolarla) denedim: **çalışıyordu**. Fark veritabanındaydı. Üretim tabloları Supabase'de **elle** oluşturulmuştu (`MigrateAsync` bilerek kapalı, bkz. `Program.cs`) ve `ChatSessions` tablosunda kodun yazdığı `IsActive` sütunu yoktu. Yani sohbet üretimde hiç çalışmamıştı; unutulan bir sütun, yalnızca o özelliğe basılınca ortaya çıktı.
+
+**Tüm şemayı karşılaştırdım.** Supabase'den bütün sütun listesini alıp EF'in modelden ürettiği PostgreSQL şemasıyla karşılaştırdım (`docs/deploy/schema-check.sql`). Sonuç:
+- **Eksik sütun yok** (112 sütunun hepsi var).
+- **`StandingOrders.Amount` NOT NULL**, oysa kod kredi kartı otomatik ödeme talimatında tutarı bilerek boş bırakıyor (tüm ekstreyi öder). Bu talimat üretimde oluşturulamazdı: ikinci bir "yalnızca o özelliğe basınca çıkan" hata.
+- **Zaman sütunları `timestamp without time zone`.** API bu yüzden `2026-10-06T10:27:18` gibi **`Z`'siz** döndürüyor; tarayıcı bunu **yerel saat** sanıyor. Türkiye'de (UTC+3) gösterilen her saat 3 saat geriydi (canlı API'den doğruladım). Model `timestamp with time zone` kullanıyor (`RefreshTokens` ve `LockoutEnd` zaten öyle) ve `Z` ile döner.
+- Zararsız farklar: `varchar` yerine `text`, bazı sütunların modelden gevşek olması, eski `MarketRates` tablosunun fazladan sütunları (yalnızca "boş mu?" kontrolünde kullanılıyor).
+
+**Ne yaptım.** `docs/deploy/v1.2-postgres-upgrade.sql` betiğine: `ChatSessions.IsActive` ekleme; `StandingOrders.Amount` için `DROP NOT NULL`; tüm zaman sütunlarını `timestamptz`'ye çevirme. Çevirme **mevcut değerleri UTC olarak yorumlar** (`AT TIME ZONE 'UTC'`; üretimde saklanan değerler zaten UTC) ve yalnızca hâlâ "without time zone" olan sütunlara dokunur, yani betik iki kez çalıştırılırsa saatleri tekrar **kaydırmaz**. Gerçek PostgreSQL testi: "eski hâli" kuran (varsayılanı olan bir sütun dahil), bir satır yazan, betiği iki kez çalıştıran ve hem sütun listesini hem de o satırın **aynı UTC anını** koruduğunu doğrulayan bir test.
+
+**Neden bu seçim (ve eledikler).**
+- *Sadece `IsActive` eklemek?* Sohbeti düzeltir ama otomatik ödemeyi ve saat kaymasını bırakır. Şemanın tamamına bakmak üç sorunu birden buldu.
+- *Arayüzde `Z` eklemek (`new Date(x + 'Z')`)?* Yamadır: her tarih için ayrı yer, her yeni yerde unutulur. Doğru yer veri tipinin kendisi.
+- *Üretimde `MigrateAsync` açmak?* pgBouncer (işlem modu) ve Supabase'de elle yönetilen tablolarla çakışır, o yüzden kapalı. Bedeli bu: şema ile kod ayrı ayrı yönetildiği için kayma olur. Karşı önlem: elle çalıştırılan betikleri gerçek PostgreSQL'e karşı test etmek ve `schema-check.sql` ile kontrol etmek.
+
+**Bilinen sınırlamalar (dürüst liste).**
+- Şema kontrolü elle yapılıyor (Supabase'de sorguyu çalıştırıp çıktıyı karşılaştırmak); otomatik değil. Sürümler arası şema kayması için gerçek çözüm EF migration'larını üretimde de uygulamak.
+- Eski `MarketRates` tablosu hâlâ modelden farklı (`Id` uuid, fazladan `Name`/`NameEn`/`Change`). Tablo boş kalırsa başlangıçtaki tohum ekleme başarısız olur (şu an dolu).
+- Betik, tabloları kısa süre kilitler (küçük tablolar; demo için sorun değil).
+
+**Mülakat soruları.**
+- Kod yerelde çalışıp üretimde neden çalışmadı? "Benim makinemde çalışıyor" sorununu nasıl sistematik teşhis ettin?
+- `timestamp` ile `timestamptz` arasındaki fark nedir? Neden sonda `Z` olmayan bir zamanı tarayıcı yerel saat sanır?
+- Betiğin idempotent (tekrar çalıştırılabilir) olması neden önemli? Bu betikte "tekrar çalışınca saatleri kaydırma" riskini nasıl çözdün?
+- Üretimde migration'ı otomatik çalıştırmanın artı ve eksileri nelerdir?
