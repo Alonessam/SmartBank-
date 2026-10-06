@@ -28,7 +28,12 @@ namespace SmartBank.Infrastructure.Data
                         return true;
                     case SqlException sql when sql.Number == 1205:
                         return true;
-                    case PostgresException pg when pg.SqlState is "40001" or "40P01":
+                    // A foreign-key violation while saving a money movement means the other account was closed between the
+                    // read and the write (SQL Server 547, PostgreSQL 23503). Repeating the operation re-reads: the account is
+                    // gone, so the caller gets a clean "not found" instead of a raw database error.
+                    case SqlException sql when sql.Number == 547:
+                        return true;
+                    case PostgresException pg when pg.SqlState is "40001" or "40P01" or "23503":
                         return true;
                 }
             }
