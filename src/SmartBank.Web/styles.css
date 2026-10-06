@@ -138,6 +138,8 @@ h1, h2, h3, h4, h5, h6, .logo {
     padding: 0.2rem 0.5rem;
     background: var(--gradient-primary);
     color: white;
+    /* .logo paints its text with a transparent fill (gradient text) and children inherit it: without this the label was invisible. */
+    -webkit-text-fill-color: white;
     border-radius: 4px;
     font-weight: 600;
     margin-left: 0.5rem;
@@ -3520,6 +3522,38 @@ main[tabindex="-1"]:focus {
 
     .toast-region {
         left: 1rem;
+    }
+}
+
+/* ==========================================================================
+   Narrow screens: let grid tracks and flex children shrink below their content.
+   Without min-width: 0 a single wide table or form row stretched the whole dashboard sideways
+   (455px of content in a 375px phone viewport). The tables scroll inside their own box instead.
+   ========================================================================== */
+.workspace-col,
+.workspace-item,
+.table-container,
+.dashboard-section,
+.cc-panel,
+.so-card,
+.operations-card {
+    min-width: 0;
+}
+
+.table-scroll {
+    overflow-x: auto;
+}
+
+.section-header-flex {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+@media (max-width: 900px) {
+    .workspace-grid,
+    .cc-layout,
+    .so-layout {
+        grid-template-columns: minmax(0, 1fr);
     }
 }
 
