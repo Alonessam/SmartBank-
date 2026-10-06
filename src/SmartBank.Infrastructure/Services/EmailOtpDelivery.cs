@@ -24,7 +24,7 @@ namespace SmartBank.Infrastructure.Services
             ExposeCodeInResponse = bool.TryParse(configuration["Demo:ExposeOtp"], out var expose) && expose;
         }
 
-        public void Send(User user, string code, OtpPurpose purpose)
+        public void Send(User user, string code, OtpPurpose purpose, string? detail = null)
         {
             if (ExposeCodeInResponse)
             {
@@ -32,7 +32,7 @@ namespace SmartBank.Infrastructure.Services
             }
 
             // Capture plain values: the request (and its DbContext) may be gone by the time the mail is sent.
-            var mail = BuildMail(user.Email, user.FullName, code, purpose);
+            var mail = BuildMail(user.Email, user.FullName, code, purpose, detail);
             var userId = user.Id;
 
             _ = Task.Run(() => DeliverAsync(mail, purpose, userId));
@@ -59,10 +59,14 @@ namespace SmartBank.Infrastructure.Services
             }
         }
 
-        public static OutgoingMail BuildMail(string emailAddress, string fullName, string code, OtpPurpose purpose)
+        /// <param name="detail">What the code approves, in words (amount and recipient of a transfer). Shown in the mail so the customer can check it.</param>
+        public static OutgoingMail BuildMail(string emailAddress, string fullName, string code, OtpPurpose purpose, string? detail = null)
         {
             var (subject, heading, intro) = Describe(purpose);
-            return new OutgoingMail(emailAddress, fullName, subject, BuildBody(WebUtility.HtmlEncode(fullName), heading, intro, code));
+            var detailHtml = string.IsNullOrWhiteSpace(detail)
+                ? string.Empty
+                : $"<p style='font-size: 1.1rem; line-height: 1.6;'><strong>İşlem:</strong> {WebUtility.HtmlEncode(detail)}</p>";
+            return new OutgoingMail(emailAddress, fullName, subject, BuildBody(WebUtility.HtmlEncode(fullName), heading, intro, detailHtml, code));
         }
 
         private static (string Subject, string Heading, string Intro) Describe(OtpPurpose purpose) => purpose switch
@@ -82,19 +86,20 @@ namespace SmartBank.Infrastructure.Services
             _ => ("SmartBank Doğrulama Kodu", "SmartBank Güvenlik", "Doğrulama kodunuz:")
         };
 
-        private static string BuildBody(string encodedName, string heading, string intro, string code) => $@"
+        private static string BuildBody(string encodedName, string heading, string intro, string detailHtml, string code) => $@"
 <html>
 <body style='font-family: Arial, sans-serif; background-color: #0d1b2a; color: #e0e1dd; padding: 2rem;'>
     <div style='max-width: 600px; margin: 0 auto; background-color: #1b263b; border-radius: 12px; border: 1px solid #415a77; padding: 2rem;'>
         <h2 style='color: #00f260; text-align: center; font-size: 1.8rem; margin-top: 0;'>❖ {heading}</h2>
         <p style='font-size: 1.1rem;'>Merhaba <strong>{encodedName}</strong>,</p>
         <p style='font-size: 1.1rem; line-height: 1.6;'>{intro}</p>
+        {detailHtml}
         <div style='text-align: center; margin: 2rem 0;'>
             <span style='font-size: 2.2rem; font-weight: bold; background-color: #0d1b2a; color: #00f260; padding: 0.75rem 2rem; border-radius: 8px; letter-spacing: 5px; border: 1px solid #415a77;'>{code}</span>
         </div>
         <p style='color: #a3b18a; font-size: 0.9rem; line-height: 1.6;'>Bu kod 5 dakika boyunca geçerlidir ve tek kullanımlıktır. İşlemi siz başlatmadıysanız bu e-postayı yok sayın ve kodu kimseyle paylaşmayın.</p>
         <hr style='border: 0; border-top: 1px solid #415a77; margin: 2rem 0;' />
-        <p style='font-size: 0.8rem; text-align: center; color: #a3b18a;'>SmartBank A.Ş. &copy; {DateTime.UtcNow.Year}</p>
+        <p style='font-size: 0.8rem; text-align: center; color: #a3b18a;'>SmartBank (demo) &copy; {DateTime.UtcNow.Year}</p>
     </div>
 </body>
 </html>";
