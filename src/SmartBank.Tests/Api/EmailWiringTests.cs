@@ -6,6 +6,7 @@ using SmartBank.Infrastructure.Services;
 namespace SmartBank.Tests.Api
 {
     /// <summary>Checks the real dependency-injection wiring in Program.cs picks the right mail transport from configuration.</summary>
+    [Collection("EncryptionHelper")]
     public class EmailWiringTests
     {
         [Fact]
