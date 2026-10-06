@@ -12,6 +12,13 @@
 
 ### Security
 
+- **API security headers.** Every API response now carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+  `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` and `Referrer-Policy: no-referrer`; `/api` and `/hubs`
+  responses are `Cache-Control: no-store`. HSTS (180 days) is sent over HTTPS in production.
+- **T.C. Kimlik Numarası check digits are validated at registration** (server and form). This catches typos and most random
+  numbers; it is not identity verification. Fake numbers such as `11111111111` can no longer be used to register (existing
+  accounts are unaffected); `11111111110` and `10000000146` are valid made-up examples for demos.
+
 - **Support chat hardening.** The chat is now limited per user: messages are at most 1000 characters, 10 a minute and 100 an
   hour (agents get three times the per-minute allowance), 10 new chats an hour, 5 chat transfers a minute; the hub's message
   size is capped at 16 KB. Hub transfers are validated like the REST endpoint (amount range, description length). Machine
@@ -41,6 +48,11 @@
   all time columns were `timestamp without time zone`, so the API returned times without a `Z` and the browser showed them
   three hours early in Turkey. The upgrade script converts them to `timestamptz` (existing values are UTC) and is safe to
   run twice. Details: `docs/DEFENSE.md` (T14).
+### Changed
+
+- SQL commands are no longer written to the log at the default level (`Microsoft.EntityFrameworkCore.Database.Command` is
+  `Warning`): the standing-order worker's query every 30 seconds had filled the production log.
+
 ### Added
 
 - **One-time codes can be e-mailed through Brevo's HTTPS API** (`Brevo__ApiKey`, `Brevo__SenderEmail`, `Brevo__SenderName`).
