@@ -31,6 +31,11 @@
   pages carry a Content-Security-Policy without inline scripts, and tests guard both. Details: `docs/DEFENSE.md` (T10).
   Frontend only: publish it with `scripts/deploy-pages.ps1 -Push`; the API does not need a redeploy for this change.
 
+### Fixed (continued)
+
+- **Starting a support chat did nothing in production.** The hand-made `ChatSessions` table in Supabase had no `IsActive`
+  column, so creating a session failed on the server. `docs/deploy/v1.2-postgres-upgrade.sql` now adds it.
+
 ### Added
 
 - **One-time codes can be e-mailed through Brevo's HTTPS API** (`Brevo__ApiKey`, `Brevo__SenderEmail`, `Brevo__SenderName`).

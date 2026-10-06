@@ -105,18 +105,21 @@ namespace SmartBank.Tests.Database
             await modelConnection.OpenAsync();
             await legacyConnection.OpenAsync();
 
-            await ExecuteAsync(legacyConnection, @"DROP TABLE ""RefreshTokens"";");
+            // Pre-v1.2 shape: no refresh-token table, and the hand-made ChatSessions table without "IsActive".
+            await ExecuteAsync(legacyConnection, @"DROP TABLE ""RefreshTokens""; ALTER TABLE ""ChatSessions"" DROP COLUMN ""IsActive"";");
             Assert.Empty(await ColumnsAsync(legacyConnection, "'RefreshTokens'"));
 
             var script = await File.ReadAllTextAsync(RepositoryFile("docs/deploy/v1.2-postgres-upgrade.sql"));
 
+            const string tables = "'RefreshTokens', 'ChatSessions'";
             await ExecuteAsync(legacyConnection, script);
-            var expected = await ColumnsAsync(modelConnection, "'RefreshTokens'");
+            var expected = await ColumnsAsync(modelConnection, tables);
             Assert.NotEmpty(expected);
-            Assert.Equal(expected, await ColumnsAsync(legacyConnection, "'RefreshTokens'"));
+            Assert.Contains(expected, c => c.StartsWith("ChatSessions.IsActive "));
+            Assert.Equal(expected, await ColumnsAsync(legacyConnection, tables));
 
             await ExecuteAsync(legacyConnection, script); // idempotent
-            Assert.Equal(expected, await ColumnsAsync(legacyConnection, "'RefreshTokens'"));
+            Assert.Equal(expected, await ColumnsAsync(legacyConnection, tables));
 
             // Same indexes as the model (the unique one on the hash is what makes the lookup safe), and the cascade works.
             const string indexSql = "SELECT indexname || ' ' || indexdef FROM pg_indexes WHERE tablename = 'RefreshTokens' ORDER BY indexname";
