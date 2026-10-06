@@ -11,7 +11,7 @@
 # Without -Push it only prepares the commit in a temporary worktree, prints what would change and cleans up, so it is
 # safe to try. With -Push it publishes to origin/gh-pages (which updates the live demo).
 #
-# -Version is the cache-buster appended to the script URLs (app.js?v=...). It defaults to the latest git tag without the
+# -Version is the cache-buster appended to the script URLs (app.js, chat.js and styles.css ?v=...). It defaults to the latest git tag without the
 # leading "v" (so tag the release first), or 1.3.0 when the repository has no tag.
 #
 #   ./scripts/deploy-pages.ps1            # dry run
@@ -70,7 +70,7 @@ try {
     # Cache busters on the scripts, so browsers fetch the new JavaScript instead of a cached copy.
     foreach ($page in Get-ChildItem $worktree -Filter *.html) {
         $text = [System.IO.File]::ReadAllText($page.FullName)
-        $text = [regex]::Replace($text, '((?:app|chat)\.js)(\?v=[^"]*)?"', "`$1?v=$Version`"")
+        $text = [regex]::Replace($text, '((?:app|chat)\.js|styles\.css)(\?v=[^"]*)?"', "`$1?v=$Version`"")
         [System.IO.File]::WriteAllText($page.FullName, $text, (New-Object System.Text.UTF8Encoding($false)))
     }
 

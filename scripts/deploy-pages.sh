@@ -53,7 +53,7 @@ cp -R "$repo/src/SmartBank.Web/." "$worktree/"
 
 # Cache busters on the scripts, so browsers fetch the new JavaScript instead of a cached copy.
 for page in "$worktree"/*.html; do
-  sed -E -i.bak "s/((app|chat)\.js)(\?v=[^\"]*)?\"/\1?v=$version\"/g" "$page"
+  sed -E -i.bak "s/((app|chat)\.js|styles\.css)(\?v=[^\"]*)?\"/\1?v=$version\"/g" "$page"
   rm -f "$page.bak"
 done
 
