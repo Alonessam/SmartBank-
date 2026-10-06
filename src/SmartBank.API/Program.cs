@@ -1,43 +1,49 @@
-﻿using System.Text;
+using Microsoft.AspNetCore.SignalR;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.IdentityModel.Tokens;
 using SmartBank.API.Health;
 using SmartBank.API.Hubs;
+using SmartBank.API.Middlewares;
 using SmartBank.API.Security;
 using SmartBank.API.Services;
-using SmartBank.Core.Interfaces;
-using SmartBank.Infrastructure.Data;
-using SmartBank.Infrastructure.Services;
-using SmartBank.Infrastructure.BackgroundServices;
-using SmartBank.API.Middlewares;
-using FluentValidation;
-using SmartBank.Core.Validators;
 using SmartBank.Core.Common;
-using SmartBank.Core.Entities;
+using SmartBank.Core.Interfaces;
+using SmartBank.Core.Validators;
+using SmartBank.Infrastructure.BackgroundServices;
+using SmartBank.Infrastructure.Data;
 using SmartBank.Infrastructure.Security;
+using SmartBank.Infrastructure.Services;
+using FluentValidation;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Card-data encryption key (base64, 32 bytes) comes from user-secrets / Encryption__Key, never from the repo.
 EncryptionHelper.Configure(builder.Configuration["Encryption:Key"]);
 
-// Add DbContext (Supports local SQL Server and Cloud PostgreSQL)
+// One clock for every business rule (OTP expiry, statement dates, standing-order schedule, token expiry): tests replace it.
+builder.Services.TryAddSingleton(TimeProvider.System);
+
+// Add DbContext (supports local SQL Server and cloud PostgreSQL). Which one is decided from the connection string;
+// a missing or unreadable string stops the start with a clear message.
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+var databaseKind = DatabaseProviderSelector.Detect(connectionString);
 builder.Services.AddDbContext<SmartBankDbContext>(options =>
 {
-    var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
-    if (connectionString != null && (connectionString.StartsWith("postgresql://") || connectionString.StartsWith("postgres://") || connectionString.Contains("Host=") || connectionString.Contains("port=") || connectionString.Contains("sslmode=")))
+    if (databaseKind == DatabaseKind.PostgreSql)
     {
-        options.UseNpgsql(connectionString);
+        options.UseNpgsql(DatabaseProviderSelector.ToNpgsqlConnectionString(connectionString!));
     }
     else
     {
         options.UseSqlServer(connectionString);
     }
+
     // Ignore EF Core 9+ pending model changes warning to allow database migrations to run smoothly on startup
     options.ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning));
 });
@@ -55,7 +61,6 @@ builder.Services.AddAuthentication(options =>
 .AddJwtBearer(options =>
 {
     options.RequireHttpsMetadata = !builder.Environment.IsDevelopment();
-    options.SaveToken = true;
     options.TokenValidationParameters = new TokenValidationParameters
     {
         ValidateIssuerSigningKey = true,
@@ -107,61 +112,97 @@ builder.Services.AddSingleton<IOtpDelivery, EmailOtpDelivery>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IBankingService, BankingService>();
 builder.Services.AddScoped<IChatService, ChatService>();
-// Register Caching & Market Rates Decorator
+
+// Market rates: the HTTP client wrapped in an in-memory cache (decorator).
 builder.Services.AddMemoryCache();
 builder.Services.AddHttpClient<MarketRateService>();
-builder.Services.AddScoped<IMarketRateService>(sp => 
+builder.Services.AddScoped<IMarketRateService>(sp =>
     new CachedMarketRateService(sp.GetRequiredService<MarketRateService>(), sp.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>()));
+
+// AI: the chatbot is "FAQ retrieval, then Ollama, then Gemini, then a canned answer" (FailoverChatbotService). The FAQ search
+// is ONE instance for the whole application: it reads its file and embeds its questions once, not for every message.
 builder.Services.AddHttpClient<OllamaService>();
-builder.Services.AddScoped<IAIChatbotService>(sp => sp.GetRequiredService<OllamaService>());
 builder.Services.AddHttpClient<GeminiService>();
-builder.Services.AddHttpClient<IRAGService, RAGService>();
+builder.Services.AddHttpClient("faq-embeddings");
+builder.Services.AddSingleton<IRAGService>(sp => new RAGService(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("faq-embeddings"),
+    sp.GetRequiredService<IConfiguration>(),
+    sp.GetRequiredService<ILogger<RAGService>>(),
+    sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddScoped<IAIChatbotService, FailoverChatbotService>();
+builder.Services.AddScoped<SupportAiResponder>();
+
 builder.Services.AddHostedService<StandingOrderExecutionWorker>();
 builder.Services.AddValidatorsFromAssemblyContaining<RegisterDtoValidator>();
 
 // Add services to the container.
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .ConfigureApiBehaviorOptions(options =>
+    {
+        // A request that fails the attribute checks on its DTO (length, range, pattern, decimals) gets the same body shape as
+        // every other error: { isSuccess, errorKey, message }, plus the standard "errors" list per field.
+        options.InvalidModelStateResponseFactory = context =>
+        {
+            var errors = context.ModelState
+                .Where(e => e.Value is { Errors.Count: > 0 })
+                .ToDictionary(e => e.Key, e => e.Value!.Errors.Select(x => string.IsNullOrEmpty(x.ErrorMessage) ? "The value is not valid." : x.ErrorMessage).ToArray());
+
+            return new BadRequestObjectResult(new
+            {
+                isSuccess = false,
+                errorKey = "ValidationError",
+                message = string.Join(" ", errors.Values.SelectMany(v => v)),
+                errors
+            });
+        };
+    });
+
 // Chat messages are at most ChatLimits.MaxMessageLength characters; 16 KB per hub message is plenty and bounds abuse (default 32 KB).
-builder.Services.AddSignalR(options => options.MaximumReceiveMessageSize = 16 * 1024);
-builder.Services.TryAddSingleton(TimeProvider.System);
+// The filter refuses hub calls made after the access token has expired.
+builder.Services.AddSingleton<HubTokenExpiryFilter>();
+builder.Services.AddSignalR(options =>
+{
+    options.MaximumReceiveMessageSize = 16 * 1024;
+    options.AddFilter<HubTokenExpiryFilter>();
+});
 builder.Services.AddSingleton(ChatSettings.From(builder.Configuration));
 builder.Services.AddSingleton<ChatRateLimiter>();
 
-// Per-IP rate limit on the auth endpoints (login, 2FA, password reset, register). This is the coarse layer;
-// the per-account lockout and the OTP attempt counter in the services are the precise ones.
-// Behind a reverse proxy the IP is only the real client address if forwarded headers are enabled (see Dockerfile).
-var authPermitLimit = builder.Configuration.GetValue("RateLimiting:Auth:PermitLimit", 10);
-var authWindowSeconds = builder.Configuration.GetValue("RateLimiting:Auth:WindowSeconds", 60);
+// Rate limits. Every policy is a fixed window per partition; over the limit the answer is 429 with Retry-After.
+//  auth     per client address: login, 2FA, password reset, register (the coarse layer; the per-account lockout and the
+//           OTP attempt counter in the services are the precise ones)
+//  refresh  per client address: silent token refresh and logout
+//  banking  per signed-in user (address when anonymous): every banking endpoint
+//  transfer per signed-in user: money-moving endpoints, stricter, replaces "banking" on those actions
+//  market   per client address: the public rates list
+// Behind a reverse proxy the address is only the real client's if forwarded headers are enabled (see Dockerfile).
+// Counts live in memory of each instance (not shared between instances).
+static string ClientKey(HttpContext http) => http.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+static string UserOrClientKey(HttpContext http) =>
+    http.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value is { Length: > 0 } id ? "user:" + id : "ip:" + ClientKey(http);
+
+FixedWindowRateLimiterOptions Window(string name, int defaultLimit, int defaultSeconds) => new()
+{
+    PermitLimit = builder.Configuration.GetValue($"RateLimiting:{name}:PermitLimit", defaultLimit),
+    Window = TimeSpan.FromSeconds(builder.Configuration.GetValue($"RateLimiting:{name}:WindowSeconds", defaultSeconds)),
+    QueueLimit = 0
+};
+
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 
-    options.AddPolicy("auth", httpContext =>
-        RateLimitPartition.GetFixedWindowLimiter(
-            httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-            _ => new FixedWindowRateLimiterOptions
-            {
-                PermitLimit = authPermitLimit,
-                Window = TimeSpan.FromSeconds(authWindowSeconds),
-                QueueLimit = 0
-            }));
-
-    // Silent token refresh and logout: every signed-in client calls this every few minutes, so it gets a wider window.
-    options.AddPolicy("refresh", httpContext =>
-        RateLimitPartition.GetFixedWindowLimiter(
-            httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-            _ => new FixedWindowRateLimiterOptions
-            {
-                PermitLimit = builder.Configuration.GetValue("RateLimiting:Refresh:PermitLimit", 60),
-                Window = TimeSpan.FromSeconds(60),
-                QueueLimit = 0
-            }));
+    options.AddPolicy(RateLimitPolicies.Auth, http => RateLimitPartition.GetFixedWindowLimiter(ClientKey(http), _ => Window("Auth", 10, 60)));
+    options.AddPolicy(RateLimitPolicies.Refresh, http => RateLimitPartition.GetFixedWindowLimiter(ClientKey(http), _ => Window("Refresh", 60, 60)));
+    options.AddPolicy(RateLimitPolicies.Banking, http => RateLimitPartition.GetFixedWindowLimiter(UserOrClientKey(http), _ => Window("Banking", 60, 60)));
+    options.AddPolicy(RateLimitPolicies.Transfer, http => RateLimitPartition.GetFixedWindowLimiter("transfer:" + UserOrClientKey(http), _ => Window("Transfer", 10, 60)));
+    options.AddPolicy(RateLimitPolicies.Market, http => RateLimitPartition.GetFixedWindowLimiter(ClientKey(http), _ => Window("Market", 60, 60)));
 
     options.OnRejected = async (context, cancellationToken) =>
     {
         if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
         {
-            context.HttpContext.Response.Headers.RetryAfter = ((int)Math.Ceiling(retryAfter.TotalSeconds)).ToString();
+            context.HttpContext.Response.Headers.RetryAfter = ((int)Math.Ceiling(retryAfter.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
         }
 
         await context.HttpContext.Response.WriteAsJsonAsync(new
@@ -209,6 +250,15 @@ builder.Services.AddHsts(options =>
 
 var app = builder.Build();
 
+// AllowedHosts (the Host headers the app answers to) is read from configuration: set the environment variable
+// AllowedHosts to "your-api.example.com" (semicolon-separated for several). "*" is the default so that a fresh deployment
+// works, but in Production it is worth narrowing: say so in the log instead of leaving it silent.
+var allowedHosts = app.Configuration["AllowedHosts"];
+if (app.Environment.IsProduction() && (string.IsNullOrWhiteSpace(allowedHosts) || allowedHosts == "*"))
+{
+    app.Logger.LogWarning("AllowedHosts is \"*\": the API answers to any Host header. Set the AllowedHosts environment variable to this API's host name(s).");
+}
+
 app.UseMiddleware<GlobalExceptionMiddleware>();
 app.UseMiddleware<SecurityHeadersMiddleware>();
 if (!app.Environment.IsDevelopment())
@@ -226,45 +276,20 @@ app.UseHttpsRedirection();
 
 app.UseCors();
 
+app.UseAuthentication();
+
+// After authentication, so the per-user policies can see who is calling.
 app.UseRateLimiter();
 
-app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
 app.MapHub<SupportHub>("/hubs/support");
 
 // Replaces the old /db-check (which returned the database exception message) and the /weatherforecast template.
+// The database tables are created by the EF migrations / the SQL scripts in docs/deploy, not at startup.
 app.MapHealthChecks("/health", new HealthCheckOptions { Predicate = _ => false });
 app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = check => check.Tags.Contains("ready") });
-// Automatic Database Setup & Seeding on Startup
-using (var scope = app.Services.CreateScope())
-{
-    var services = scope.ServiceProvider;
-    try
-    {
-        var context = services.GetRequiredService<SmartBankDbContext>();
-        // Apply migrations on startup (Disabled for Cloud pgBouncer. Table creation handled via SQL Editor)
-        // await context.Database.MigrateAsync();
-        
-        // Seed default rates if empty
-        if (!await context.MarketRates.AnyAsync())
-        {
-            context.MarketRates.AddRange(
-                new MarketRate { Code = "USD", Buy = 32.50m, Sell = 32.80m, UpdatedAt = DateTime.UtcNow },
-                new MarketRate { Code = "EUR", Buy = 35.10m, Sell = 35.45m, UpdatedAt = DateTime.UtcNow },
-                new MarketRate { Code = "XAU", Buy = 2450.00m, Sell = 2480.00m, UpdatedAt = DateTime.UtcNow },
-                new MarketRate { Code = "XAG", Buy = 30.50m, Sell = 31.20m, UpdatedAt = DateTime.UtcNow }
-            );
-            await context.SaveChangesAsync();
-        }
-    }
-    catch (Exception ex)
-    {
-        var logger = services.GetRequiredService<ILogger<Program>>();
-        logger.LogError(ex, "An error occurred creating or seeding the database.");
-    }
-}
 
 app.Run();
 

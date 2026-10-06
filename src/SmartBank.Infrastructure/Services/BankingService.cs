@@ -1,90 +1,118 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
+using System.Globalization;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using SmartBank.Core.Common;
 using SmartBank.Core.DTOs;
 using SmartBank.Core.Entities;
 using SmartBank.Core.Interfaces;
-using SmartBank.Infrastructure.Data;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using SmartBank.Core.Security;
+using SmartBank.Infrastructure.Data;
 
 namespace SmartBank.Infrastructure.Services
 {
-    public class BankingService : IBankingService
+    /// <summary>
+    /// Everything a customer does with money. The class is split by topic into partial files: accounts and transfers
+    /// (this file), credit cards, exchange, standing orders and contacts. All of them share the rules below:
+    /// money amounts have at most two decimals, computed amounts are rounded once with <see cref="Money.Round"/>, every
+    /// change of a balance goes through the optimistic-concurrency retry, and "not found" and "not yours" look the same.
+    /// </summary>
+    public partial class BankingService : IBankingService
     {
+        public const int MaxAccountsPerUser = 10;
+        public const int MaxTransactionsPerRequest = 500;
+        public const int DefaultTransactionsPerRequest = 200;
+
+        // Transfer step-up rules (amounts in TRY, or the TRY value of another currency).
+        private const int DuplicateWindowSeconds = 30;
+        private const decimal FraudFloorTry = 500.00m;
+        private const decimal NewAccountLimitTry = 2000.00m;
+        private const decimal TwoFactorThresholdTry = 1000.00m;
+        private const decimal FraudAverageMultiple = 5m;
+        private static readonly TimeSpan AverageWindow = TimeSpan.FromDays(90);
+
         private readonly SmartBankDbContext _context;
         private readonly IOtpDelivery _otpDelivery;
         private readonly IClientInfo? _clientInfo;
         private readonly ILogger<BankingService> _logger;
         private readonly IMarketRateService _marketRateService;
+        private readonly TimeProvider _time;
 
         public BankingService(SmartBankDbContext context, IOtpDelivery otpDelivery, IMarketRateService marketRateService,
-            IClientInfo? clientInfo = null, ILogger<BankingService>? logger = null)
+            IClientInfo? clientInfo = null, ILogger<BankingService>? logger = null, TimeProvider? timeProvider = null)
         {
             _context = context;
             _otpDelivery = otpDelivery;
             _clientInfo = clientInfo;
             _logger = logger ?? NullLogger<BankingService>.Instance;
             _marketRateService = marketRateService;
+            _time = timeProvider ?? TimeProvider.System;
         }
 
-        public async Task<ServiceResult<List<AccountDto>>> GetAccountsAsync(Guid userId)
+        private DateTime UtcNow => _time.GetUtcNow().UtcDateTime;
+
+        private string ClientIp => _clientInfo?.IpAddress ?? "unknown";
+
+        private static ServiceResult<T> Fail<T>(string errorKey, string message) => ServiceResult<T>.Failure(errorKey, message);
+
+        private AuditLog NewAudit(Guid userId, string action, string details) => new()
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            Action = action,
+            Details = details,
+            IpAddress = ClientIp,
+            CreatedAt = UtcNow
+        };
+
+        /// <summary>Audit text with invariant number formatting, whatever the culture of the machine.</summary>
+        private static string Text(FormattableString text) => text.ToString(CultureInfo.InvariantCulture);
+
+        /// <summary>An amount must be positive, at most <paramref name="max"/> and have at most two decimals.</summary>
+        private static (string Key, string Message)? ValidateAmount(decimal amount, decimal max = Money.MaxAmount)
+        {
+            if (amount <= 0) return ("InvalidAmount", "Amount must be greater than zero.");
+            if (amount > max) return ("InvalidAmount", $"Amount cannot exceed {Money.Format(max)}.");
+            if (!Money.HasValidScale(amount)) return (Money.ScaleErrorKey, Money.ScaleMessage);
+            return null;
+        }
+
+        // Display paths must not fail because one stored card cannot be decrypted (e.g. legacy rows from before v1.1).
+        private static string SafeDecrypt(string? cipherText) =>
+            EncryptionHelper.TryDecrypt(cipherText, out var plain) ? plain : string.Empty;
+
+        private Task<ServiceResult<T>> RunWithConcurrencyRetryAsync<T>(Func<Task<ServiceResult<T>>> operation) =>
+            ConcurrencyRetry.RunAsync(_context, operation, "The account was changed by another operation at the same time. Please try again.");
+
+        // ---- accounts -----------------------------------------------------------------------------------------
+
+        public async Task<ServiceResult<List<AccountDto>>> GetAccountsAsync(Guid userId, CancellationToken cancellationToken = default)
         {
             var accounts = await _context.Accounts
+                .AsNoTracking()
                 .Where(a => a.UserId == userId)
-                .ToListAsync();
+                .OrderBy(a => a.CreatedAt).ThenBy(a => a.Id)
+                .ToListAsync(cancellationToken);
 
-            var accountDtos = accounts.Select(a =>
-            {
-                decimal? calculatedInterestRate = a.InterestRate;
-                if (a.AccountType != null && a.AccountType.Equals("TimeDeposit", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (a.Balance < 50000m) calculatedInterestRate = 48.00m;
-                    else if (a.Balance < 250000m) calculatedInterestRate = 49.50m;
-                    else if (a.Balance < 1000000m) calculatedInterestRate = 51.00m;
-                    else calculatedInterestRate = 52.50m;
-                }
-
-                return new AccountDto
-                {
-                    Id = a.Id,
-                    AccountNumber = a.AccountNumber,
-                    AccountCode = a.AccountCode,
-                    Balance = a.Balance,
-                    Currency = a.Currency,
-                    CreatedAt = a.CreatedAt,
-                    CardNumber = SafeDecrypt(a.EncryptedCardNumber),
-                    CardTheme = a.CardTheme,
-                    ExpiryDate = a.ExpiryDate,
-                    AccountType = a.AccountType,
-                    InterestRate = calculatedInterestRate,
-                    MaturityDate = a.MaturityDate
-                };
-            }).ToList();
-
-            return ServiceResult<List<AccountDto>>.Success(accountDtos);
+            return ServiceResult<List<AccountDto>>.Success(accounts.Select(a => BankingMappers.ToDto(a, SafeDecrypt(a.EncryptedCardNumber))).ToList());
         }
 
-        public async Task<ServiceResult<List<TransactionDto>>> GetTransactionsAsync(Guid accountId, Guid userId)
+        public async Task<ServiceResult<List<TransactionDto>>> GetTransactionsAsync(Guid accountId, Guid userId, int take = DefaultTransactionsPerRequest, CancellationToken cancellationToken = default)
         {
-            // Verify account exists and belongs to the user
-            var accountExists = await _context.Accounts
-                .AnyAsync(a => a.Id == accountId && a.UserId == userId);
+            take = Math.Clamp(take, 1, MaxTransactionsPerRequest);
 
-            if (!accountExists)
+            // Someone else's account and an account that does not exist look the same.
+            var owned = await _context.Accounts.AsNoTracking().AnyAsync(a => a.Id == accountId && a.UserId == userId, cancellationToken);
+            if (!owned)
             {
-                return ServiceResult<List<TransactionDto>>.Failure("UnauthorizedAccountAccess", "Account not found or access denied.");
+                return Fail<List<TransactionDto>>("AccountNotFound", "Account not found.");
             }
 
             var transactions = await _context.Transactions
-                .Include(t => t.SourceAccount).ThenInclude(sa => sa!.User)
-                .Include(t => t.DestinationAccount).ThenInclude(da => da!.User)
+                .AsNoTracking()
                 .Where(t => t.SourceAccountId == accountId || t.DestinationAccountId == accountId)
-                .OrderByDescending(t => t.CreatedAt)
+                .OrderByDescending(t => t.CreatedAt).ThenByDescending(t => t.Id)
+                .Take(take)
                 .Select(t => new TransactionDto
                 {
                     Id = t.Id,
@@ -98,288 +126,53 @@ namespace SmartBank.Infrastructure.Services
                     Category = t.Category,
                     CreatedAt = t.CreatedAt
                 })
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
 
             return ServiceResult<List<TransactionDto>>.Success(transactions);
         }
 
-        public async Task<ServiceResult<TransactionDto>> TransferMoneyAsync(Guid userId, TransferRequestDto transferRequest)
+        public async Task<ServiceResult<AccountDto>> CreateAccountAsync(Guid userId, string currency, string accountType = AccountTypes.DemandDeposit)
         {
-            if (transferRequest.Amount <= 0)
+            var code = string.IsNullOrWhiteSpace(currency) ? Currencies.Try : Currencies.Normalize(currency);
+            if (!Currencies.IsSupported(code))
             {
-                return ServiceResult<TransactionDto>.Failure("InvalidAmount", "Amount must be greater than zero.");
+                return Fail<AccountDto>("InvalidCurrency", "Supported currencies are TRY, USD, EUR, XAU and XAG.");
             }
 
-            if (transferRequest.SourceAccountNumber == transferRequest.DestinationAccountNumber)
+            var type = AccountTypes.Normalize(accountType);
+            if (type == null)
             {
-                return ServiceResult<TransactionDto>.Failure("CannotTransferToSelf", "Cannot transfer money to the same account.");
+                return Fail<AccountDto>("InvalidAccountType", "Account type must be DemandDeposit or TimeDeposit.");
             }
 
-            // 1. Fetch and validate source account (must exist and belong to the user)
-            var sourceAccount = await _context.Accounts
-                .Include(a => a.User)
-                .FirstOrDefaultAsync(a => a.AccountNumber == transferRequest.SourceAccountNumber);
-
-            if (sourceAccount == null)
+            if (!await _context.Users.AnyAsync(u => u.Id == userId))
             {
-                return ServiceResult<TransactionDto>.Failure("SourceAccountNotFound", "Source account was not found.");
+                return Fail<AccountDto>("UserNotFound", "User details not found.");
             }
 
-            if (sourceAccount.UserId != userId)
+            if (await _context.Accounts.CountAsync(a => a.UserId == userId) >= MaxAccountsPerUser)
             {
-                return ServiceResult<TransactionDto>.Failure("UnauthorizedAccountAccess", "You do not have access to this source account.");
+                return Fail<AccountDto>("AccountLimitReached", $"You can have at most {MaxAccountsPerUser} accounts.");
             }
 
-            // 2. Fetch and validate destination account
-            var destinationAccount = await _context.Accounts
-                .FirstOrDefaultAsync(a => a.AccountNumber == transferRequest.DestinationAccountNumber);
+            var (account, cardNumber, cvv) = await BuildAccountAsync(userId, code!, type);
+            _context.Accounts.Add(account);
+            await _context.SaveChangesAsync();
 
-            if (destinationAccount == null)
-            {
-                return ServiceResult<TransactionDto>.Failure("DestinationAccountNotFound", "Destination account was not found.");
-            }
-
-            // Note: Multi-currency transfers are simplified to same currency for this MVP.
-            if (sourceAccount.Currency != destinationAccount.Currency)
-            {
-                return ServiceResult<TransactionDto>.Failure("CurrencyMismatch", "Currency exchange transfers are not supported in this version.");
-            }
-
-            // 3. Verify balance
-            if (sourceAccount.Balance < transferRequest.Amount)
-            {
-                return ServiceResult<TransactionDto>.Failure("InsufficientFunds", "Insufficient funds in the source account.");
-            }
-
-            // 4. Fraud and 2FA Verification Checks
-            var user = sourceAccount.User;
-            bool checkFraudAnd2FA = true;
-
-            // If OTP is provided, verify it first
-            if (!string.IsNullOrEmpty(transferRequest.OtpCode))
-            {
-                if (user == null)
-                {
-                    return ServiceResult<TransactionDto>.Failure("UserNotFound", "User details not found.");
-                }
-
-                // The code only approves the exact transfer it was issued for (same accounts, same amount).
-                var binding = OtpManager.TransferBinding(sourceAccount.AccountNumber, destinationAccount.AccountNumber, transferRequest.Amount);
-                var otpCheck = OtpManager.Verify(user, OtpPurpose.Transfer, transferRequest.OtpCode, DateTime.UtcNow, binding);
-                await _context.SaveChangesAsync(); // persists the failed-attempt counter, or the cleared code on success
-
-                if (otpCheck == OtpCheckResult.TooManyAttempts)
-                {
-                    return ServiceResult<TransactionDto>.Failure("TooManyOtpAttempts", "Too many wrong codes. Start the transfer again to get a new code.");
-                }
-
-                if (otpCheck != OtpCheckResult.Valid)
-                {
-                    return ServiceResult<TransactionDto>.Failure("InvalidOtpCode", "Invalid or expired verification code.");
-                }
-
-                // Skip fraud/2FA checks because user validated it via OTP
-                checkFraudAnd2FA = false;
-            }
-
-            if (checkFraudAnd2FA)
-            {
-                bool needsOtp = false;
-                string reasonKey = "Requires2FA";
-                string reasonMessage = "Verification required.";
-
-                // Rule A: Duplicate Transaction Check (last 30 seconds to same destination with same amount)
-                var thirtySecondsAgo = DateTime.UtcNow.AddSeconds(-30);
-                var isDuplicate = await _context.Transactions
-                    .AnyAsync(t => t.SourceAccountId == sourceAccount.Id && 
-                                   t.DestinationAccountId == destinationAccount.Id && 
-                                   t.Amount == transferRequest.Amount && 
-                                   t.CreatedAt >= thirtySecondsAgo);
-
-                if (isDuplicate)
-                {
-                    needsOtp = true;
-                    reasonKey = "SuspectedFraudDuplicate";
-                    reasonMessage = "Şüpheli işlem: Son 30 saniye içerisinde aynı hesaba aynı miktarda transfer denemesi.";
-                }
-
-                // Rule B: High-Value Transaction Check (> 5x average spending or > 2000 TRY on new account)
-                if (!needsOtp)
-                {
-                    var pastTransactions = await _context.Transactions
-                        .Where(t => t.SourceAccountId == sourceAccount.Id)
-                        .Select(t => t.Amount)
-                        .ToListAsync();
-
-                    if (pastTransactions.Count > 0)
-                    {
-                        var averageSpend = pastTransactions.Average();
-                        if (transferRequest.Amount > 5 * averageSpend && transferRequest.Amount > 500.00m)
-                        {
-                            needsOtp = true;
-                            reasonKey = "SuspectedFraudHighValue";
-                            reasonMessage = $"Şüpheli işlem: Transfer miktarı ortalama harcamanızın ({averageSpend:F2} TRY) 5 katından fazla.";
-                        }
-                    }
-                    else
-                    {
-                        if (transferRequest.Amount > 2000.00m)
-                        {
-                            needsOtp = true;
-                            reasonKey = "SuspectedFraudHighValue";
-                            reasonMessage = "Şüpheli işlem: Yeni hesaplar için tek seferlik transfer limiti (2000 TRY) aşıldı.";
-                        }
-                    }
-                }
-
-                // Rule C: General 2FA check (User has enabled 2FA and amount is > 1000 TRY)
-                if (!needsOtp && user != null && user.TwoFactorEnabled && transferRequest.Amount > 1000.00m)
-                {
-                    needsOtp = true;
-                    reasonKey = "Requires2FA";
-                    reasonMessage = "Güvenlik doğrulaması: 1000 TRY üzerindeki transferler için doğrulama gerekiyor.";
-                }
-
-                if (needsOtp && user != null)
-                {
-                    // One-time code, valid for 5 minutes, bound to this exact transfer.
-                    var binding = OtpManager.TransferBinding(sourceAccount.AccountNumber, destinationAccount.AccountNumber, transferRequest.Amount);
-                    var otp = OtpManager.Issue(user, OtpPurpose.Transfer, DateTime.UtcNow, binding);
-                    await _context.SaveChangesAsync();
-
-                    _otpDelivery.Send(user, otp, OtpPurpose.Transfer);
-
-                    var message = reasonMessage;
-                    if (_otpDelivery.ExposeCodeInResponse)
-                    {
-                        message += $"|OTP:{otp}"; // demo mode only, see IOtpDelivery.ExposeCodeInResponse
-                    }
-
-                    return ServiceResult<TransactionDto>.Failure(reasonKey, message);
-                }
-            }
-
-            // Everything above only decides whether this transfer is allowed. The money itself moves below, in a
-            // step that is safe to repeat if another request touches the same accounts at the same moment.
-            return await RunWithConcurrencyRetryAsync(() => ExecuteTransferAsync(userId, transferRequest));
+            // The CVV and the full card number are shown to the customer once, in this response; the CVV is never stored.
+            var dto = BankingMappers.ToDto(account, cardNumber);
+            dto.CardCvv = cvv;
+            return ServiceResult<AccountDto>.Success(dto);
         }
 
-        private async Task<ServiceResult<TransactionDto>> ExecuteTransferAsync(Guid userId, TransferRequestDto transferRequest)
+        /// <summary>A new, not yet saved account with a unique number and code, and its (not stored) card number and CVV.</summary>
+        private async Task<(Account Account, string CardNumber, string Cvv)> BuildAccountAsync(Guid userId, string currency, string accountType)
         {
-            // Fresh reads on every attempt (the context was cleared first), so balances are current.
-            var sourceAccount = await _context.Accounts
-                .FirstOrDefaultAsync(a => a.AccountNumber == transferRequest.SourceAccountNumber);
-
-            if (sourceAccount == null)
-            {
-                return ServiceResult<TransactionDto>.Failure("SourceAccountNotFound", "Source account was not found.");
-            }
-
-            if (sourceAccount.UserId != userId)
-            {
-                return ServiceResult<TransactionDto>.Failure("UnauthorizedAccountAccess", "You do not have access to this source account.");
-            }
-
-            var destinationAccount = await _context.Accounts
-                .FirstOrDefaultAsync(a => a.AccountNumber == transferRequest.DestinationAccountNumber);
-
-            if (destinationAccount == null)
-            {
-                return ServiceResult<TransactionDto>.Failure("DestinationAccountNotFound", "Destination account was not found.");
-            }
-
-            // The balance may have dropped since the first check, so it is checked again against what is stored now.
-            if (sourceAccount.Balance < transferRequest.Amount)
-            {
-                return ServiceResult<TransactionDto>.Failure("InsufficientFunds", "Insufficient funds in the source account.");
-            }
-
-            // Using DB Transaction to guarantee atomicity of the money transfer
-            using var dbTransaction = await _context.Database.BeginTransactionAsync();
-
-            try
-            {
-                // 4. Update balances. Both rows carry a version: if either was changed by someone else since the read
-                // above, SaveChanges writes nothing and throws DbUpdateConcurrencyException.
-                sourceAccount.Balance -= transferRequest.Amount;
-                destinationAccount.Balance += transferRequest.Amount;
-
-                // 5. Record Transaction
-                var transaction = new Transaction
-                {
-                    SourceAccountId = sourceAccount.Id,
-                    DestinationAccountId = destinationAccount.Id,
-                    Amount = transferRequest.Amount,
-                    Description = transferRequest.Description,
-                    Type = TransactionType.Transfer,
-                    Category = string.IsNullOrEmpty(transferRequest.Category) ? "Diğer" : transferRequest.Category,
-                    CreatedAt = DateTime.UtcNow
-                };
-
-                _context.Transactions.Add(transaction);
-
-                // Write Audit Log
-                var audit = new AuditLog
-                {
-                    Id = Guid.NewGuid(),
-                    UserId = userId,
-                    Action = "TransferMoney",
-                    Details = $"Transferred {transferRequest.Amount} TRY from {sourceAccount.AccountNumber} to {destinationAccount.AccountNumber}",
-                    IpAddress = ClientIp,
-                    CreatedAt = DateTime.UtcNow
-                };
-                _context.AuditLogs.Add(audit);
-
-                // Save EF context changes
-                await _context.SaveChangesAsync();
-
-                // Commit transactional scope
-                await dbTransaction.CommitAsync();
-
-                var dto = new TransactionDto
-                {
-                    Id = transaction.Id,
-                    SourceAccountNumber = sourceAccount.AccountNumber,
-                    DestinationAccountNumber = destinationAccount.AccountNumber,
-                    Amount = transaction.Amount,
-                    Description = transaction.Description,
-                    Type = transaction.Type.ToString(),
-                    Category = transaction.Category,
-                    CreatedAt = transaction.CreatedAt
-                };
-
-                return ServiceResult<TransactionDto>.Success(dto);
-            }
-            catch (Exception ex) when (DatabaseConflict.IsRetryable(ex))
-            {
-                // Someone else got in the way (version conflict or deadlock victim): undo and let the retry loop start over.
-                await dbTransaction.RollbackAsync();
-                throw;
-            }
-            catch (Exception ex)
-            {
-                // Rollback EF transaction changes on general exceptions
-                await dbTransaction.RollbackAsync();
-                _logger.LogError(ex, "Transfer failed.");
-                return ServiceResult<TransactionDto>.Failure("TransactionFailed", "The transfer could not be completed. Please try again.");
-            }
-        }
-        public async Task<ServiceResult<AccountDto>> CreateAccountAsync(Guid userId, string currency, string accountType = "DemandDeposit")
-        {
-            var userExists = await _context.Users.AnyAsync(u => u.Id == userId);
-            if (!userExists)
-            {
-                return ServiceResult<AccountDto>.Failure("UserNotFound", "User details not found.");
-            }
-
-            var accountNumber = GenerateAccountNumber();
+            var accountNumber = "TR" + SecureRandom.Digits(16);
             while (await _context.Accounts.AnyAsync(a => a.AccountNumber == accountNumber))
             {
-                accountNumber = GenerateAccountNumber();
+                accountNumber = "TR" + SecureRandom.Digits(16);
             }
-
-            var cardNum = GenerateCardNumber();
-            var cvv = GenerateCvv();
 
             var accountCode = "ACC-" + SecureRandom.Next(1000000, 10000000);
             while (await _context.Accounts.AnyAsync(a => a.AccountCode == accountCode))
@@ -387,987 +180,53 @@ namespace SmartBank.Infrastructure.Services
                 accountCode = "ACC-" + SecureRandom.Next(1000000, 10000000);
             }
 
-            var newAccount = new Account
+            var now = UtcNow;
+            var cardNumber = GenerateCardNumber();
+            var account = new Account
             {
                 UserId = userId,
                 AccountNumber = accountNumber,
                 AccountCode = accountCode,
                 Balance = 0.00m,
-                Currency = string.IsNullOrEmpty(currency) ? "TRY" : currency.ToUpper(),
-                EncryptedCardNumber = Core.Common.EncryptionHelper.Encrypt(cardNum),
+                Currency = currency,
+                CreatedAt = now,
+                EncryptedCardNumber = EncryptionHelper.Encrypt(cardNumber),
                 CardTheme = "theme-neon-blue",
-                ExpiryDate = DateTime.UtcNow.AddYears(5).ToString("MM/yy"),
-                AccountType = string.IsNullOrEmpty(accountType) ? "DemandDeposit" : accountType
+                ExpiryDate = CardFormat.ExpiryIn(now, CreditCardRules.DefaultCardValidityYears),
+                AccountType = accountType
             };
 
-            if (newAccount.AccountType.Equals("TimeDeposit", StringComparison.OrdinalIgnoreCase))
+            if (accountType == AccountTypes.TimeDeposit)
             {
-                newAccount.InterestRate = 48.00m; // Starting default tier
-                newAccount.MaturityDate = DateTime.UtcNow.AddDays(30);
+                // Display values only: nothing accrues this interest and nothing enforces the maturity date.
+                account.InterestRate = 48.00m;
+                account.MaturityDate = now.AddDays(30);
             }
 
-            _context.Accounts.Add(newAccount);
-            await _context.SaveChangesAsync();
-
-            var dto = new AccountDto
-            {
-                Id = newAccount.Id,
-                AccountNumber = newAccount.AccountNumber,
-                AccountCode = newAccount.AccountCode,
-                Balance = newAccount.Balance,
-                Currency = newAccount.Currency,
-                CreatedAt = newAccount.CreatedAt,
-                CardNumber = cardNum,
-                CardCvv = cvv,
-                CardTheme = newAccount.CardTheme,
-                ExpiryDate = newAccount.ExpiryDate,
-                AccountType = newAccount.AccountType,
-                InterestRate = newAccount.InterestRate,
-                MaturityDate = newAccount.MaturityDate
-            };
-
-            return ServiceResult<AccountDto>.Success(dto);
+            return (account, cardNumber, GenerateCvv());
         }
 
-        public async Task<ServiceResult<List<CreditCardDto>>> GetCreditCardsAsync(Guid userId)
-        {
-            var cards = await _context.CreditCards
-                .Where(cc => cc.UserId == userId)
-                .ToListAsync();
+        private static string GenerateCardNumber() => "4" + SecureRandom.Digits(15);
 
-            var dtos = cards.Select(cc => new CreditCardDto
-            {
-                Id = cc.Id,
-                CardNumber = SafeDecrypt(cc.EncryptedCardNumber),
-                ExpiryDate = cc.ExpiryDate,
-                CardLimit = cc.CardLimit,
-                CurrentDebt = cc.CurrentDebt,
-                AvailableLimit = cc.CardLimit - cc.CurrentDebt,
-                CardTheme = cc.CardTheme
-            }).ToList();
-
-            return ServiceResult<List<CreditCardDto>>.Success(dtos);
-        }
-
-        public async Task<ServiceResult<List<CreditCardStatementDto>>> GetStatementsAsync(Guid cardId, Guid userId)
-        {
-            var card = await _context.CreditCards.FirstOrDefaultAsync(cc => cc.Id == cardId && cc.UserId == userId);
-            if (card == null)
-            {
-                return ServiceResult<List<CreditCardStatementDto>>.Failure("CreditCardNotFound", "Credit card not found or access denied.");
-            }
-
-            var statements = await _context.CreditCardStatements
-                .Where(s => s.CreditCardId == cardId)
-                .OrderByDescending(s => s.CutoffDate)
-                .ToListAsync();
-
-            var allTransactions = await _context.CreditCardTransactions
-                .Where(t => t.CreditCardId == cardId)
-                .OrderByDescending(t => t.CreatedAt)
-                .ToListAsync();
-
-            var dtos = new List<CreditCardStatementDto>();
-
-            for (int i = 0; i < statements.Count; i++)
-            {
-                var currentStmt = statements[i];
-                DateTime startDate = DateTime.MinValue;
-                if (i + 1 < statements.Count)
-                {
-                    startDate = statements[i + 1].CutoffDate;
-                }
-
-                var stmtTransactions = allTransactions
-                    .Where(t => t.CreatedAt > startDate && t.CreatedAt <= currentStmt.CutoffDate)
-                    .Select(t => new CreditCardTransactionDto
-                    {
-                        Id = t.Id,
-                        Description = t.Description,
-                        Amount = t.Amount,
-                        CreatedAt = t.CreatedAt
-                    }).ToList();
-
-                dtos.Add(new CreditCardStatementDto
-                {
-                    Id = currentStmt.Id,
-                    PeriodName = currentStmt.PeriodName,
-                    PeriodDebt = currentStmt.PeriodDebt,
-                    MinimumPayment = currentStmt.MinimumPayment,
-                    PaidAmount = currentStmt.PaidAmount,
-                    CutoffDate = currentStmt.CutoffDate,
-                    DueDate = currentStmt.DueDate,
-                    IsPaid = currentStmt.IsPaid,
-                    Transactions = stmtTransactions
-                });
-            }
-
-            return ServiceResult<List<CreditCardStatementDto>>.Success(dtos);
-        }
-
-        public Task<ServiceResult<bool>> PayCreditCardDebtAsync(Guid userId, Guid cardId, PayCreditCardDebtDto payRequest) =>
-            RunWithConcurrencyRetryAsync(() => PayCreditCardDebtAsyncCore(userId, cardId, payRequest));
-
-        private async Task<ServiceResult<bool>> PayCreditCardDebtAsyncCore(Guid userId, Guid cardId, PayCreditCardDebtDto payRequest)
-        {
-            if (payRequest.Amount <= 0)
-            {
-                return ServiceResult<bool>.Failure("InvalidAmount", "Amount must be greater than zero.");
-            }
-
-            var card = await _context.CreditCards.FirstOrDefaultAsync(cc => cc.Id == cardId && cc.UserId == userId);
-            if (card == null)
-            {
-                return ServiceResult<bool>.Failure("CreditCardNotFound", "Credit card not found.");
-            }
-
-            var sourceAccount = await _context.Accounts.FirstOrDefaultAsync(a => a.AccountNumber == payRequest.SourceAccountNumber && a.UserId == userId);
-            if (sourceAccount == null)
-            {
-                return ServiceResult<bool>.Failure("SourceAccountNotFound", "Source account not found.");
-            }
-
-            if (sourceAccount.Currency != "TRY")
-            {
-                return ServiceResult<bool>.Failure("CurrencyMismatch", "Only TRY accounts can be used to pay credit card debt.");
-            }
-
-            if (sourceAccount.Balance < payRequest.Amount)
-            {
-                return ServiceResult<bool>.Failure("InsufficientFunds", "Insufficient funds in the source account.");
-            }
-
-            using var dbTransaction = await _context.Database.BeginTransactionAsync();
-            try
-            {
-                sourceAccount.Balance -= payRequest.Amount;
-
-                var debtToPay = Math.Min(card.CurrentDebt, payRequest.Amount);
-                card.CurrentDebt -= debtToPay;
-
-                var accountTx = new Transaction
-                {
-                    SourceAccountId = sourceAccount.Id,
-                    DestinationAccountId = null,
-                    Amount = payRequest.Amount,
-                    Description = $"Kredi Kartı Borç Ödeme - Kart: *{CardMasking.LastFour(SafeDecrypt(card.EncryptedCardNumber))}",
-                    Type = TransactionType.Transfer,
-                    Category = "Fatura",
-                    CreatedAt = DateTime.UtcNow
-                };
-                _context.Transactions.Add(accountTx);
-
-                var unpaidStatement = await _context.CreditCardStatements
-                    .Where(s => s.CreditCardId == cardId && !s.IsPaid)
-                    .OrderBy(s => s.DueDate)
-                    .FirstOrDefaultAsync();
-
-                if (unpaidStatement != null)
-                {
-                    unpaidStatement.PaidAmount += payRequest.Amount;
-                    if (unpaidStatement.PaidAmount >= unpaidStatement.PeriodDebt)
-                    {
-                        unpaidStatement.IsPaid = true;
-                    }
-                }
-
-                await _context.SaveChangesAsync();
-                await dbTransaction.CommitAsync();
-
-                return ServiceResult<bool>.Success(true);
-            }
-            catch (Exception ex) when (DatabaseConflict.IsRetryable(ex))
-            {
-                await dbTransaction.RollbackAsync();
-                throw;
-            }
-            catch (Exception ex)
-            {
-                await dbTransaction.RollbackAsync();
-                _logger.LogError(ex, "Credit card payment failed.");
-                return ServiceResult<bool>.Failure("PaymentFailed", "The payment could not be completed. Please try again.");
-            }
-        }
-
-        public Task<ServiceResult<CreditCardDto>> ChargeCreditCardAsync(Guid userId, Guid cardId, decimal amount, string description) =>
-            RunWithConcurrencyRetryAsync(() => ChargeCreditCardAsyncCore(userId, cardId, amount, description));
-
-        private async Task<ServiceResult<CreditCardDto>> ChargeCreditCardAsyncCore(Guid userId, Guid cardId, decimal amount, string description)
-        {
-            if (amount <= 0)
-            {
-                return ServiceResult<CreditCardDto>.Failure("InvalidAmount", "Amount must be greater than zero.");
-            }
-
-            var card = await _context.CreditCards.FirstOrDefaultAsync(cc => cc.Id == cardId && cc.UserId == userId);
-            if (card == null)
-            {
-                return ServiceResult<CreditCardDto>.Failure("CreditCardNotFound", "Credit card not found.");
-            }
-
-            var availableLimit = card.CardLimit - card.CurrentDebt;
-            if (availableLimit < amount)
-            {
-                return ServiceResult<CreditCardDto>.Failure("InsufficientLimit", "Insufficient credit card limit.");
-            }
-
-            using var dbTransaction = await _context.Database.BeginTransactionAsync();
-            try
-            {
-                card.CurrentDebt += amount;
-
-                var ccTx = new CreditCardTransaction
-                {
-                    CreditCardId = card.Id,
-                    Description = string.IsNullOrEmpty(description) ? "Market Harcaması" : description,
-                    Amount = amount,
-                    CreatedAt = DateTime.UtcNow
-                };
-                _context.CreditCardTransactions.Add(ccTx);
-
-                var auditLog = new AuditLog
-                {
-                    UserId = userId,
-                    Action = "CreditCardCharge",
-                    Details = $"Kredi kartından harcama yapıldı. Tutar: {amount} TRY, İşyeri: {ccTx.Description}",
-                    IpAddress = ClientIp,
-                    CreatedAt = DateTime.UtcNow
-                };
-                _context.AuditLogs.Add(auditLog);
-
-                await _context.SaveChangesAsync();
-                await dbTransaction.CommitAsync();
-
-                var dto = new CreditCardDto
-                {
-                    Id = card.Id,
-                    CardNumber = SafeDecrypt(card.EncryptedCardNumber),
-                    ExpiryDate = card.ExpiryDate,
-                    CardLimit = card.CardLimit,
-                    CurrentDebt = card.CurrentDebt,
-                    AvailableLimit = card.CardLimit - card.CurrentDebt,
-                    CardTheme = card.CardTheme
-                };
-
-                return ServiceResult<CreditCardDto>.Success(dto);
-            }
-            catch (Exception ex) when (DatabaseConflict.IsRetryable(ex))
-            {
-                await dbTransaction.RollbackAsync();
-                throw;
-            }
-            catch (Exception ex)
-            {
-                await dbTransaction.RollbackAsync();
-                _logger.LogError(ex, "Credit card charge failed.");
-                return ServiceResult<CreditCardDto>.Failure("ChargeFailed", "The charge could not be completed. Please try again.");
-            }
-        }
-
-        public Task<ServiceResult<CreditCardStatementDto>> AdvanceStatementPeriodAsync(Guid userId, Guid cardId) =>
-            RunWithConcurrencyRetryAsync(() => AdvanceStatementPeriodAsyncCore(userId, cardId));
-
-        private async Task<ServiceResult<CreditCardStatementDto>> AdvanceStatementPeriodAsyncCore(Guid userId, Guid cardId)
-        {
-            var card = await _context.CreditCards
-                .Include(cc => cc.Statements)
-                .FirstOrDefaultAsync(cc => cc.Id == cardId && cc.UserId == userId);
-
-            if (card == null)
-            {
-                return ServiceResult<CreditCardStatementDto>.Failure("CreditCardNotFound", "Credit card not found.");
-            }
-
-            var latestStatement = card.Statements
-                .OrderByDescending(s => s.CutoffDate)
-                .FirstOrDefault();
-            decimal unpaidBalance = 0.00m;
-            decimal interest = 0.00m;
-
-            // Check for Autopay Standing Order
-            var autopayOrder = await _context.StandingOrders
-                .FirstOrDefaultAsync(so => so.UserId == userId && so.CreditCardId == cardId && so.IsActive && so.OrderType == "CreditCardAutoPay");
-
-            if (autopayOrder != null && latestStatement != null && !latestStatement.IsPaid)
-            {
-                var sourceAccount = await _context.Accounts
-                    .FirstOrDefaultAsync(a => a.AccountNumber == autopayOrder.SourceAccountNumber && a.UserId == userId);
-
-                if (sourceAccount != null)
-                {
-                    decimal amountToPay = latestStatement.PeriodDebt - latestStatement.PaidAmount;
-                    if (amountToPay > 0)
-                    {
-                        if (sourceAccount.Balance >= amountToPay)
-                        {
-                            sourceAccount.Balance -= amountToPay;
-                            latestStatement.PaidAmount += amountToPay;
-                            latestStatement.IsPaid = true;
-                            card.CurrentDebt -= amountToPay;
-
-                            var tx = new Transaction
-                            {
-                                SourceAccountId = sourceAccount.Id,
-                                Amount = amountToPay,
-                                Description = $"Kredi Kartı Otomatik Borç Ödeme ({latestStatement.PeriodName})",
-                                Type = TransactionType.Withdrawal,
-                                Category = "Fatura"
-                            };
-                            _context.Transactions.Add(tx);
-                        }
-                        else if (sourceAccount.Balance > 0)
-                        {
-                            decimal partialAmount = sourceAccount.Balance;
-                            sourceAccount.Balance = 0;
-                            latestStatement.PaidAmount += partialAmount;
-                            card.CurrentDebt -= partialAmount;
-
-                            var tx = new Transaction
-                            {
-                                SourceAccountId = sourceAccount.Id,
-                                Amount = partialAmount,
-                                Description = $"Kredi Kartı Otomatik Borç Ödeme - Kısmi ({latestStatement.PeriodName})",
-                                Type = TransactionType.Withdrawal,
-                                Category = "Fatura"
-                            };
-                            _context.Transactions.Add(tx);
-                        }
-                    }
-                }
-            }
-
-            if (latestStatement != null)
-            {
-                if (!latestStatement.IsPaid)
-                {
-                    var paid = latestStatement.PaidAmount;
-                    var debt = latestStatement.PeriodDebt;
-                    var min = latestStatement.MinimumPayment;
-
-                    if (paid >= debt)
-                    {
-                        latestStatement.IsPaid = true;
-                    }
-                    else
-                    {
-                        unpaidBalance = debt - paid;
-
-                        if (paid >= min)
-                        {
-                            interest = unpaidBalance * 0.0425m;
-                        }
-                        else
-                        {
-                            var unpaidMin = min - paid;
-                            var lateInterest = unpaidMin * 0.05m;
-                            var regularInterest = (unpaidBalance - unpaidMin) * 0.0425m;
-                            interest = lateInterest + regularInterest;
-                        }
-
-                        interest = Math.Round(interest, 2);
-                        card.CurrentDebt += interest;
-                        
-                        var interestTx = new CreditCardTransaction
-                        {
-                            CreditCardId = card.Id,
-                            Description = $"Gecikme/Akdi Faiz Yansıması ({latestStatement.PeriodName})",
-                            Amount = interest,
-                            CreatedAt = DateTime.UtcNow
-                        };
-                        _context.CreditCardTransactions.Add(interestTx);
-                    }
-                    
-                    latestStatement.IsPaid = true; 
-                }
-            }
-
-            string nextPeriodName = "Temmuz 2026";
-            DateTime nextCutoff = DateTime.UtcNow.AddMonths(1);
-            DateTime nextDue = nextCutoff.AddDays(10);
-
-            if (latestStatement != null)
-            {
-                nextCutoff = latestStatement.CutoffDate.AddMonths(1);
-                nextDue = nextCutoff.AddDays(10);
-
-                var parts = latestStatement.PeriodName.Split(' ');
-                if (parts.Length == 2)
-                {
-                    var month = parts[0];
-                    if (int.TryParse(parts[1], out var year))
-                    {
-                        var months = new List<string> { "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık" };
-                        var idx = months.IndexOf(month);
-                        if (idx != -1)
-                        {
-                            idx = (idx + 1) % 12;
-                            if (idx == 0) year++;
-                            nextPeriodName = $"{months[idx]} {year}";
-                        }
-                    }
-                }
-            }
-
-            var newStatement = new CreditCardStatement
-            {
-                CreditCardId = card.Id,
-                PeriodName = nextPeriodName,
-                PeriodDebt = card.CurrentDebt,
-                MinimumPayment = Math.Round(card.CurrentDebt * 0.30m, 2),
-                PaidAmount = 0.00m,
-                CutoffDate = nextCutoff,
-                DueDate = nextDue,
-                IsPaid = card.CurrentDebt <= 0m
-            };
-
-            _context.CreditCardStatements.Add(newStatement);
-            await _context.SaveChangesAsync();
-
-            var dto = new CreditCardStatementDto
-            {
-                Id = newStatement.Id,
-                PeriodName = newStatement.PeriodName,
-                PeriodDebt = newStatement.PeriodDebt,
-                MinimumPayment = newStatement.MinimumPayment,
-                PaidAmount = newStatement.PaidAmount,
-                CutoffDate = newStatement.CutoffDate,
-                DueDate = newStatement.DueDate,
-                IsPaid = newStatement.IsPaid,
-                Transactions = new List<CreditCardTransactionDto>()
-            };
-
-            return ServiceResult<CreditCardStatementDto>.Success(dto);
-        }
-
-        // Optimistic concurrency. Accounts and credit cards carry a version number; an UPDATE or DELETE only succeeds if
-        // the row is still at the version that was read. When two requests collide, one of them gets
-        // a conflict error instead of silently overwriting the other's balance (a "lost update"), and the
-        // operation is repeated from fresh reads. Only an operation that is safe to run again may go through here:
-        // nothing before the money step may have side effects (one-time codes are checked before it, not inside it).
-        private const int MaxConcurrencyAttempts = 10;
-
-        private async Task<ServiceResult<T>> RunWithConcurrencyRetryAsync<T>(Func<Task<ServiceResult<T>>> operation)
-        {
-            for (var attempt = 1; ; attempt++)
-            {
-                // Start every attempt from fresh reads: anything the context still tracks may be stale.
-                _context.ChangeTracker.Clear();
-
-                try
-                {
-                    return await operation();
-                }
-                catch (Exception ex) when (DatabaseConflict.IsRetryable(ex))
-                {
-                    _context.ChangeTracker.Clear();
-
-                    if (attempt >= MaxConcurrencyAttempts)
-                    {
-                        return ServiceResult<T>.Failure("ConcurrentModification",
-                            "The account was changed by another operation at the same time. Please try again.");
-                    }
-
-                    // A short, growing, random pause spreads out requests that keep colliding.
-                    await Task.Delay(SecureRandom.Next(2, 20 * attempt));
-                }
-            }
-        }
-        private string ClientIp => _clientInfo?.IpAddress ?? "unknown";
-
-        // Display paths must not fail because one stored card cannot be decrypted (e.g. legacy rows from before v1.1).
-        private static string SafeDecrypt(string? cipherText) =>
-            EncryptionHelper.TryDecrypt(cipherText, out var plain) ? plain : string.Empty;
-
-        private string GenerateAccountNumber() => "TR" + SecureRandom.Digits(16);
-
-        private string GenerateCardNumber() => "4" + SecureRandom.Digits(15);
-
-        private string GenerateCvv() => SecureRandom.Next(100, 1000).ToString();
-
-        public Task<ServiceResult<bool>> DeleteAccountAsync(Guid userId, Guid accountId, Guid? transferTargetAccountId = null) =>
-            RunWithConcurrencyRetryAsync(() => DeleteAccountAsyncCore(userId, accountId, transferTargetAccountId));
-
-        private async Task<ServiceResult<bool>> DeleteAccountAsyncCore(Guid userId, Guid accountId, Guid? transferTargetAccountId = null)
-        {
-            var account = await _context.Accounts
-                .FirstOrDefaultAsync(a => a.Id == accountId && a.UserId == userId);
-
-            if (account == null)
-            {
-                return ServiceResult<bool>.Failure("AccountNotFound", "Hesap bulunamadı.");
-            }
-
-            var totalAccountsCount = await _context.Accounts.CountAsync(a => a.UserId == userId);
-            if (totalAccountsCount <= 1)
-            {
-                return ServiceResult<bool>.Failure("CannotDeleteLastAccount", "Daima en az bir aktif hesabınız bulunmalıdır.");
-            }
-
-            // Transfer balance if balance > 0
-            if (account.Balance > 0)
-            {
-                if (transferTargetAccountId == null || transferTargetAccountId == Guid.Empty)
-                {
-                    return ServiceResult<bool>.Failure("TargetAccountRequired", "Hesapta bakiye bulunmaktadır. Silmeden önce bakiyenizi aktarmak istediğiniz hesabı seçmelisiniz.");
-                }
-
-                var targetAccount = await _context.Accounts.FirstOrDefaultAsync(a => a.Id == transferTargetAccountId && a.UserId == userId);
-                if (targetAccount == null)
-                {
-                    return ServiceResult<bool>.Failure("TargetAccountNotFound", "Hedef hesap bulunamadı.");
-                }
-
-                decimal convertedAmount = account.Balance;
-                if (account.Currency != targetAccount.Currency)
-                {
-                    var rates = await _marketRateService.GetRatesAsync();
-                    if (rates != null && rates.Any())
-                    {
-                        
-                        // Convert source currency to TRY
-                        decimal tryAmount = account.Balance;
-                        if (account.Currency != "TRY")
-                        {
-                            var srcRate = rates.FirstOrDefault(r => r.Code == account.Currency);
-                            if (srcRate != null) tryAmount = account.Balance * srcRate.Buy;
-                        }
-
-                        // Convert TRY to target currency
-                        if (targetAccount.Currency == "TRY")
-                        {
-                            convertedAmount = tryAmount;
-                        }
-                        else
-                        {
-                            var destRate = rates.FirstOrDefault(r => r.Code == targetAccount.Currency);
-                            if (destRate != null && destRate.Sell > 0) convertedAmount = tryAmount / destRate.Sell;
-                        }
-                    }
-                }
-
-                targetAccount.Balance += convertedAmount;
-
-                // Add transfer transaction
-                var tx = new Transaction
-                {
-                    SourceAccountId = accountId,
-                    DestinationAccountId = targetAccount.Id,
-                    Amount = account.Balance,
-                    Description = $"Hesap Kapatma Bakiye Aktarımı ({account.Currency} -> {targetAccount.Currency})",
-                    Type = TransactionType.Transfer,
-                    Category = "Yatırım",
-                    CreatedAt = DateTime.UtcNow
-                };
-                _context.Transactions.Add(tx);
-            }
-
-            var sentTx = await _context.Transactions.Where(t => t.SourceAccountId == accountId).ToListAsync();
-            foreach (var t in sentTx) t.SourceAccountId = null;
-
-            var receivedTx = await _context.Transactions.Where(t => t.DestinationAccountId == accountId).ToListAsync();
-            foreach (var t in receivedTx) t.DestinationAccountId = null;
-
-            _context.Accounts.Remove(account);
-            await _context.SaveChangesAsync();
-
-            // Write Audit Log
-            var audit = new AuditLog
-            {
-                Id = Guid.NewGuid(),
-                UserId = userId,
-                Action = "DeleteAccount",
-                Details = $"Deleted account ID: {accountId}. AccountNumber: {account.AccountNumber}",
-                IpAddress = ClientIp,
-                CreatedAt = DateTime.UtcNow
-            };
-            _context.AuditLogs.Add(audit);
-            await _context.SaveChangesAsync();
-
-            return ServiceResult<bool>.Success(true);
-        }
-
-        public async Task<ServiceResult<List<SavedContactDto>>> GetSavedContactsAsync(Guid userId)
-        {
-            var contacts = await _context.SavedContacts
-                .Where(sc => sc.UserId == userId)
-                .OrderByDescending(sc => sc.CreatedAt)
-                .Select(sc => new SavedContactDto
-                {
-                    Id = sc.Id,
-                    AccountNumber = sc.AccountNumber,
-                    Alias = sc.Alias,
-                    CreatedAt = sc.CreatedAt
-                })
-                .ToListAsync();
-
-            return ServiceResult<List<SavedContactDto>>.Success(contacts);
-        }
-
-        public async Task<ServiceResult<SavedContactDto>> SaveContactAsync(Guid userId, CreateSavedContactDto contactDto)
-        {
-            var existing = await _context.SavedContacts
-                .FirstOrDefaultAsync(sc => sc.UserId == userId && sc.AccountNumber == contactDto.AccountNumber);
-
-            if (existing != null)
-            {
-                existing.Alias = contactDto.Alias;
-                await _context.SaveChangesAsync();
-                return ServiceResult<SavedContactDto>.Success(new SavedContactDto
-                {
-                    Id = existing.Id,
-                    AccountNumber = existing.AccountNumber,
-                    Alias = existing.Alias,
-                    CreatedAt = existing.CreatedAt
-                });
-            }
-
-            var contact = new SavedContact
-            {
-                UserId = userId,
-                AccountNumber = contactDto.AccountNumber,
-                Alias = contactDto.Alias
-            };
-
-            _context.SavedContacts.Add(contact);
-            await _context.SaveChangesAsync();
-
-            return ServiceResult<SavedContactDto>.Success(new SavedContactDto
-            {
-                Id = contact.Id,
-                AccountNumber = contact.AccountNumber,
-                Alias = contact.Alias,
-                CreatedAt = contact.CreatedAt
-            });
-        }
-
-        public async Task<ServiceResult<bool>> DeleteContactAsync(Guid userId, Guid contactId)
-        {
-            var contact = await _context.SavedContacts
-                .FirstOrDefaultAsync(sc => sc.Id == contactId && sc.UserId == userId);
-
-            if (contact == null)
-            {
-                return ServiceResult<bool>.Failure("ContactNotFound", "Kayıtlı alıcı bulunamadı.");
-            }
-
-            _context.SavedContacts.Remove(contact);
-            await _context.SaveChangesAsync();
-
-            return ServiceResult<bool>.Success(true);
-        }
-
-        public async Task<ServiceResult<List<StandingOrderDto>>> GetStandingOrdersAsync(Guid userId)
-        {
-            // Decryption cannot be translated to SQL, so load the encrypted value and map in memory.
-            var rows = await _context.StandingOrders
-                .Where(so => so.UserId == userId)
-                .OrderByDescending(so => so.CreatedAt)
-                .Select(so => new
-                {
-                    Order = so,
-                    EncryptedCardNumber = so.CreditCard != null ? so.CreditCard.EncryptedCardNumber : null
-                })
-                .ToListAsync();
-
-            var orders = rows.Select(r => new StandingOrderDto
-            {
-                Id = r.Order.Id,
-                SourceAccountNumber = r.Order.SourceAccountNumber,
-                DestinationAccountNumber = r.Order.DestinationAccountNumber,
-                Amount = r.Order.Amount,
-                Frequency = r.Order.Frequency,
-                MaturityDate = r.Order.MaturityDate,
-                NextExecutionDate = r.Order.NextExecutionDate,
-                IsActive = r.Order.IsActive,
-                OrderType = r.Order.OrderType,
-                CreditCardId = r.Order.CreditCardId,
-                CreditCardLast4 = r.EncryptedCardNumber == null ? null : CardMasking.LastFour(SafeDecrypt(r.EncryptedCardNumber)),
-                CreatedAt = r.Order.CreatedAt
-            }).ToList();
-
-            return ServiceResult<List<StandingOrderDto>>.Success(orders);
-        }
-
-        public async Task<ServiceResult<StandingOrderDto>> CreateStandingOrderAsync(Guid userId, CreateStandingOrderDto orderDto)
-        {
-            var sourceAcc = await _context.Accounts
-                .AnyAsync(a => a.AccountNumber == orderDto.SourceAccountNumber && a.UserId == userId);
-            if (!sourceAcc)
-            {
-                return ServiceResult<StandingOrderDto>.Failure("SourceAccountNotFound", "Kaynak hesap bulunamadı.");
-            }
-
-            var order = new StandingOrder
-            {
-                UserId = userId,
-                SourceAccountNumber = orderDto.SourceAccountNumber,
-                DestinationAccountNumber = orderDto.DestinationAccountNumber,
-                Amount = orderDto.Amount,
-                Frequency = orderDto.Frequency,
-                OrderType = orderDto.OrderType,
-                CreditCardId = orderDto.CreditCardId,
-                MaturityDate = DateTime.UtcNow.AddYears(1),
-                NextExecutionDate = DateTime.UtcNow
-            };
-
-            _context.StandingOrders.Add(order);
-            await _context.SaveChangesAsync();
-
-            return ServiceResult<StandingOrderDto>.Success(new StandingOrderDto
-            {
-                Id = order.Id,
-                SourceAccountNumber = order.SourceAccountNumber,
-                DestinationAccountNumber = order.DestinationAccountNumber,
-                Amount = order.Amount,
-                Frequency = order.Frequency,
-                MaturityDate = order.MaturityDate,
-                NextExecutionDate = order.NextExecutionDate,
-                IsActive = order.IsActive,
-                OrderType = order.OrderType,
-                CreditCardId = order.CreditCardId,
-                CreatedAt = order.CreatedAt
-            });
-        }
-
-        public async Task<ServiceResult<bool>> DeleteStandingOrderAsync(Guid userId, Guid orderId)
-        {
-            var order = await _context.StandingOrders
-                .FirstOrDefaultAsync(so => so.Id == orderId && so.UserId == userId);
-
-            if (order == null)
-            {
-                return ServiceResult<bool>.Failure("OrderNotFound", "Talimat bulunamadı.");
-            }
-
-            _context.StandingOrders.Remove(order);
-            await _context.SaveChangesAsync();
-
-            return ServiceResult<bool>.Success(true);
-        }
-
-        public Task<ServiceResult<TransactionDto>> ExchangeMoneyAsync(Guid userId, ExchangeDto exchangeDto) =>
-            RunWithConcurrencyRetryAsync(() => ExchangeMoneyAsyncCore(userId, exchangeDto));
-
-        private async Task<ServiceResult<TransactionDto>> ExchangeMoneyAsyncCore(Guid userId, ExchangeDto exchangeDto)
-        {
-            if (!Guid.TryParse(exchangeDto.SourceAccountId, out var sourceAccountId))
-            {
-                return ServiceResult<TransactionDto>.Failure("InvalidSourceAccount", "Geçersiz kaynak hesap.");
-            }
-
-            var sourceAcc = await _context.Accounts
-                .FirstOrDefaultAsync(a => a.Id == sourceAccountId && a.UserId == userId);
-
-            if (sourceAcc == null)
-            {
-                return ServiceResult<TransactionDto>.Failure("AccountNotFound", "Kaynak hesap bulunamadı.");
-            }
-
-            bool isBuy = exchangeDto.Action.Equals("buy", StringComparison.OrdinalIgnoreCase);
-            var asset = exchangeDto.Asset;
-
-            Account? targetAcc = null;
-            if (isBuy)
-            {
-                if (sourceAcc.Currency != "TRY")
-                {
-                    return ServiceResult<TransactionDto>.Failure("InvalidExchangeSource", "Alış işlemi için kaynak hesap TL olmalıdır.");
-                }
-
-                targetAcc = await _context.Accounts
-                    .FirstOrDefaultAsync(a => a.UserId == userId && a.Currency == asset && a.AccountType == "DemandDeposit");
-
-                if (targetAcc == null)
-                {
-                    var openResult = await CreateAccountAsync(userId, asset, "DemandDeposit");
-                    if (!openResult.IsSuccess)
-                    {
-                        return ServiceResult<TransactionDto>.Failure("FailedToOpenAssetAccount", "Döviz/metal hesabı otomatik açılamadı.");
-                    }
-                    targetAcc = await _context.Accounts.FirstOrDefaultAsync(a => a.AccountNumber == openResult.Data!.AccountNumber);
-                }
-            }
-            else
-            {
-                if (sourceAcc.Currency != asset)
-                {
-                    return ServiceResult<TransactionDto>.Failure("InvalidExchangeSource", $"Satış işlemi için kaynak hesap {asset} olmalıdır.");
-                }
-
-                targetAcc = await _context.Accounts
-                    .FirstOrDefaultAsync(a => a.UserId == userId && a.Currency == "TRY" && a.AccountType == "DemandDeposit");
-
-                if (targetAcc == null)
-                {
-                    return ServiceResult<TransactionDto>.Failure("TryAccountNotFound", "Satış bedelinin aktarılacağı vadesiz TL hesabınız bulunamadı.");
-                }
-            }
-
-            if (targetAcc == null)
-            {
-                return ServiceResult<TransactionDto>.Failure("TargetAccountNotFound", "Hedef hesap bulunamadı.");
-            }
-
-            var rateInfo = await _marketRateService.GetRateByCodeAsync(asset);
-            if (rateInfo == null)
-            {
-                return ServiceResult<TransactionDto>.Failure("RateNotFound", "Kur bilgisi bulunamadı.");
-            }
-
-            decimal rate = isBuy ? rateInfo.Sell : rateInfo.Buy;
-            decimal tryCost = exchangeDto.Amount * rate;
-
-            if (isBuy)
-            {
-                if (sourceAcc.Balance < tryCost)
-                {
-                    return ServiceResult<TransactionDto>.Failure("InsufficientFunds", "Yetersiz bakiye.");
-                }
-
-                sourceAcc.Balance -= tryCost;
-                targetAcc.Balance += exchangeDto.Amount;
-            }
-            else
-            {
-                if (sourceAcc.Balance < exchangeDto.Amount)
-                {
-                    return ServiceResult<TransactionDto>.Failure("InsufficientFunds", $"Yetersiz {asset} bakiyesi.");
-                }
-
-                sourceAcc.Balance -= exchangeDto.Amount;
-                targetAcc.Balance += tryCost;
-            }
-
-            var transaction = new Transaction
-            {
-                SourceAccountId = sourceAcc.Id,
-                DestinationAccountId = targetAcc.Id,
-                Amount = isBuy ? tryCost : exchangeDto.Amount,
-                Description = isBuy 
-                    ? $"{exchangeDto.Amount} {asset} Alımı (Kur: {rate} TRY)"
-                    : $"{exchangeDto.Amount} {asset} Satışı (Kur: {rate} TRY)",
-                Type = TransactionType.Transfer,
-                Category = "Yatırım",
-                CreatedAt = DateTime.UtcNow
-            };
-
-            _context.Transactions.Add(transaction);
-            await _context.SaveChangesAsync();
-
-            // Write Audit Log
-            var audit = new AuditLog
-            {
-                Id = Guid.NewGuid(),
-                UserId = userId,
-                Action = isBuy ? "ExchangeBuy" : "ExchangeSell",
-                Details = isBuy 
-                    ? $"Bought {exchangeDto.Amount} {asset} with {tryCost} TRY. Rate: {rate}"
-                    : $"Sold {exchangeDto.Amount} {asset} for {tryCost} TRY. Rate: {rate}",
-                IpAddress = ClientIp,
-                CreatedAt = DateTime.UtcNow
-            };
-            _context.AuditLogs.Add(audit);
-            await _context.SaveChangesAsync();
-
-            var sourceUser = await _context.Users.FindAsync(sourceAcc.UserId);
-            var targetUser = await _context.Users.FindAsync(targetAcc.UserId);
-
-            return ServiceResult<TransactionDto>.Success(new TransactionDto
-            {
-                Id = transaction.Id,
-                SourceAccountNumber = sourceAcc.AccountNumber,
-                DestinationAccountNumber = targetAcc.AccountNumber,
-                SourceAccountOwnerName = sourceUser?.FullName,
-                DestinationAccountOwnerName = targetUser?.FullName,
-                Amount = transaction.Amount,
-                Description = transaction.Description,
-                Type = transaction.Type.ToString(),
-                Category = transaction.Category,
-                CreatedAt = transaction.CreatedAt
-            });
-        }
-
-        public async Task<ServiceResult<CreditCardDto>> CreateCreditCardAsync(Guid userId)
-        {
-            var existingCardsCount = await _context.CreditCards.CountAsync(cc => cc.UserId == userId);
-            if (existingCardsCount >= 1)
-            {
-                return ServiceResult<CreditCardDto>.Failure("MaxCreditCardsLimitReached", "En fazla 1 adet kredi kartı sahibi olabilirsiniz.");
-            }
-
-            // Duplicate check goes through the keyed hash: ciphertext is randomised, so it cannot be compared.
-            string cardNumber = GenerateCardNumber();
-            string cardHash = EncryptionHelper.HashCardNumber(cardNumber);
-            while (await _context.CreditCards.AnyAsync(cc => cc.CardNumberHash == cardHash))
-            {
-                cardNumber = GenerateCardNumber();
-                cardHash = EncryptionHelper.HashCardNumber(cardNumber);
-            }
-
-            // Shown to the user once in this response and never stored.
-            string cvv = GenerateCvv();
-            string expiryDate = DateTime.UtcNow.AddYears(8).ToString("MM/yy");
-
-            var creditCard = new CreditCard
-            {
-                UserId = userId,
-                EncryptedCardNumber = Core.Common.EncryptionHelper.Encrypt(cardNumber),
-                CardNumberHash = cardHash,
-                ExpiryDate = expiryDate,
-                CardLimit = 10000.00m,
-                CurrentDebt = 0.00m,
-                CardTheme = "theme-neon-blue"
-            };
-
-            creditCard.Statements.Add(new CreditCardStatement
-            {
-                PeriodName = DateTime.UtcNow.ToString("MMMM yyyy", new System.Globalization.CultureInfo("tr-TR")),
-                PeriodDebt = 0.00m,
-                MinimumPayment = 0.00m,
-                PaidAmount = 0.00m,
-                CutoffDate = DateTime.UtcNow.AddDays(30),
-                DueDate = DateTime.UtcNow.AddDays(40),
-                IsPaid = true
-            });
-
-            _context.CreditCards.Add(creditCard);
-            await _context.SaveChangesAsync();
-
-            var dto = new CreditCardDto
-            {
-                Id = creditCard.Id,
-                CardNumber = cardNumber,
-                CardCvv = cvv,
-                ExpiryDate = creditCard.ExpiryDate,
-                CardLimit = creditCard.CardLimit,
-                CurrentDebt = creditCard.CurrentDebt,
-                AvailableLimit = creditCard.CardLimit,
-                CardTheme = creditCard.CardTheme
-            };
-
-            return ServiceResult<CreditCardDto>.Success(dto);
-        }
+        private static string GenerateCvv() => SecureRandom.Next(100, 1000).ToString(CultureInfo.InvariantCulture);
 
         public Task<ServiceResult<TransactionDto>> DepositMoneyAsync(Guid userId, string accountNumber, decimal amount) =>
-            RunWithConcurrencyRetryAsync(() => DepositMoneyAsyncCore(userId, accountNumber, amount));
+            RunWithConcurrencyRetryAsync(() => DepositMoneyCoreAsync(userId, accountNumber, amount));
 
-        private async Task<ServiceResult<TransactionDto>> DepositMoneyAsyncCore(Guid userId, string accountNumber, decimal amount)
+        // A demo faucet: a real bank has nothing like it. It stays (see the README), but it obeys the same amount rules.
+        private async Task<ServiceResult<TransactionDto>> DepositMoneyCoreAsync(Guid userId, string accountNumber, decimal amount)
         {
-            if (amount <= 0)
-            {
-                return ServiceResult<TransactionDto>.Failure("InvalidAmount", "Tutar 0'dan büyük olmalıdır.");
-            }
+            var invalid = ValidateAmount(amount);
+            if (invalid != null) return Fail<TransactionDto>(invalid.Value.Key, invalid.Value.Message);
 
-            var account = await _context.Accounts
-                .FirstOrDefaultAsync(a => a.AccountNumber == accountNumber && a.UserId == userId);
-
+            var account = await _context.Accounts.FirstOrDefaultAsync(a => a.AccountNumber == accountNumber && a.UserId == userId);
             if (account == null)
             {
-                return ServiceResult<TransactionDto>.Failure("AccountNotFound", "Hesap bulunamadı.");
+                return Fail<TransactionDto>("AccountNotFound", "Hesap bulunamadı.");
             }
 
-            var user = await _context.Users.FindAsync(userId);
-            var userName = user?.FullName ?? "SmartBank Müşterisi";
+            var userName = await _context.Users.AsNoTracking().Where(u => u.Id == userId).Select(u => u.FullName).FirstOrDefaultAsync()
+                           ?? "SmartBank Müşterisi";
 
             account.Balance += amount;
 
@@ -1379,14 +238,14 @@ namespace SmartBank.Infrastructure.Services
                 Type = TransactionType.Deposit,
                 Amount = amount,
                 Description = "Hesaba Para Yükleme",
-                Category = "Diğer",
-                CreatedAt = DateTime.UtcNow
+                Category = TransactionCategories.Other,
+                CreatedAt = UtcNow
             };
 
             _context.Transactions.Add(transaction);
             await _context.SaveChangesAsync();
 
-            var transactionDto = new TransactionDto
+            return ServiceResult<TransactionDto>.Success(new TransactionDto
             {
                 Id = transaction.Id,
                 SourceAccountNumber = accountNumber,
@@ -1398,9 +257,306 @@ namespace SmartBank.Infrastructure.Services
                 Description = transaction.Description,
                 Category = transaction.Category,
                 CreatedAt = transaction.CreatedAt
-            };
+            });
+        }
 
-            return ServiceResult<TransactionDto>.Success(transactionDto);
+        // ---- transfers ----------------------------------------------------------------------------------------
+
+        public async Task<ServiceResult<TransactionDto>> TransferMoneyAsync(Guid userId, TransferRequestDto transferRequest)
+        {
+            var invalid = ValidateAmount(transferRequest.Amount);
+            if (invalid != null) return Fail<TransactionDto>(invalid.Value.Key, invalid.Value.Message);
+
+            var sourceNumber = transferRequest.SourceAccountNumber?.Trim() ?? string.Empty;
+            var destinationNumber = transferRequest.DestinationAccountNumber?.Trim() ?? string.Empty;
+            transferRequest.SourceAccountNumber = sourceNumber;
+            transferRequest.DestinationAccountNumber = destinationNumber;
+
+            if (string.Equals(sourceNumber, destinationNumber, StringComparison.Ordinal))
+            {
+                return Fail<TransactionDto>("CannotTransferToSelf", "Cannot transfer money to the same account.");
+            }
+
+            // 1. The source must exist and belong to the caller. "Not found" and "not yours" give the same answer, so this
+            //    cannot be used to find out which account numbers exist.
+            var source = await _context.Accounts.AsNoTracking().FirstOrDefaultAsync(a => a.AccountNumber == sourceNumber);
+            if (source == null || source.UserId != userId)
+            {
+                return Fail<TransactionDto>("SourceAccountNotFound", "Source account was not found.");
+            }
+
+            var destination = await _context.Accounts.AsNoTracking().FirstOrDefaultAsync(a => a.AccountNumber == destinationNumber);
+            if (destination == null)
+            {
+                return Fail<TransactionDto>("DestinationAccountNotFound", "Destination account was not found.");
+            }
+
+            // Multi-currency transfers are not supported: moving between currencies is what the exchange is for.
+            if (source.Currency != destination.Currency)
+            {
+                return Fail<TransactionDto>("CurrencyMismatch", "Currency exchange transfers are not supported in this version.");
+            }
+
+            if (source.Balance < transferRequest.Amount)
+            {
+                return Fail<TransactionDto>("InsufficientFunds", "Insufficient funds in the source account.");
+            }
+
+            // The code only approves the exact transfer it was issued for (same accounts, same amount).
+            var binding = OtpManager.TransferBinding(source.AccountNumber, destination.AccountNumber, transferRequest.Amount);
+            var approvedByCode = false;
+
+            if (!string.IsNullOrEmpty(transferRequest.OtpCode))
+            {
+                var check = await VerifyOtpAsync(userId, OtpPurpose.Transfer, transferRequest.OtpCode, binding);
+                if (check == null)
+                {
+                    return Fail<TransactionDto>("UserNotFound", "User details not found.");
+                }
+
+                if (check == OtpCheckResult.TooManyAttempts)
+                {
+                    return Fail<TransactionDto>("TooManyOtpAttempts", "Too many wrong codes. Start the transfer again to get a new code.");
+                }
+
+                if (check != OtpCheckResult.Valid)
+                {
+                    return Fail<TransactionDto>("InvalidOtpCode", "Invalid or expired verification code.");
+                }
+
+                approvedByCode = true; // the user proved it with a code, so the checks below are skipped
+            }
+
+            if (!approvedByCode)
+            {
+                var challenge = await CheckStepUpAsync(userId, source, destination, transferRequest.Amount);
+                if (challenge != null)
+                {
+                    // One-time code, valid for 5 minutes, bound to this exact transfer.
+                    var issued = await IssueOtpAsync(userId, OtpPurpose.Transfer, binding);
+                    if (issued == null)
+                    {
+                        return Fail<TransactionDto>("UserNotFound", "User details not found.");
+                    }
+
+                    var detail = $"{Money.Format(transferRequest.Amount)} {source.Currency} -> {destination.AccountNumber}";
+                    _otpDelivery.Send(issued.Value.User, issued.Value.Code, OtpPurpose.Transfer, detail);
+
+                    var message = challenge.Value.Message;
+                    if (_otpDelivery.ExposeCodeInResponse)
+                    {
+                        message += $"|OTP:{issued.Value.Code}"; // demo mode only, see IOtpDelivery.ExposeCodeInResponse
+                    }
+
+                    return Fail<TransactionDto>(challenge.Value.Key, message);
+                }
+            }
+
+            // Everything above only decides whether this transfer is allowed. The money itself moves below, in a
+            // step that is safe to repeat if another request touches the same accounts at the same moment.
+            return await RunWithConcurrencyRetryAsync(() => ExecuteTransferAsync(userId, transferRequest));
+        }
+
+        /// <summary>
+        /// Should this transfer be held until the customer enters a one-time code? Rules: a repeat of the same transfer
+        /// within 30 seconds; an amount far above the usual outgoing transfer (or above 2000 TRY on an account that has none);
+        /// any amount above 1000 TRY for a customer who turned two-factor on. Amounts in another currency are compared by
+        /// their TRY value; when that value cannot be trusted (no live rate) the amount counts as above every limit.
+        /// </summary>
+        private async Task<(string Key, string Message)?> CheckStepUpAsync(Guid userId, Account source, Account destination, decimal amount)
+        {
+            var now = UtcNow;
+            var tryAmount = await ToTryEquivalentAsync(amount, source.Currency);
+
+            // Rule A: the same transfer again within 30 seconds.
+            var duplicateSince = now.AddSeconds(-DuplicateWindowSeconds);
+            var isDuplicate = await _context.Transactions.AsNoTracking()
+                .AnyAsync(t => t.SourceAccountId == source.Id &&
+                               t.DestinationAccountId == destination.Id &&
+                               t.Amount == amount &&
+                               t.CreatedAt >= duplicateSince);
+            if (isDuplicate)
+            {
+                return ("SuspectedFraudDuplicate", "Şüpheli işlem: Son 30 saniye içerisinde aynı hesaba aynı miktarda transfer denemesi.");
+            }
+
+            // Rule B: far above the usual outgoing transfer. Only real outgoing transfers count: deposits, the incoming leg
+            // of a standing order and exchanges have the account on both sides or are not transfers, and used to drag the
+            // average up (one big deposit switched this rule off).
+            var windowStart = now - AverageWindow;
+            var average = await _context.Transactions.AsNoTracking()
+                .Where(t => t.SourceAccountId == source.Id &&
+                            t.Type == TransactionType.Transfer &&
+                            t.DestinationAccountId != null &&
+                            t.DestinationAccountId != t.SourceAccountId &&
+                            t.CreatedAt >= windowStart)
+                .Select(t => (decimal?)t.Amount)
+                .AverageAsync();
+
+            if (average.HasValue)
+            {
+                if (amount > FraudAverageMultiple * average.Value && (tryAmount == null || tryAmount > FraudFloorTry))
+                {
+                    return ("SuspectedFraudHighValue",
+                        Text($"Şüpheli işlem: Transfer miktarı ortalama harcamanızın ({average.Value:F2} {source.Currency}) 5 katından fazla."));
+                }
+            }
+            else if (tryAmount == null || tryAmount > NewAccountLimitTry)
+            {
+                return ("SuspectedFraudHighValue", "Şüpheli işlem: Yeni hesaplar için tek seferlik transfer limiti (2000 TRY) aşıldı.");
+            }
+
+            // Rule C: the customer asked for a second factor on larger transfers.
+            var twoFactor = await _context.Users.AsNoTracking().Where(u => u.Id == userId).Select(u => u.TwoFactorEnabled).FirstOrDefaultAsync();
+            if (twoFactor && (tryAmount == null || tryAmount > TwoFactorThresholdTry))
+            {
+                return ("Requires2FA", "Güvenlik doğrulaması: 1000 TRY üzerindeki transferler için doğrulama gerekiyor.");
+            }
+
+            return null;
+        }
+
+        /// <summary>The TRY value of an amount, or null when it cannot be determined from a live (non-stand-in) rate.</summary>
+        private async Task<decimal?> ToTryEquivalentAsync(decimal amount, string currency)
+        {
+            if (currency == Currencies.Try) return amount;
+
+            var rate = await _marketRateService.GetRateByCodeAsync(currency);
+            if (rate == null || rate.IsFallback || rate.Sell <= 0m) return null;
+
+            return amount * rate.Sell; // the higher side: when in doubt, the limit is reached sooner
+        }
+
+        /// <summary>
+        /// Checks a one-time code and saves the outcome (a wrong guess is counted, a right code is used up). The user row
+        /// carries a version, so two requests with the same code cannot both succeed and parallel wrong guesses cannot hide
+        /// each other: the loser of a collision starts again from the fresh row. Null when the user does not exist.
+        /// </summary>
+        private async Task<OtpCheckResult?> VerifyOtpAsync(Guid userId, OtpPurpose purpose, string? code, string? binding)
+        {
+            for (var attempt = 1; attempt <= ConcurrencyRetry.MaxAttempts; attempt++)
+            {
+                _context.ChangeTracker.Clear();
+
+                var user = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId);
+                if (user == null) return null;
+
+                var result = OtpManager.Verify(user, purpose, code, UtcNow, binding);
+
+                try
+                {
+                    await _context.SaveChangesAsync(); // persists the failed-attempt counter, or the cleared code on success
+                    return result;
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    _context.ChangeTracker.Clear();
+                    await Task.Delay(SecureRandom.Next(2, 20 * attempt));
+                }
+            }
+
+            return OtpCheckResult.Invalid; // too many collisions: refuse rather than guess
+        }
+
+        private async Task<(string Code, User User)?> IssueOtpAsync(Guid userId, OtpPurpose purpose, string? binding)
+        {
+            for (var attempt = 1; attempt <= ConcurrencyRetry.MaxAttempts; attempt++)
+            {
+                _context.ChangeTracker.Clear();
+
+                var user = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId);
+                if (user == null) return null;
+
+                var code = OtpManager.Issue(user, purpose, UtcNow, binding);
+
+                try
+                {
+                    await _context.SaveChangesAsync();
+                    return (code, user);
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    _context.ChangeTracker.Clear();
+                    await Task.Delay(SecureRandom.Next(2, 20 * attempt));
+                }
+            }
+
+            return null;
+        }
+
+        private async Task<ServiceResult<TransactionDto>> ExecuteTransferAsync(Guid userId, TransferRequestDto transferRequest)
+        {
+            // Fresh reads on every attempt (the context was cleared first), so balances are current.
+            var sourceAccount = await _context.Accounts.FirstOrDefaultAsync(a => a.AccountNumber == transferRequest.SourceAccountNumber);
+            if (sourceAccount == null || sourceAccount.UserId != userId)
+            {
+                return Fail<TransactionDto>("SourceAccountNotFound", "Source account was not found.");
+            }
+
+            var destinationAccount = await _context.Accounts.FirstOrDefaultAsync(a => a.AccountNumber == transferRequest.DestinationAccountNumber);
+            if (destinationAccount == null)
+            {
+                return Fail<TransactionDto>("DestinationAccountNotFound", "Destination account was not found.");
+            }
+
+            // The balance may have dropped since the first check, so it is checked again against what is stored now.
+            if (sourceAccount.Balance < transferRequest.Amount)
+            {
+                return Fail<TransactionDto>("InsufficientFunds", "Insufficient funds in the source account.");
+            }
+
+            // Using a DB transaction to guarantee atomicity of the money transfer
+            await using var dbTransaction = await _context.Database.BeginTransactionAsync();
+
+            try
+            {
+                // Update balances. Both rows carry a version: if either was changed by someone else since the read
+                // above, SaveChanges writes nothing and throws DbUpdateConcurrencyException.
+                sourceAccount.Balance -= transferRequest.Amount;
+                destinationAccount.Balance += transferRequest.Amount;
+
+                var transaction = new Transaction
+                {
+                    SourceAccountId = sourceAccount.Id,
+                    DestinationAccountId = destinationAccount.Id,
+                    Amount = transferRequest.Amount,
+                    Description = transferRequest.Description ?? string.Empty,
+                    Type = TransactionType.Transfer,
+                    Category = string.IsNullOrEmpty(transferRequest.Category) ? TransactionCategories.Other : transferRequest.Category,
+                    CreatedAt = UtcNow
+                };
+
+                _context.Transactions.Add(transaction);
+                _context.AuditLogs.Add(NewAudit(userId, "TransferMoney",
+                    Text($"Transferred {Money.Format(transferRequest.Amount)} {sourceAccount.Currency} from {sourceAccount.AccountNumber} to {destinationAccount.AccountNumber}")));
+
+                await _context.SaveChangesAsync();
+                await dbTransaction.CommitAsync();
+
+                return ServiceResult<TransactionDto>.Success(new TransactionDto
+                {
+                    Id = transaction.Id,
+                    SourceAccountNumber = sourceAccount.AccountNumber,
+                    DestinationAccountNumber = destinationAccount.AccountNumber,
+                    Amount = transaction.Amount,
+                    Description = transaction.Description,
+                    Type = transaction.Type.ToString(),
+                    Category = transaction.Category,
+                    CreatedAt = transaction.CreatedAt
+                });
+            }
+            catch (Exception ex) when (DatabaseConflict.IsRetryable(ex))
+            {
+                // Someone else got in the way (version conflict or deadlock victim): undo and let the retry loop start over.
+                await dbTransaction.RollbackAsync();
+                throw;
+            }
+            catch (Exception ex)
+            {
+                await dbTransaction.RollbackAsync();
+                _logger.LogError(ex, "Transfer failed.");
+                return Fail<TransactionDto>("TransactionFailed", "The transfer could not be completed. Please try again.");
+            }
         }
     }
 }

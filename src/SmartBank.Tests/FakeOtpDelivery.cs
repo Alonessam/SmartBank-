@@ -12,6 +12,12 @@ namespace SmartBank.Tests
 
         public string LastCode => Sent[^1].Code;
 
-        public void Send(User user, string code, OtpPurpose purpose) => Sent.Add((user.Id, code, purpose));
+        public void Send(User user, string code, OtpPurpose purpose, string? detail = null)
+        {
+            Sent.Add((user.Id, code, purpose));
+            LastDetail = detail;
+        }
+
+        public string? LastDetail { get; private set; }
     }
 }
