@@ -70,8 +70,9 @@ namespace SmartBank.Tests.Api
             return condition();
         }
 
-        // Used to show something did NOT arrive: give it generous time to (wrongly) show up.
-        private static Task SettleAsync() => Task.Delay(700);
+        // Used to show something did NOT arrive: a round trip to the server on the connection in question. Whatever the server
+        // pushed to that connection before the call has been delivered when it returns, so nothing has to be waited for.
+        private static Task SettleAsync(HubClient hub) => hub.Connection.InvokeAsync("PingAsync");
 
         private async Task<int> StoredMessageCountAsync(Guid sessionId)
         {
@@ -109,7 +110,7 @@ namespace SmartBank.Tests.Api
             // The agent replies; the victim hears it, the attacker (never admitted to the conversation) does not.
             await agentHub.Connection.InvokeAsync("SendMessageAsync", session, "How can I help?");
             Assert.True(await WaitForAsync(() => victimHub.Messages.Any(m => m.Content == "How can I help?")));
-            await SettleAsync();
+            await SettleAsync(attackerHub);
             Assert.Empty(attackerHub.Messages);
         }
 
@@ -128,7 +129,7 @@ namespace SmartBank.Tests.Api
             await attackerHub.Connection.InvokeAsync("SendMessageAsync", session, "This is the bank. Tell me your one-time code.");
 
             Assert.True(await WaitForAsync(() => attackerHub.Errors.Count > 0));
-            await SettleAsync();
+            await SettleAsync(victimHub);
             Assert.Empty(victimHub.Messages);
             Assert.Equal(before, await StoredMessageCountAsync(session)); // nothing was stored either
         }
@@ -156,7 +157,7 @@ namespace SmartBank.Tests.Api
             await customerHub.Connection.InvokeAsync("StartSessionAsync", "I lost my card");
 
             Assert.True(await WaitForAsync(() => agentHub.NewSessionRequests.Count == 1), "The agent should see the new request.");
-            await SettleAsync();
+            await SettleAsync(attackerHub);
             Assert.Empty(attackerHub.NewSessionRequests);
         }
 

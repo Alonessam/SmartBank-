@@ -81,6 +81,13 @@ namespace SmartBank.Infrastructure.Services
                 return ServiceResult<AuthResponseDto>.Failure("EmailAlreadyExists", "This e-mail address is already registered.");
             }
 
+            var fullName = $"{registerDto.FirstName} {registerDto.LastName}".Trim();
+            if (fullName.Length > 100)
+            {
+                // The controller's validator refuses this earlier; the column holds 100 characters, so never let a 500 get this far.
+                return ServiceResult<AuthResponseDto>.Failure("ValidationError", "First and last name together cannot exceed 99 characters.");
+            }
+
             var now = UtcNow;
             var user = new User
             {
@@ -90,7 +97,7 @@ namespace SmartBank.Infrastructure.Services
                 PasswordHash = BCrypt.Net.BCrypt.HashPassword(registerDto.Password),
                 FirstName = registerDto.FirstName,
                 LastName = registerDto.LastName,
-                FullName = $"{registerDto.FirstName} {registerDto.LastName}".Trim(),
+                FullName = fullName,
                 CreatedAt = now
             };
 

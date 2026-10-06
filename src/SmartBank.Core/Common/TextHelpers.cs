@@ -21,11 +21,17 @@ namespace SmartBank.Core.Common
             "bakiye", "gönder", "gonder", "işlem", "islem", "destek", "bağla", "bagla", "istiyorum"
         };
 
+        // Lower-case and drop the Turkish letters' marks, so "BAKİYE", "bakiye" and "bakıye" are the same word. (A capital dotted İ
+        // does not lower-case to a plain i under the invariant culture.)
+        private static string Fold(string text) =>
+            text.ToLowerInvariant().Replace('İ', 'i').Replace("i̇", "i").Replace('ı', 'i').Replace('ç', 'c').Replace('ğ', 'g')
+                .Replace('ö', 'o').Replace('ş', 's').Replace('ü', 'u');
+
         public static bool LooksTurkish(string? text)
         {
             if (string.IsNullOrWhiteSpace(text)) return false;
-            var lower = text.ToLowerInvariant();
-            return Hints.Any(h => lower.Contains(h, StringComparison.Ordinal));
+            var folded = Fold(text);
+            return Hints.Any(h => folded.Contains(Fold(h), StringComparison.Ordinal));
         }
     }
 }

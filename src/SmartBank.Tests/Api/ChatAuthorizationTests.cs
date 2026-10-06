@@ -75,8 +75,14 @@ namespace SmartBank.Tests.Api
             using var client = _factory.ClientFor(attacker);
             var response = await client.GetAsync($"/api/chat/messages/{session}");
 
-            Assert.NotEqual(HttpStatusCode.OK, response.StatusCode);
-            Assert.DoesNotContain("4111", await response.Content.ReadAsStringAsync());
+            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+            var body = await response.Content.ReadAsStringAsync();
+            Assert.Contains("UnauthorizedSessionAccess", body);
+            Assert.DoesNotContain("4111", body);
+
+            // Positive control: the owner reads the very same conversation.
+            using var ownerClient = _factory.ClientFor(victim);
+            Assert.Equal(HttpStatusCode.OK, (await ownerClient.GetAsync($"/api/chat/messages/{session}")).StatusCode);
         }
 
         [Fact]
