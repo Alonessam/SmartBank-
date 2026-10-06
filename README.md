@@ -137,7 +137,7 @@ Be honest about what this is: a portfolio project with a simulated bank. In part
 * **Cards are simulated:** numbers carry no check digit, the credit card number is returned in full by the API (the UI masks it), and nothing here is PCI-certified.
 * **The audit trail is append-only by convention**, not tamper-proof (see above).
 * **Registration reveals whether a username or T.C. number is already taken.**
-* **The AI chat** was not reviewed for what it may disclose about a customer or for prompt injection.
+* **The AI chat** (reviewed in v1.2): the model sees only the conversation and, on request, the balances of the session's own owner, and it can only *propose* a transfer that the customer must confirm (the transfer itself goes through the normal ownership, limit and one-time-code checks). What remains: the text and those balances are sent to an external model provider (Gemini when the local Ollama is down), and a user can still talk the model into odd answers in their own chat (prompt injection), which is why nothing the model writes is trusted as a command.
 * **Two database providers.** The EF migrations target SQL Server; production is PostgreSQL with a hand-run script ([`docs/deploy`](docs/deploy/v1.1-postgres-upgrade.sql), tested against a real PostgreSQL). A single-provider setup would be cleaner.
 * The Docker image was changed to run as a non-root user but could not be built on the machine where v1.1 was written; deploy it once and check.
 
@@ -346,7 +346,7 @@ Bunun ne olduğu konusunda dürüst olalım: simüle edilmiş bir bankaya sahip 
 * **Kartlar simülasyondur:** numaralarda kontrol basamağı yok, kredi kartı numarası API'den tam döner (arayüz maskeler), hiçbir şey PCI sertifikalı değildir.
 * **Denetim günlüğü gelenek gereği yalnızca-ekleme'dir**, kurcalamaya karşı korumalı değildir (yukarıya bakın).
 * **Kayıt, kullanıcı adının veya T.C. numarasının alınmış olduğunu belli eder.**
-* **Yapay zeka sohbeti**, bir müşteri hakkında neyi ifşa edebileceği ve istem enjeksiyonu açısından gözden geçirilmedi.
+* **Yapay zeka sohbeti** (v1.2'de gözden geçirildi): model yalnızca konuşmayı ve istenirse oturum sahibinin kendi bakiyelerini görür; yalnızca müşterinin onaylaması gereken bir transfer *önerebilir* (transferin kendisi normal sahiplik, limit ve tek kullanımlık kod denetimlerinden geçer). Kalanlar: metin ve bu bakiyeler harici bir model sağlayıcısına gönderilir (yerel Ollama kapalıysa Gemini) ve kullanıcı kendi sohbetinde modeli garip cevaplar vermeye ikna edebilir (istem enjeksiyonu); bu yüzden modelin yazdığı hiçbir şey komut olarak güvenilmez.
 * **İki veritabanı sağlayıcısı.** EF migration'ları SQL Server'ı hedefler; üretim, elle çalıştırılan bir betikle PostgreSQL'dir ([`docs/deploy`](docs/deploy/v1.1-postgres-upgrade.sql), gerçek bir PostgreSQL'e karşı test edildi). Tek sağlayıcılı bir kurulum daha temiz olurdu.
 * Docker imajı root olmayan kullanıcıyla çalışacak şekilde değiştirildi ama v1.1'in yazıldığı makinede derlenemedi; bir kez dağıtıp kontrol edin.
 

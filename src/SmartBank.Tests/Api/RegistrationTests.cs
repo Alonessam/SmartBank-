@@ -4,6 +4,7 @@ using System.Text.Json;
 
 namespace SmartBank.Tests.Api
 {
+    [Collection("EncryptionHelper")]
     public class RegistrationTests : IClassFixture<ApiFactory>
     {
         private readonly ApiFactory _factory;

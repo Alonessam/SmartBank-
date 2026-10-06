@@ -64,6 +64,20 @@ namespace SmartBank.Tests
             Assert.Contains("accessTokenFactory", Read("chat.js"));
         }
 
+        [Theory]
+        [InlineData("fromSystem && content.includes(\"[SESSION_TRANSFERRED:\")")]
+        [InlineData("fromAi && content.includes(\"[CONFIRM_TRANSFER:\")")]
+        [InlineData("fromSystem && content.includes(\"[TRANSFER_SUCCESS:\")")]
+        [InlineData("fromSystem && content.includes(\"[TRANSFER_FAILED:\")")]
+        public void Chat_markers_become_cards_only_when_they_come_from_the_right_sender(string gatedCondition)
+        {
+            var chat = Read("chat.js");
+
+            Assert.Contains(gatedCondition, chat);
+            // No marker check may exist without a sender condition in front of it.
+            Assert.DoesNotMatch(new Regex(@"if \(content\.includes\(""\[(SESSION_TRANSFERRED|CONFIRM_TRANSFER|TRANSFER_SUCCESS|TRANSFER_FAILED):"), chat);
+        }
+
         [Fact]
         public void Every_authenticated_call_goes_through_the_refreshing_fetch_wrapper()
         {

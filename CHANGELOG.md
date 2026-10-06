@@ -12,6 +12,13 @@
 
 ### Security
 
+- **Support chat hardening.** The chat is now limited per user: messages are at most 1000 characters, 10 a minute and 100 an
+  hour (agents get three times the per-minute allowance), 10 new chats an hour, 5 chat transfers a minute; the hub's message
+  size is capped at 16 KB. Hub transfers are validated like the REST endpoint (amount range, description length). Machine
+  markers (`[CONFIRM_TRANSFER:`, `[TRANSFER_SUCCESS:`, ...) typed by a customer, an agent or produced by the AI model are made
+  inert on the server, and the web app only turns a marker into a card when it comes from the right sender, so nobody can put
+  a fake "confirm this transfer" card into someone's chat. Limits are configurable under `Chat:*`. Details: `docs/DEFENSE.md` (T13).
+
 - **Access tokens now last 15 minutes instead of 7 days, and sessions can be ended.** A single-use refresh token (stored only as
   a SHA-256 hash, rotated on every use) renews the access token. Logging out, resetting the password or locking the account
   revokes the sessions, and presenting an already-used refresh token revokes the whole session family. New endpoints:
