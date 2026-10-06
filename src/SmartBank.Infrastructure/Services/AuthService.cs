@@ -76,7 +76,7 @@ namespace SmartBank.Infrastructure.Services
             // The e-mail address is unique in the database. It is stored lower-case from now on; the comparison also lowers
             // the stored value, because older rows may have been saved with the case the user typed.
             var email = registerDto.Email.Trim().ToLowerInvariant();
-            if (await _context.Users.AnyAsync(u => u.Email.ToLower() == email))
+            if (await _context.Users.AnyAsync(u => u.Email.ToLowerInvariant() == email))
             {
                 return ServiceResult<AuthResponseDto>.Failure("EmailAlreadyExists", "This e-mail address is already registered.");
             }
