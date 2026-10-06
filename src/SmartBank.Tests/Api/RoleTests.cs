@@ -56,7 +56,7 @@ namespace SmartBank.Tests.Api
             var response = await client.PostAsJsonAsync("/api/auth/register", new
             {
                 username = "sneaky_one",
-                tckn = "77700000001",
+                tckn = TestTckn.Next(),
                 password = "123456",
                 firstName = "Sneaky",
                 lastName = "Person",

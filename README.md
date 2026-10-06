@@ -120,6 +120,8 @@ Things to know about the demo: the API runs on a free tier, so the **first reque
 | Card data | AES-256-GCM with a random nonce per value (tampering is detected). Card duplicates are found through a keyed HMAC. The CVV is **never stored**; it is shown once when a card is issued. |
 | Guessing a PIN or a one-time code | 5 wrong PINs lock the account for 15 minutes; a one-time code dies after 5 wrong guesses, expires after 5 minutes, is single-use and bound to its purpose (and, for transfers, to the exact amount and recipient). Per-IP rate limit on the auth endpoints. Unknown T.C. numbers and wrong PINs get identical answers. |
 | Account takeover | Password reset needs a code e-mailed to the owner; the 2FA code is not returned by the API (unless the demo flag is on). |
+| Typos in the identity number | Registration checks the T.C. Kimlik Numarası check digits (server and form). This is a format check, **not** identity verification (that needs MERNIS). Demo-friendly examples: `11111111110`, `10000000146`. |
+| Browser-side attacks on the API | Every response has `nosniff`, `X-Frame-Options: DENY`, a `default-src 'none'` CSP and `no-referrer`; `/api` responses are `no-store`; HSTS is sent over HTTPS in production. |
 | A stolen token | Access tokens live 15 minutes. The refresh token is single-use (rotated on every refresh, stored only as a hash); presenting a used one again revokes the whole session. Logout, password reset and lockout revoke sessions. |
 | Who may do what | Roles live in the database and in the token. Customers reach only their own accounts, cards and chats; support-agent endpoints and hub methods need the `Agent` role, which only an administrator can grant. Verified with cross-customer (IDOR) integration tests. |
 | Browser access | CORS accepts only the origins listed in configuration. |
@@ -332,6 +334,9 @@ Demo hakkında bilmeniz gerekenler: API ücretsiz katmanda çalışıyor, bu yü
 | Hesap ele geçirme | Şifre sıfırlama, sahibine e-postayla gönderilen kodu ister; 2FA kodu API'den dönmez (demo bayrağı açık değilse). |
 | Kim neyi yapabilir | Roller veritabanında ve token'da yaşar. Müşteriler yalnızca kendi hesaplarına, kartlarına ve sohbetlerine ulaşır; temsilci uçları ve hub metotları yalnızca yöneticinin verebileceği `Agent` rolünü ister. Müşteriler arası (IDOR) entegrasyon testleriyle doğrulandı. |
 | Tarayıcı erişimi | CORS yalnızca yapılandırmada listelenen origin'leri kabul eder. |
+| Çalınmış token | Erişim token'ları 15 dakika yaşar. Yenileme token'ı tek kullanımlıktır (her yenilemede değişir, yalnızca özeti saklanır); kullanılmış biri tekrar gelirse oturumun tamamı iptal edilir. Çıkış, şifre sıfırlama ve kilitlenme oturumları iptal eder. |
+| Kimlik numarasında yazım hatası | Kayıt, T.C. Kimlik Numarası kontrol basamaklarını denetler (sunucu ve form). Bu bir biçim denetimidir, **kimlik doğrulama değildir** (bunun için MERNİS gerekir). Demo için örnekler: `11111111110`, `10000000146`. |
+| API'ye tarayıcı tabanlı saldırılar | Her yanıtta `nosniff`, `X-Frame-Options: DENY`, `default-src 'none'` CSP ve `no-referrer` var; `/api` yanıtları `no-store`; üretimde HTTPS üzerinden HSTS gönderilir. |
 | Eşzamanlı istekler | Her para hareketinde yeniden denemeli iyimser eşzamanlılık. |
 | Bilgi sızıntıları | Hatalar genel mesaj ve izleme kimliği döner; ayrıntılar loga gider. |
 

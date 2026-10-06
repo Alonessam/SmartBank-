@@ -70,7 +70,7 @@ namespace SmartBank.Tests.Api
         public async Task<TestUser> RegisterCustomerAsync(string? username = null)
         {
             var n = Interlocked.Increment(ref _counter);
-            var tckn = (10000000000L + n).ToString();
+            var tckn = TestTckn.Next(); // registration checks the check digits
             username ??= $"customer{n}";
 
             using var client = CreateClient();
