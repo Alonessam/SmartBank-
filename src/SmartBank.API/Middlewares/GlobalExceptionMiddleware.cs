@@ -1,14 +1,12 @@
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
-using System;
 using System.Text.Json;
-using System.Threading.Tasks;
 
 namespace SmartBank.API.Middlewares
 {
     public class GlobalExceptionMiddleware
     {
+        /// <summary>The status nginx and others use when the client closed the connection before the answer was ready.</summary>
+        public const int ClientClosedRequest = 499;
+
         private readonly RequestDelegate _next;
         private readonly ILogger<GlobalExceptionMiddleware> _logger;
         private readonly IHostEnvironment _env;
@@ -26,15 +24,34 @@ namespace SmartBank.API.Middlewares
             {
                 await _next(context);
             }
+            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+            {
+                // The client went away (closed the tab, timed out): nothing is wrong on our side and nobody is listening.
+                _logger.LogDebug("Request {TraceId} was cancelled by the client.", context.TraceIdentifier);
+                if (!context.Response.HasStarted)
+                {
+                    context.Response.StatusCode = ClientClosedRequest;
+                }
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Unhandled exception for request {TraceId}.", context.TraceIdentifier);
+
+                if (context.Response.HasStarted)
+                {
+                    // Part of an answer is already on its way: a status and a body can no longer be written. End the connection
+                    // instead of corrupting the stream (or throwing a second exception from here).
+                    context.Abort();
+                    return;
+                }
+
                 await HandleExceptionAsync(context, ex);
             }
         }
 
         private async Task HandleExceptionAsync(HttpContext context, Exception exception)
         {
+            context.Response.Clear();
             context.Response.ContentType = "application/problem+json";
             context.Response.StatusCode = StatusCodes.Status500InternalServerError;
 
@@ -50,9 +67,7 @@ namespace SmartBank.API.Middlewares
                 traceId = context.TraceIdentifier
             };
 
-            var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
-            var json = JsonSerializer.Serialize(response, jsonOptions);
-
+            var json = JsonSerializer.Serialize(response, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
             await context.Response.WriteAsync(json);
         }
     }
