@@ -390,7 +390,7 @@ namespace SmartBank.Tests.Banking
 
             Assert.True(result.IsSuccess);
             Assert.Equal(new[] { "Ağustos 2026", "Temmuz 2026" }, result.Data!.Select(s => s.PeriodName).ToArray());
-            Assert.Equal(new[] { "august shop", "on the cutoff day" }, result.Data[0].Transactions.Select(t => t.Description).OrderBy(d => d).ToArray());
+            Assert.Equal(new[] { "august shop", "on the cutoff day" }, result.Data![0].Transactions.Select(t => t.Description).OrderBy(d => d).ToArray());
             Assert.Equal(new[] { "july shop" }, result.Data[1].Transactions.Select(t => t.Description).ToArray());
         }
 
