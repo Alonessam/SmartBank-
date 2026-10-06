@@ -1,386 +1,333 @@
 /* ==========================================================================
    SmartBank Core Application Logic - app.js
-   Handles Authentication, Banking API calls, and TR/EN Client Localization
+   Shared helpers (storage, i18n, API, dialogs, formatting), authentication, the customer
+   dashboard, the support agent panel and the live market rates box.
+   chat.js (loaded after this file on dashboard.html and agent.html) owns the SignalR chat.
    ========================================================================== */
+"use strict";
 
-const API_URL = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
-    ? "http://localhost:5038/api"
-    : "https://smartbank-fintech-api.onrender.com/api";
+const APP_VERSION = "1.3.0";
+
+// One constant decides which page this is (<body data-page="login|dashboard|agent">): no URL sniffing.
+const PAGE = (document.body && document.body.dataset && document.body.dataset.page) || "";
+const IS_AGENT_PAGE = PAGE === "agent";
+const IS_DASHBOARD_PAGE = PAGE === "dashboard";
+
+// Where the API lives. Loopback names use the local development API; a private LAN address assumes the API on the same
+// machine (add that host to connect-src in the page CSP for a LAN test); everything else is the hosted demo API.
+const API_ORIGIN = (() => {
+    const host = window.location.hostname;
+    const isLoopback = host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1" || host.endsWith(".localhost");
+    if (isLoopback) return "http://localhost:5038";
+    if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host) || host.endsWith(".local")) return `http://${host}:5038`;
+    return "https://smartbank-fintech-api.onrender.com";
+})();
+const API_URL = `${API_ORIGIN}/api`;
+const HUBS_URL = `${API_ORIGIN}/hubs`;
 
 // Escapes text before it is placed inside an innerHTML template (element text AND quoted attribute values).
 // Everything that comes from the server or from another user (descriptions, aliases, names, chat text) must go through this.
+// (New code builds dynamic DOM with h() / textContent instead, which needs no escaping.)
 function esc(value) {
     return String(value ?? "").replace(/[&<>"'`]/g, ch => ({
         "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;", "`": "&#96;"
     }[ch]));
 }
 
-// Localization Dictionary
-const i18n = {
-    en: {
-        // Auth page
-        "login-title": "Sign In",
-        "login-subtitle": "Access your financial dashboard",
-        "lbl-username-login": "T.C. Identity Number",
-        "lbl-password-login": "Password (6 Digits)",
-        "btn-login-submit": "Login",
-        "txt-no-account": "Don't have an account?",
-        "link-to-register": "Register here",
-        "register-title": "Create Account",
-        "register-subtitle": "Register today using your T.C. Identity Number",
-        "lbl-firstname": "First Name",
-        "lbl-lastname": "Last Name",
-        "lbl-username-reg": "Username",
-        "lbl-email": "T.C. Identity Number",
-        "lbl-password-reg": "Password (6 Digits)",
-        "btn-register-submit": "Register",
-        "txt-has-account": "Already have an account?",
-        "link-to-login": "Sign In",
+// A value that may only become a CSS class token: lower-case letters, digits, dash and underscore.
+function cssToken(value, fallback) {
+    const token = String(value ?? "").toLowerCase().replace(/[^a-z0-9_-]/g, "");
+    return token || fallback || "";
+}
 
-        // Customer Dashboard
-        "title-accounts": "Accounts",
-        "title-transfer": "Transfer Funds",
-        "transfer-desc": "Send money instantly using account number",
-        "lbl-source-acc": "Source Account",
-        "lbl-dest-acc": "Destination Account Number",
-        "lbl-amount": "Amount",
-        "lbl-desc": "Description",
-        "btn-transfer-submit": "Execute Transfer",
-        "title-history": "Transaction History",
-        "history-desc": "Recent financial movements",
-        "th-date": "Date",
-        "th-type": "Type",
-        "th-desc": "Description",
-        "th-amount": "Amount",
-        "txt-no-tx": "Select an account to view history",
-        "chat-welcome": "Welcome! Need help with your accounts, transfers, or card limits?",
-        "btn-start-chat": "Start Session",
-        "chat-toggle-label": "Live Support",
-        "chat-input-placeholder": "Type a message...",
-
-        // Agent Dashboard
-        "title-active-chats": "Active Support Chats",
-        "agent-chat-title": "Chatting with Guest",
-        "btn-close-session": "Close Session",
-        "txt-select-chat": "Select a Support Session",
-        "txt-select-chat-desc": "Click on a chat session on the left sidebar to start helping customers.",
-        "agent-chat-input-placeholder": "Type support message...",
-        "txt-no-active-chats": "No active chats at the moment",
-
-        // API Localization Keys
-        "UsernameAlreadyExists": "Username is already taken.",
-        "EmailAlreadyExists": "Email is already registered.",
-        "InvalidCredentials": "Invalid username/email or password.",
-        "InsufficientFunds": "Insufficient funds in the source account.",
-        "SourceAccountNotFound": "Source account was not found.",
-        "DestinationAccountNotFound": "Destination account was not found.",
-        "CannotTransferToSelf": "Cannot transfer money to the same account.",
-        "CurrencyMismatch": "Exchange transfers not supported in this version.",
-        "UnauthorizedSessionAccess": "Access denied to this chat session.",
-        "InvalidAmount": "Amount must be greater than zero.",
-        "TransferSuccess": "Transfer executed successfully!",
-        "TcknNotFound": "T.C. Identity Number is not registered.",
-        "PasswordResetSuccess": "Password reset successfully!",
-        "link-to-forgot": "Forgot Password?",
-        "forgot-title": "Reset Password",
-        "forgot-subtitle": "Reset your password using your T.C. Identity Number",
-        "lbl-email-forgot": "T.C. Identity Number",
-        "lbl-new-password": "New Password (6 Digits)",
-        "btn-forgot-submit": "Reset Password",
-        "link-forgot-to-login": "Back to Sign In",
-        "lbl-forgot-code": "Verification Code",
-        "forgot-code": "6-digit code sent to your e-mail",
-        "btn-forgot-send": "Send Code",
-        "ResetCodeSent": "If this T.C. Identity Number is registered, a verification code has been sent to its e-mail address.",
-        "AccountLocked": "Too many failed attempts. Your account is temporarily locked, please try again later.",
-        "TooManyOtpAttempts": "Too many wrong codes. Please request a new code and try again.",
-        "InvalidOrExpiredCode": "Invalid or expired verification code.",
-        "TooManyRequests": "Too many requests. Please wait a moment and try again.",
-        
-        // SignalR Status
-        "StatusAI": "SmartBank AI",
-        "StatusAgent": "Live Agent",
-        "SessionClosed": "Session has been closed.",
-
-        // Phase 2 i18n keys
-        "title-analytics": "Financial Analytics",
-        "title-spending-chart": "Spendings Distribution",
-        "title-trend-chart": "Balance History",
-        "title-card-customizer": "Card & Security Workspace",
-        "desc-card-customizer": "Custom card style & 2FA security",
-        "lbl-select-theme": "Choose Theme:",
-        "lbl-2fa-title": "2FA Security",
-        "lbl-2fa-desc": "Requires verification code for transfers over 1000 TRY",
-        "otp-modal-title": "Security Verification",
-        "otp-modal-desc": "Please enter the 6-digit verification code sent to your registered device to approve this transfer.",
-        "btn-submit-otp": "Confirm Code",
-        
-        "InvalidOtpCode": "Invalid or expired verification code.",
-        "SuspectedFraudDuplicate": "Suspicious Activity: Same transfer submitted within 30 seconds.",
-        "SuspectedFraudHighValue": "Suspicious Activity: Transfer amount exceeds standard limit.",
-        "Requires2FA": "Two-Factor Verification Required",
-
-        "lbl-metric-resolved": "Resolved Chats",
-        "lbl-metric-time": "Avg Response Time",
-        "lbl-metric-csat": "CSAT Score",
-        "lbl-metric-status": "Your Status",
-        "opt-status-active": "Active",
-        "opt-status-busy": "Busy",
-        "opt-status-break": "Break",
-        
-        "lbl-copilot-title": "✨ AI Co-Pilot Recommendation",
-        "btn-use-suggestion": "Use Recommendation",
-        "opt-transfer-select": "Transfer to...",
-        "opt-dept-general": "General Support",
-        "opt-dept-loans": "Loans Department",
-        "opt-dept-cards": "Card Services",
-        "opt-dept-investments": "Investment Advisory",
-        "title-market-rates": "Live Market Rates",
-        "txt-rates-updated": "Last Update: ",
-        "title-credit-cards": "My Credit Cards",
-        "stmt-modal-title": "Credit Card Statement",
-        "lbl-stmt-period": "Billing Period",
-        "lbl-stmt-debt": "Statement Debt",
-        "lbl-stmt-min": "Minimum Payment",
-        "lbl-stmt-due": "Due Date",
-        "stmt-status-paid": "Fully Paid",
-        "stmt-status-unpaid": "Unpaid",
-        "lbl-stmt-tx-title": "Statement Transactions",
-        "lbl-pay-debt-title": "Pay Credit Card Debt",
-        "lbl-pay-source": "Payment Account",
-        "lbl-pay-amount": "Amount to Pay",
-        "btn-pay-submit": "Execute Payment",
-        "btn-create-account": "+ New Account",
-        "CreditCardNotFound": "Credit card not found.",
-        "PaymentSuccess": "Payment completed successfully!",
-        "PaymentFailed": "Payment failed.",
-        "create-acc-modal-title": "Open New Account",
-        "lbl-select-acc-type": "Select Account Type:",
-        "btn-submit-create-acc": "Open Account"
-    },
-    tr: {
-        // Auth page
-        "login-title": "Giriş Yap",
-        "login-subtitle": "Finansal panelinize erişin",
-        "lbl-username-login": "T.C. Kimlik Numarası",
-        "lbl-password-login": "Şifre (6 Haneli)",
-        "btn-login-submit": "Giriş Yap",
-        "txt-no-account": "Hesabınız yok mu?",
-        "link-to-register": "Buradan kaydolun",
-        "register-title": "Hesap Oluştur",
-        "register-subtitle": "T.C. Kimlik numaranız ile hemen kaydolun",
-        "lbl-firstname": "Adı",
-        "lbl-lastname": "Soyadı",
-        "lbl-username-reg": "Kullanıcı Adı",
-        "lbl-email": "T.C. Kimlik Numarası",
-        "lbl-password-reg": "Şifre (6 Haneli)",
-        "btn-register-submit": "Kaydol",
-        "txt-has-account": "Zaten hesabınız var mı?",
-        "link-to-login": "Giriş Yap",
-
-        // Müşteri Dashboard
-        "title-accounts": "Hesaplarım",
-        "title-transfer": "Para Gönder",
-        "transfer-desc": "Hesap numarasını kullanarak anında para transferi yapın",
-        "lbl-source-acc": "Kaynak Hesap",
-        "lbl-dest-acc": "Alıcı Hesap Numarası",
-        "lbl-amount": "Miktar",
-        "lbl-desc": "Açıklama",
-        "btn-transfer-submit": "Transferi Gerçekleştir",
-        "title-history": "Hesap Hareketleri",
-        "history-desc": "Son finansal işlemleriniz",
-        "th-date": "Tarih",
-        "th-type": "Tür",
-        "th-desc": "Açıklama",
-        "th-amount": "Miktar",
-        "txt-no-tx": "İşlem geçmişini görüntülemek için bir hesap seçin",
-        "chat-welcome": "Merhaba! Hesaplarınız, transferleriniz veya kart limitleriniz hakkında yardıma mı ihtiyacınız var?",
-        "btn-start-chat": "Sohbeti Başlat",
-        "chat-toggle-label": "Canlı Destek",
-        "chat-input-placeholder": "Mesajınızı yazın...",
-
-        // Temsilci Dashboard
-        "title-active-chats": "Aktif Destek Talepleri",
-        "agent-chat-title": "Misafir ile Görüşülüyor",
-        "btn-close-session": "Oturumu Kapat",
-        "txt-select-chat": "Bir Sohbet Odası Seçin",
-        "txt-select-chat-desc": "Müşterilere yardımcı olmaya başlamak için sol paneldeki aktif sohbet odalarından birine tıklayın.",
-        "agent-chat-input-placeholder": "Destek mesajı yazın...",
-        "txt-no-active-chats": "Şu anda aktif destek talebi bulunmuyor",
-
-        // API Localization Keys
-        "UsernameAlreadyExists": "Bu kullanıcı adı zaten alınmış.",
-        "TcknAlreadyExists": "Bu T.C. Kimlik Numarası zaten kayıtlı.",
-        "EmailAlreadyExists": "Bu e-posta adresi zaten kayıtlı.",
-        "InvalidCredentials": "Hatalı T.C. Kimlik Numarası veya şifre.",
-        "InsufficientFunds": "Gönderen hesapta yetersiz bakiye.",
-        "SourceAccountNotFound": "Kaynak hesap bulunamadı.",
-        "DestinationAccountNotFound": "Alıcı hesap bulunamadı.",
-        "CannotTransferToSelf": "Kendi hesabınıza para transferi yapamazsınız.",
-        "CurrencyMismatch": "Farklı para birimlerine transfer bu sürümde desteklenmiyor.",
-        "UnauthorizedSessionAccess": "Bu destek odasına erişim yetkiniz yok.",
-        "InvalidAmount": "Miktar sıfırdan büyük olmalıdır.",
-        "TransferSuccess": "Para transferi başarıyla gerçekleştirildi!",
-        "TcknNotFound": "Bu T.C. Kimlik Numarası sistemde kayıtlı değil.",
-        "PasswordResetSuccess": "Şifreniz başarıyla güncellendi!",
-        "link-to-forgot": "Şifremi Unuttum?",
-        "forgot-title": "Şifreyi Sıfırla",
-        "forgot-subtitle": "T.C. Kimlik numaranız ile şifrenizi kolayca sıfırlayın",
-        "lbl-email-forgot": "T.C. Kimlik Numarası",
-        "lbl-new-password": "Yeni Şifre (6 Haneli)",
-        "btn-forgot-submit": "Şifreyi Sıfırla",
-        "link-forgot-to-login": "Giriş Ekranına Dön",
-        "lbl-forgot-code": "Doğrulama Kodu",
-        "forgot-code": "E-postanıza gelen 6 haneli kod",
-        "btn-forgot-send": "Kod Gönder",
-        "ResetCodeSent": "Bu T.C. Kimlik Numarası kayıtlıysa, e-posta adresine bir doğrulama kodu gönderildi.",
-        "AccountLocked": "Çok fazla başarısız deneme. Hesabınız geçici olarak kilitlendi, lütfen daha sonra tekrar deneyin.",
-        "TooManyOtpAttempts": "Çok fazla hatalı kod girdiniz. Lütfen yeni bir kod isteyip tekrar deneyin.",
-        "InvalidOrExpiredCode": "Geçersiz veya süresi dolmuş doğrulama kodu.",
-        "TooManyRequests": "Çok fazla istek gönderildi. Lütfen biraz bekleyip tekrar deneyin.",
-
-        // SignalR Status
-        "StatusAI": "SmartBank Yapay Zeka",
-        "StatusAgent": "Müşteri Temsilcisi",
-        "SessionClosed": "Görüşme sonlandırılmıştır.",
-
-        // Phase 2 i18n keys
-        "title-analytics": "Finansal Analiz",
-        "title-spending-chart": "Harcama Dağılımı",
-        "title-trend-chart": "Bakiye Değişimi",
-        "title-card-customizer": "Kart ve Güvenlik Paneli",
-        "desc-card-customizer": "Kart stili ve 2FA güvenlik ayarı",
-        "lbl-select-theme": "Tema Seçin:",
-        "lbl-2fa-title": "2FA Güvenliği",
-        "lbl-2fa-desc": "1000 TRY üzerindeki transferler için doğrulama kodu ister.",
-        "otp-modal-title": "Güvenlik Doğrulaması",
-        "otp-modal-desc": "Lütfen işlemi onaylamak için kayıtlı cihazınıza gönderilen 6 haneli doğrulama kodunu girin.",
-        "btn-submit-otp": "Kodu Doğrula",
-
-        "InvalidOtpCode": "Geçersiz veya süresi dolmuş doğrulama kodu.",
-        "SuspectedFraudDuplicate": "Şüpheli İşlem: 30 saniye içinde mükerrer transfer denemesi.",
-        "SuspectedFraudHighValue": "Şüpheli İşlem: Transfer tutarı standart limitleri aşmaktadır.",
-        "Requires2FA": "İki Aşamalı Güvenlik Doğrulaması",
-
-        "lbl-metric-resolved": "Çözülen Sohbetler",
-        "lbl-metric-time": "Ort. Yanıt Süresi",
-        "lbl-metric-csat": "CSAT Skoru",
-        "lbl-metric-status": "Durumunuz",
-        "opt-status-active": "Aktif",
-        "opt-status-busy": "Meşgul",
-        "opt-status-break": "Mola",
-        
-        "lbl-copilot-title": "✨ AI Co-Pilot Önerisi",
-        "btn-use-suggestion": "Öneriyi Kullan",
-        "opt-transfer-select": "Aktar...",
-        "opt-dept-general": "Genel Destek",
-        "opt-dept-loans": "Kredi Departmanı",
-        "opt-dept-cards": "Kart Hizmetleri",
-        "opt-dept-investments": "Yatırım Danışmanlığı",
-        "title-market-rates": "Canlı Piyasalar",
-        "txt-rates-updated": "Son Güncelleme: ",
-        "title-credit-cards": "Kredi Kartlarım",
-        "stmt-modal-title": "Kredi Kartı Ekstresi",
-        "lbl-stmt-period": "Hesap Dönemi",
-        "lbl-stmt-debt": "Dönem Borcu",
-        "lbl-stmt-min": "Asgari Ödeme",
-        "lbl-stmt-due": "Son Ödeme Tarihi",
-        "stmt-status-paid": "Ödendi",
-        "stmt-status-unpaid": "Ödenmedi",
-        "lbl-stmt-tx-title": "Dönem İçi Hareketler",
-        "lbl-pay-debt-title": "Borç Ödeme",
-        "lbl-pay-source": "Ödeme Yapılacak Hesap",
-        "lbl-pay-amount": "Ödenecek Tutar",
-        "btn-pay-submit": "Ödemeyi Gerçekleştir",
-        "btn-create-account": "+ Yeni Hesap Aç",
-        "CreditCardNotFound": "Kredi kartı bulunamadı.",
-        "PaymentSuccess": "Borç ödeme işlemi başarıyla tamamlandı!",
-        "PaymentFailed": "Ödeme işlemi başarısız oldu.",
-        "create-acc-modal-title": "Yeni Hesap Aç",
-        "lbl-select-acc-type": "Hesap Türü Seçiniz:",
-        "btn-submit-create-acc": "Hesap Aç"
-    }
-};
-
-// State Management
-let currentLanguage = localStorage.getItem("lang") || "en";
-let currentUser = JSON.parse(localStorage.getItem("user")) || null;
-let currentToken = localStorage.getItem("token") || null;
-let activeAccountId = null; // Currently selected account on dashboard
-let showAllTransactions = false; // Transaction list collapse state
-let activeCreditCardId = null; // Currently selected credit card on dashboard
-let spendingChartInstance = null;
-let trendChartInstance = null;
-let activeMarketRates = [];
-let savedContacts = [];
-let standingOrders = [];
-
-
-// Page Translation Engine
-function translatePage() {
-    const dict = i18n[currentLanguage];
-    document.querySelectorAll("[id]").forEach(el => {
-        if (dict[el.id]) {
-            if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
-                el.placeholder = dict[el.id];
-            } else {
-                el.textContent = dict[el.id];
-            }
+/* ==========================================================================
+   Safe storage: localStorage / sessionStorage can throw (blocked site data, private modes). Every access goes through
+   these helpers and falls back to memory, so the app still works for the life of the tab.
+   ========================================================================== */
+function makeSafeStorage(kind) {
+    const memory = new Map();
+    const area = () => { try { return window[kind]; } catch (err) { return null; } };
+    return {
+        get(key) {
+            try { const s = area(); if (s) return s.getItem(key); } catch (err) { /* fall through */ }
+            return memory.has(key) ? memory.get(key) : null;
+        },
+        set(key, value) {
+            const text = String(value);
+            try { const s = area(); if (s) { s.setItem(key, text); return; } } catch (err) { /* fall through */ }
+            memory.set(key, text);
+        },
+        remove(key) {
+            try { const s = area(); if (s) s.removeItem(key); } catch (err) { /* ignore */ }
+            memory.delete(key);
         }
-    });
+    };
+}
+const safeStorage = makeSafeStorage("localStorage");
+const safeSession = makeSafeStorage("sessionStorage");
 
-    // Handle inputs placeholders dynamically
-    const chatInput = document.getElementById("chat-input");
-    if (chatInput) chatInput.placeholder = dict["chat-input-placeholder"];
-    
-    const agentInput = document.getElementById("agent-chat-input");
-    if (agentInput) agentInput.placeholder = dict["agent-chat-input-placeholder"];
+/* ==========================================================================
+   Localization (EN / TR). The dictionary is in the next block; every user-visible string comes from t().
+   Static HTML uses data-i18n / data-i18n-placeholder / data-i18n-aria-label / data-i18n-title attributes.
+   ========================================================================== */
+const SUPPORTED_LANGUAGES = ["en", "tr"];
+const LOCALES = { en: "en-US", tr: "tr-TR" };
 
-    // Update language toggle button label
+function detectLanguage() {
+    const stored = safeStorage.get("lang");
+    if (SUPPORTED_LANGUAGES.includes(stored)) return stored;
+    const nav = (navigator.languages && navigator.languages[0]) || navigator.language || "en";
+    return String(nav).toLowerCase().startsWith("tr") ? "tr" : "en";
+}
+
+let currentLanguage = detectLanguage();
+function locale() { return LOCALES[currentLanguage] || "en-US"; }
+
+function hasKey(key, lang) {
+    return Object.prototype.hasOwnProperty.call(i18n[lang || currentLanguage], key);
+}
+
+function t(key, vars) {
+    let text = hasKey(key) ? i18n[currentLanguage][key] : (hasKey(key, "en") ? i18n.en[key] : key);
+    if (vars) {
+        text = text.replace(/\{(\w+)\}/g, (match, name) => (Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : match));
+    }
+    return text;
+}
+
+const languageListeners = [];
+function onLanguageChange(listener) { languageListeners.push(listener); }
+
+function translatePage(root) {
+    const scope = root || document;
+    scope.querySelectorAll("[data-i18n]").forEach(el => { el.textContent = t(el.dataset.i18n); });
+    scope.querySelectorAll("[data-i18n-placeholder]").forEach(el => { el.placeholder = t(el.dataset.i18nPlaceholder); });
+    scope.querySelectorAll("[data-i18n-aria-label]").forEach(el => { el.setAttribute("aria-label", t(el.dataset.i18nAriaLabel)); });
+    scope.querySelectorAll("[data-i18n-title]").forEach(el => { el.title = t(el.dataset.i18nTitle); });
+
+    document.documentElement.lang = currentLanguage;
+    const titleKey = document.body && document.body.dataset.titleI18n;
+    if (titleKey) document.title = t(titleKey);
+
     const langBtn = document.getElementById("lang-toggle");
-    if (langBtn) {
-        langBtn.textContent = currentLanguage === "en" ? "TR" : "EN";
+    if (langBtn) langBtn.textContent = currentLanguage === "en" ? "TR" : "EN";
+}
+
+function setLanguage(lang) {
+    if (!SUPPORTED_LANGUAGES.includes(lang)) return;
+    currentLanguage = lang;
+    safeStorage.set("lang", lang);
+    translatePage();
+    languageListeners.forEach(listener => { try { listener(lang); } catch (err) { console.error(err); } });
+}
+
+/* ==========================================================================
+   Small DOM helpers
+   ========================================================================== */
+// h("div", { class: "x", text: "..." , onclick: fn }, child, ...) builds elements without ever parsing HTML.
+function h(tag, attrs, ...children) {
+    const el = document.createElement(tag);
+    if (attrs) {
+        for (const [key, value] of Object.entries(attrs)) {
+            if (value === null || value === undefined || value === false) continue;
+            if (key === "class") el.className = value;
+            else if (key === "text") el.textContent = value;
+            else if (key === "dataset") Object.assign(el.dataset, value);
+            else if (key === "style" && typeof value === "object") Object.assign(el.style, value);
+            else if (key.startsWith("on") && typeof value === "function") el.addEventListener(key.slice(2).toLowerCase(), value);
+            else el.setAttribute(key, value === true ? "" : String(value));
+        }
+    }
+    for (const child of children.flat()) {
+        if (child === null || child === undefined || child === false) continue;
+        el.append(child.nodeType ? child : document.createTextNode(String(child)));
+    }
+    return el;
+}
+
+function byId(id) { return document.getElementById(id); }
+function clearChildren(el) { if (el) el.replaceChildren(); }
+
+function showMessage(el, text, kind) {
+    if (!el) return;
+    el.textContent = text;
+    el.className = `alert alert-${kind === "success" ? "success" : "danger"}`;
+    el.setAttribute("role", kind === "success" ? "status" : "alert");
+}
+
+function hideMessage(el) {
+    if (!el) return;
+    el.textContent = "";
+    el.className = "alert hidden";
+}
+
+// Runs task() with the button disabled and aria-busy, and re-enables it whatever happens. A second call while busy is
+// ignored, so a double click or a double Enter can never send a money-moving request twice.
+async function withBusy(button, task) {
+    if (!button) return task();
+    if (button.dataset.busy === "1") return undefined;
+    button.dataset.busy = "1";
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    try {
+        return await task();
+    } finally {
+        delete button.dataset.busy;
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
     }
 }
 
-// Translate error keys or fallback to default English message
-function getLocalizedText(key, defaultFallbackText) {
-    const dict = i18n[currentLanguage];
-    return dict[key] || defaultFallbackText;
+function prefersReducedMotion() {
+    return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
 }
 
-// ---- Session: a 15-minute access token plus a single-use refresh token (see docs/DEFENSE.md, T12) ----
-// Every authenticated API call goes through the fetch wrapper below: it refreshes the access token shortly before it
-// expires, and once (then retries) when the server answers 401. If the refresh token is refused too, the user is signed out.
+let confettiCannon = null;
+function celebrate(options) {
+    if (typeof confetti !== "function" || prefersReducedMotion()) return;
+    try {
+        // The default global instance renders in a blob: web worker, which the CSP does not allow: own instance, main thread.
+        if (!confettiCannon) confettiCannon = typeof confetti.create === "function" ? confetti.create(null, { resize: true, useWorker: false }) : confetti;
+        confettiCannon({ particleCount: 120, spread: 80, origin: { y: 0.6 }, ...(options || {}) });
+    } catch (err) { /* purely cosmetic */ }
+}
+
+/* ==========================================================================
+   Formatting: one place for money, numbers and dates (Intl, tr-TR / en-US)
+   ========================================================================== */
+function formatNumber(value, minDigits, maxDigits) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return "—";
+    return new Intl.NumberFormat(locale(), {
+        minimumFractionDigits: minDigits ?? 2,
+        maximumFractionDigits: maxDigits ?? minDigits ?? 2
+    }).format(number);
+}
+
+function formatMoney(amount, currency) {
+    const number = Number(amount);
+    if (!Number.isFinite(number)) return "—";
+    const code = String(currency || "TRY").toUpperCase();
+    if (code === "XAU" || code === "XAG") return `${formatNumber(number, 2, 4)} ${t("unit.gram")}`;
+    const text = formatNumber(number, 2, 2);
+    if (code === "USD") return `$${text}`;
+    if (code === "EUR") return `€${text}`;
+    return `${text} ${code}`;
+}
+
+// The server stores and sends UTC. A timestamp without a "Z" or offset (some database column types drop it) would be read
+// as local time by the browser, so it is read as UTC here.
+function toDate(value) {
+    let input = value;
+    if (typeof input === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(input)) input += "Z";
+    const date = input instanceof Date ? input : new Date(input);
+    return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatDateTime(value) {
+    const date = toDate(value);
+    return date ? date.toLocaleString(locale(), { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "-";
+}
+
+function formatShortDateTime(value) {
+    const date = toDate(value);
+    return date ? date.toLocaleString(locale(), { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "-";
+}
+
+function formatTime(value) {
+    const date = toDate(value);
+    return date ? date.toLocaleTimeString(locale(), { hour: "2-digit", minute: "2-digit" }) : "";
+}
+
+// Due dates and statement periods are business dates in Turkey, whatever the time zone of the browser is.
+function formatBusinessDate(value) {
+    const date = toDate(value);
+    return date ? date.toLocaleDateString(locale(), { year: "numeric", month: "short", day: "numeric", timeZone: "Europe/Istanbul" }) : "-";
+}
+
+// Display-only upper-casing in the Turkish locale (i -> I with dot). Never used for protocol strings.
+function displayUpper(text) {
+    return String(text ?? "").toLocaleUpperCase("tr-TR");
+}
+
+// Parses what a money input holds. Returns { ok: true, value } or { ok: false, errorKey } (positive, at most 2 decimals).
+function parseAmount(raw) {
+    const text = String(raw ?? "").trim().replace(/\s/g, "");
+    if (!text) return { ok: false, errorKey: "InvalidAmount" };
+    const normalized = /^\d+,\d+$/.test(text) ? text.replace(",", ".") : text;
+    if (!/^\d+(\.\d+)?$/.test(normalized)) return { ok: false, errorKey: "InvalidAmount" };
+    const fraction = normalized.split(".")[1] || "";
+    if (fraction.length > 2) return { ok: false, errorKey: "InvalidAmountScale" };
+    const value = Number(normalized);
+    if (!Number.isFinite(value) || value <= 0) return { ok: false, errorKey: "InvalidAmount" };
+    return { ok: true, value };
+}
+
+function errorText(key) {
+    return hasKey(`err.${key}`) ? t(`err.${key}`) : t("err.Generic");
+}
+
+function stripOtpMarker(message) {
+    return String(message ?? "").split("|OTP:")[0];
+}
+
+/* ==========================================================================
+   Session: a 15-minute access token plus a single-use refresh token (see docs/DEFENSE.md, T12)
+   Every authenticated API call goes through the fetch wrapper below: it refreshes the access token shortly before it
+   expires, and once (then retries) when the server answers 401. If the refresh token is refused too, the user is signed out.
+   ========================================================================== */
 const rawFetch = window.fetch.bind(window);
 let refreshInFlight = null;
+let loggingOut = false;
 const REFRESH_MARGIN_MS = 30 * 1000;
 
+function parseStoredUser() {
+    try {
+        const parsed = JSON.parse(safeStorage.get("user"));
+        if (parsed && typeof parsed === "object") {
+            if ("tckn" in parsed) {
+                // Older versions kept the national id here; nothing needs it.
+                delete parsed.tckn;
+                safeStorage.set("user", JSON.stringify(parsed));
+            }
+            return parsed;
+        }
+    } catch (err) { /* corrupt value: treated as signed out */ }
+    return null;
+}
+
+let currentUser = parseStoredUser();
+let currentToken = safeStorage.get("token") || null;
+
+function buildUser(data) {
+    return { id: data.userId, username: data.username, fullName: data.fullName, role: data.role };
+}
+
 function saveAuth(token, user, refreshToken, accessTokenExpiresAt) {
-    localStorage.setItem("token", token);
-    localStorage.setItem("user", JSON.stringify(user));
-    if (refreshToken) localStorage.setItem("refreshToken", refreshToken);
-    else localStorage.removeItem("refreshToken");
+    safeStorage.set("token", token);
+    safeStorage.set("user", JSON.stringify(user));
+    if (refreshToken) safeStorage.set("refreshToken", refreshToken);
+    else safeStorage.remove("refreshToken");
     const expiresMs = accessTokenExpiresAt ? Date.parse(accessTokenExpiresAt) : 0;
-    if (expiresMs) localStorage.setItem("tokenExpiresAt", String(expiresMs));
-    else localStorage.removeItem("tokenExpiresAt");
+    if (expiresMs) safeStorage.set("tokenExpiresAt", String(expiresMs));
+    else safeStorage.remove("tokenExpiresAt");
     currentToken = token;
     currentUser = user;
 }
 
 // Another tab may have refreshed already (the refresh token is single-use): take over what it stored.
 function adoptStoredSession() {
-    const stored = localStorage.getItem("token");
+    const stored = safeStorage.get("token");
     if (stored && stored !== currentToken) {
         currentToken = stored;
-        currentUser = JSON.parse(localStorage.getItem("user")) || currentUser;
+        currentUser = parseStoredUser() || currentUser;
         return true;
     }
     return false;
 }
 
 function tokenIsExpiring() {
-    const expiresMs = Number(localStorage.getItem("tokenExpiresAt")) || 0;
+    const expiresMs = Number(safeStorage.get("tokenExpiresAt")) || 0;
     return expiresMs > 0 && Date.now() > expiresMs - REFRESH_MARGIN_MS;
 }
 
@@ -389,7 +336,7 @@ function refreshSession() {
     if (refreshInFlight) return refreshInFlight;
 
     refreshInFlight = (async () => {
-        const refreshToken = localStorage.getItem("refreshToken");
+        const refreshToken = safeStorage.get("refreshToken");
         if (!refreshToken) return "denied";
 
         try {
@@ -400,15 +347,16 @@ function refreshSession() {
             });
 
             if (response.ok) {
-                const data = await response.json();
-                saveAuth(data.token, currentUser || JSON.parse(localStorage.getItem("user")), data.refreshToken, data.accessTokenExpiresAt);
+                const data = await readJson(response);
+                if (!data || !data.token) return "error";
+                saveAuth(data.token, currentUser || parseStoredUser(), data.refreshToken, data.accessTokenExpiresAt);
                 return "ok";
             }
 
             if (response.status === 401) {
                 // Lost a race with another tab? Then it already stored a newer token.
                 await new Promise(resolve => setTimeout(resolve, 500));
-                if (localStorage.getItem("refreshToken") !== refreshToken && adoptStoredSession()) return "ok";
+                if (safeStorage.get("refreshToken") !== refreshToken && adoptStoredSession()) return "ok";
                 return "denied";
             }
 
@@ -441,6 +389,9 @@ window.fetch = async function (input, init) {
     }
 
     await ensureFreshAccessToken();
+    if (!currentToken) {
+        return new Response("{}", { status: 401, headers: { "Content-Type": "application/json" } });
+    }
     headers.set("Authorization", `Bearer ${currentToken}`);
     let response = await rawFetch(input, { ...init, headers });
 
@@ -457,9 +408,23 @@ window.fetch = async function (input, init) {
     return response;
 };
 
-function logout() {
-    const refreshToken = localStorage.getItem("refreshToken");
-    if (refreshToken) {
+function clearSession() {
+    ["token", "user", "refreshToken", "tokenExpiresAt"].forEach(key => safeStorage.remove(key));
+    safeSession.remove("activeChatSessionId");
+    currentToken = null;
+    currentUser = null;
+    resetStores();
+}
+
+// Signs out: ends the server session, clears every app key (also the chat session id), stops the SignalR connection and
+// leaves the page without a history entry. remote:false is used when another tab already signed out.
+function logout(options) {
+    if (loggingOut) return;
+    loggingOut = true;
+
+    const remote = !options || options.remote !== false;
+    const refreshToken = safeStorage.get("refreshToken");
+    if (remote && refreshToken) {
         // Tell the server to end the session; keepalive lets the request finish while the page navigates away.
         try {
             rawFetch(`${API_URL}/auth/logout`, {
@@ -471,10 +436,42 @@ function logout() {
         } catch (err) { /* signing out locally is what matters */ }
     }
 
-    ["token", "user", "refreshToken", "tokenExpiresAt"].forEach(key => localStorage.removeItem(key));
-    currentToken = null;
-    currentUser = null;
-    window.location.href = "index.html";
+    if (typeof stopSignalRConnection === "function") {
+        try { stopSignalRConnection(); } catch (err) { /* ignore */ }
+    }
+    clearSession();
+    window.location.replace("index.html");
+}
+
+// Signing out in one tab signs out every tab; a different user signing in elsewhere reloads this one.
+window.addEventListener("storage", event => {
+    if (PAGE === "login") return;
+    let localArea = null;
+    try { localArea = window.localStorage; } catch (err) { return; }
+    if (event.storageArea !== localArea) return;
+
+    if (event.key === null || (event.key === "token" && !event.newValue)) {
+        logout({ remote: false });
+    } else if (event.key === "token" && event.newValue) {
+        const before = currentUser && currentUser.id;
+        adoptStoredSession();
+        if (currentUser && before && currentUser.id !== before) window.location.reload();
+    }
+});
+
+// The back button can restore a page from the bfcache with the previous user's data still on screen.
+window.addEventListener("pageshow", event => {
+    if (!event.persisted) return;
+    if (PAGE !== "login" && !safeStorage.get("token")) {
+        window.location.replace("index.html");
+    } else if (PAGE === "login" && safeStorage.get("token") && parseStoredUser()) {
+        redirectByUserRole();
+    }
+});
+
+function redirectByUserRole() {
+    // The role is decided by the server (it is also inside the token); the UI only follows it.
+    window.location.replace(currentUser && currentUser.role === "Agent" ? "agent.html" : "dashboard.html");
 }
 
 // T.C. Kimlik Numarası check digits (11 digits, first not 0; d10 and d11 follow from the others).
@@ -487,3569 +484,3226 @@ function isValidTckn(value) {
     return d[10] === (odd + even + d[9]) % 10;
 }
 
-// Initialize Language Switch Event
-document.addEventListener("DOMContentLoaded", () => {
-    // The HTML has no inline event attributes (the CSP forbids them): the former onclick/onsubmit handlers are wired here.
-    document.querySelectorAll("[data-optab]").forEach(btn => btn.addEventListener("click", () => window.switchOperationsTab(btn.dataset.optab)));
-    ["exchange-form", "cc-pay-debt-form", "cc-charge-form", "standing-order-form"].forEach(id => {
-        const form = document.getElementById(id);
-        if (form) form.addEventListener("submit", e => e.preventDefault());
-    });
-    const debitCard = document.getElementById("debit-card-wrapper-hover");
-    if (debitCard) debitCard.addEventListener("click", () => debitCard.classList.toggle("flipped"));
+/* ==========================================================================
+   API helper: never throws, never trusts the body to be JSON.
+   Resolves to { ok, status, data, networkError } where data is the parsed body or null.
+   ========================================================================== */
+async function readJson(response) {
+    try {
+        const text = await response.text();
+        return text ? JSON.parse(text) : null;
+    } catch (err) {
+        return null;
+    }
+}
 
-    const langBtn = document.getElementById("lang-toggle");
-    if (langBtn) {
-        langBtn.addEventListener("click", () => {
-            currentLanguage = currentLanguage === "en" ? "tr" : "en";
-            localStorage.setItem("lang", currentLanguage);
-            translatePage();
-            
-            // If the chat session is active, update history rendering with localized fallback text
-            if (typeof renderMessages === "function") {
-                renderMessages();
+async function api(path, options) {
+    const opts = options || {};
+    const method = opts.method || "GET";
+    const headers = {};
+    if (opts.body !== undefined) headers["Content-Type"] = "application/json";
+    if (opts.auth !== false) headers["Authorization"] = `Bearer ${currentToken}`;
+
+    let controller = null;
+    let timer = null;
+    if (opts.timeoutMs && typeof AbortController === "function") {
+        controller = new AbortController();
+        timer = setTimeout(() => controller.abort(), opts.timeoutMs);
+    }
+
+    try {
+        const response = await fetch(`${API_URL}${path}`, {
+            method,
+            headers,
+            body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+            signal: controller ? controller.signal : undefined
+        });
+        const data = await readJson(response);
+        return { ok: response.ok, status: response.status, data, networkError: false };
+    } catch (err) {
+        return { ok: false, status: 0, data: null, networkError: true };
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
+// The text to show for a failed api() result: translated by errorKey, never the raw English server text
+// (except ValidationError / model-validation messages, which name the field that is wrong).
+function messageFromResponse(res) {
+    if (!res || res.networkError) return t("err.ConnectionError");
+    const data = res.data && typeof res.data === "object" ? res.data : {};
+
+    if (data.errors && typeof data.errors === "object") {
+        const joined = Object.values(data.errors).flat().map(String).join(" ").trim();
+        if (joined) return joined;
+    }
+    if (data.errorKey === "ValidationError" && data.message) return stripOtpMarker(data.message);
+    if (data.errorKey && hasKey(`err.${data.errorKey}`)) return t(`err.${data.errorKey}`);
+
+    if (res.status === 429) return t("err.TooManyRequests");
+    if (res.status === 401) return t("err.SessionExpired");
+    if (res.status === 403) return t("err.Forbidden");
+    if (res.status >= 500) return t("err.ServerError");
+    return t("err.Generic");
+}
+
+// "message|OTP:123456": the code is only appended when the server runs in demo mode (Demo:ExposeOtp).
+function splitOtpMarker(message) {
+    const text = String(message ?? "");
+    const index = text.indexOf("|OTP:");
+    if (index < 0) return { text, otp: "" };
+    return { text: text.slice(0, index), otp: text.slice(index + 5).trim() };
+}
+
+/* ==========================================================================
+   Shared account / card store: one fetch per change instead of one per widget.
+   ========================================================================== */
+function makeLoader(path) {
+    const loader = {
+        data: null,
+        listeners: new Set(),
+        inflight: null,
+        pending: null
+    };
+
+    const run = () => {
+        loader.inflight = (async () => {
+            const res = await api(path);
+            if (res.ok && Array.isArray(res.data)) {
+                loader.data = res.data;
+                loader.listeners.forEach(listener => { try { listener(loader.data); } catch (err) { console.error(err); } });
+                return { ok: true, data: loader.data };
             }
+            return { ok: false, res };
+        })().finally(() => { loader.inflight = null; });
+        return loader.inflight;
+    };
+
+    // force: a mutation just happened, so a request that is already in flight may carry old data: fetch once more after it.
+    loader.refresh = function (force) {
+        if (!loader.inflight) return run();
+        if (!force) return loader.inflight;
+        if (!loader.pending) {
+            loader.pending = loader.inflight.then(() => { loader.pending = null; return run(); });
+        }
+        return loader.pending;
+    };
+    loader.get = async function () {
+        if (loader.data) return loader.data;
+        const result = await loader.refresh();
+        return result.ok ? result.data : null;
+    };
+    loader.subscribe = function (listener) { loader.listeners.add(listener); };
+    loader.reset = function () { loader.data = null; };
+    return loader;
+}
+
+const accountsStore = makeLoader("/banking/accounts");
+const cardsStore = makeLoader("/banking/credit-cards");
+
+function resetStores() {
+    accountsStore.reset();
+    cardsStore.reset();
+}
+
+/* ==========================================================================
+   Modals, dialogs and toasts (accessible: role=dialog, aria-modal, Escape, focus trap, focus restore)
+   ========================================================================== */
+const modalStack = [];
+let dialogSequence = 0;
+
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function focusableIn(root) {
+    return Array.from(root.querySelectorAll(FOCUSABLE)).filter(el => !el.closest(".hidden") && el.getClientRects().length > 0);
+}
+
+function openModal(overlay, options) {
+    if (!overlay) return;
+    const opts = options || {};
+    overlay.classList.remove("hidden");
+    overlay._modal = { returnFocus: document.activeElement, onClose: opts.onClose, closeOnBackdrop: opts.closeOnBackdrop !== false };
+    if (!overlay._backdropBound) {
+        overlay._backdropBound = true;
+        overlay.addEventListener("mousedown", event => {
+            if (event.target === overlay && overlay._modal && overlay._modal.closeOnBackdrop) closeModal(overlay);
         });
     }
+    if (!modalStack.includes(overlay)) modalStack.push(overlay);
+    document.body.classList.add("modal-open");
 
-    const logoutBtn = document.getElementById("btn-logout");
-    if (logoutBtn) {
-        logoutBtn.addEventListener("click", logout);
+    const content = overlay.querySelector(".modal-content");
+    let target = typeof opts.initialFocus === "string" ? overlay.querySelector(opts.initialFocus) : opts.initialFocus;
+    if (!target) target = focusableIn(overlay)[0];
+    if (!target && content) { content.setAttribute("tabindex", "-1"); target = content; }
+    if (target && typeof target.focus === "function") target.focus();
+}
+
+function closeModal(overlay, options) {
+    if (!overlay) return;
+    const state = overlay._modal;
+    overlay._modal = null;
+    overlay.classList.add("hidden");
+    const index = modalStack.indexOf(overlay);
+    if (index >= 0) modalStack.splice(index, 1);
+    if (!modalStack.length) document.body.classList.remove("modal-open");
+    if (!state) return;
+
+    if (state.onClose) state.onClose();
+    const restore = !options || options.restoreFocus !== false;
+    if (restore && state.returnFocus && document.contains(state.returnFocus) && typeof state.returnFocus.focus === "function") {
+        state.returnFocus.focus();
     }
+}
 
-    // Run translation
-    translatePage();
+document.addEventListener("keydown", event => {
+    const top = modalStack[modalStack.length - 1];
+    if (!top) return;
 
-    // Route Guards & Page Loader
-    const path = window.location.pathname;
-    if (path.includes("dashboard.html")) {
-        if (!currentToken) {
-            window.location.href = "index.html";
-            return;
-        }
-        document.getElementById("user-display").textContent = currentUser.fullName;
-        loadAccounts();
-        loadCreditCards();
-        initDashboardEvents();
-        initCardCustomizer();
-        load2FAStatus();
-        init2FASettings();
-        initOTPModalEvents();
-        initCreditCardEvents();
-        initCreateAccountEvent();
-        initTabNavigation();
-        initExchangeWidget();
-        initMarketRates();
-        initStandingOrders();
-        initSavedContacts();
-        initQrSimulators();
-        initSidebar();
-    } else if (path.includes("agent.html")) {
-        if (!currentToken) {
-            window.location.href = "index.html";
-            return;
-        }
-        if (currentUser.role !== "Agent") {
-            // Not a support agent: nothing here would load anyway (the API refuses), so do not show the page.
-            window.location.href = "dashboard.html";
-            return;
-        }
-        document.getElementById("user-display").textContent = currentUser.fullName;
-        loadActiveSessions();
-        initAgentEvents();
-        loadAgentMetrics();
-        initAgentStatusControl();
-        initCoPilotEvents();
-        initTransferControlEvents();
-    } else {
-        if (currentToken && currentUser) {
-            redirectByUserRole();
-        }
-        initAuthEvents();
-        initMarketRates();
+    if (event.key === "Escape") {
+        event.preventDefault();
+        closeModal(top);
+        return;
+    }
+    if (event.key !== "Tab") return;
+
+    const items = focusableIn(top);
+    if (!items.length) { event.preventDefault(); return; }
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (!top.contains(document.activeElement)) {
+        event.preventDefault();
+        first.focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
     }
 });
 
-function redirectByUserRole() {
-    // The role is decided by the server (it is also inside the token); the UI only follows it.
-    if (currentUser.role === "Agent") {
-        window.location.href = "agent.html";
-    } else {
-        window.location.href = "dashboard.html";
+// Builds a modal in the page (same markup and styling as the static ones). dialog.open(options) shows it; closing removes it.
+function createDialog(config) {
+    const titleId = `dialog-title-${++dialogSequence}`;
+    const descId = `dialog-desc-${dialogSequence}`;
+    const overlay = h("div", {
+        class: "modal-overlay hidden", role: "dialog", "aria-modal": "true", "aria-labelledby": titleId,
+        "aria-describedby": config.description ? descId : null
+    });
+    const closeButton = h("button", { type: "button", class: "close-btn", "aria-label": t("common.close") }, h("span", { "aria-hidden": "true" }, "×"));
+    const body = h("div", { class: "modal-body modal-body-left" });
+    if (config.description) body.append(h("p", { id: descId, class: "dialog-text", text: config.description }));
+    const footer = h("div", { class: "dialog-actions" });
+    overlay.append(h("div", { class: `modal-content glassmorphism ${config.wide ? "modal-content-md" : "modal-content-sm"}` },
+        h("div", { class: "modal-header" }, h("h3", { id: titleId, text: config.title }), closeButton),
+        body,
+        footer));
+    document.body.append(overlay);
+
+    const dialog = {
+        overlay, body, footer,
+        close() { closeModal(overlay); },
+        open(options) {
+            const opts = options || {};
+            openModal(overlay, {
+                initialFocus: opts.initialFocus,
+                closeOnBackdrop: opts.closeOnBackdrop,
+                onClose: () => {
+                    if (opts.onClose) opts.onClose();
+                    overlay.remove();
+                }
+            });
+        }
+    };
+    closeButton.addEventListener("click", () => dialog.close());
+    return dialog;
+}
+
+function uiConfirm(message, options) {
+    const opts = options || {};
+    return new Promise(resolve => {
+        const dialog = createDialog({ title: opts.title || t("dialog.confirmTitle"), description: message });
+        let answer = false;
+        const cancel = h("button", { type: "button", class: "btn btn-secondary", text: opts.cancelText || t("common.cancel") });
+        const confirmButton = h("button", { type: "button", class: `btn ${opts.danger ? "btn-danger" : "btn-primary"}`, text: opts.confirmText || t("common.confirm") });
+        cancel.addEventListener("click", () => dialog.close());
+        confirmButton.addEventListener("click", () => { answer = true; dialog.close(); });
+        dialog.footer.append(cancel, confirmButton);
+        dialog.open({ initialFocus: opts.danger ? cancel : confirmButton, onClose: () => resolve(answer) });
+    });
+}
+
+// Asks for one text value. Resolves with the value, or null when cancelled. With options.submit (async, returns
+// { ok, message }) the dialog stays open and shows the message until the value is accepted.
+function uiPrompt(options) {
+    return new Promise(resolve => {
+        const dialog = createDialog({ title: options.title, description: options.message });
+        const inputId = `dialog-input-${dialogSequence}`;
+        let answer = null;
+        const input = h("input", {
+            id: inputId, class: "form-control", type: options.type || "text", value: options.value || "",
+            maxlength: options.maxlength || null, inputmode: options.inputmode || null,
+            autocomplete: options.autocomplete || "off", pattern: options.pattern || null
+        });
+        const errorBox = h("div", { class: "alert alert-danger hidden", role: "alert" });
+        dialog.body.append(
+            h("div", { class: "dialog-field" }, h("label", { for: inputId, text: options.label || options.title }), input),
+            errorBox);
+
+        const cancel = h("button", { type: "button", class: "btn btn-secondary", text: t("common.cancel") });
+        const confirmButton = h("button", { type: "button", class: "btn btn-primary", text: options.confirmText || t("common.confirm") });
+        const submit = () => withBusy(confirmButton, async () => {
+            const value = input.value.trim();
+            errorBox.className = "alert alert-danger hidden";
+            if (options.validate) {
+                const problem = options.validate(value);
+                if (problem) { errorBox.textContent = problem; errorBox.className = "alert alert-danger"; input.focus(); return; }
+            }
+            if (options.submit) {
+                const result = await options.submit(value);
+                if (!result || !result.ok) {
+                    errorBox.textContent = (result && result.message) || t("err.Generic");
+                    errorBox.className = "alert alert-danger";
+                    input.focus();
+                    return;
+                }
+            }
+            answer = value;
+            dialog.close();
+        });
+        cancel.addEventListener("click", () => dialog.close());
+        confirmButton.addEventListener("click", submit);
+        input.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); submit(); } });
+        dialog.footer.append(cancel, confirmButton);
+        dialog.open({ initialFocus: input, onClose: () => resolve(answer) });
+    });
+}
+
+// Non-blocking message (replaces alert()). Announced by screen readers through the live region.
+function notify(message, kind, timeoutMs) {
+    let region = byId("toast-region");
+    if (!region) {
+        region = h("div", { id: "toast-region", class: "toast-region", "aria-live": "polite", "aria-atomic": "false" });
+        document.body.append(region);
     }
+    const toast = h("div", { class: `toast toast-${kind === "error" ? "error" : kind === "success" ? "success" : "info"}`, role: kind === "error" ? "alert" : "status" },
+        h("span", { class: "toast-text", text: message }),
+        h("button", { type: "button", class: "toast-close", "aria-label": t("common.close"), onclick: () => toast.remove() }, "×"));
+    region.append(toast);
+    setTimeout(() => toast.remove(), timeoutMs || (kind === "error" ? 8000 : 5000));
+}
+
+// The demo "notification" for one-time codes. Without a code (the normal case) the server e-mailed it.
+let codeToastTimers = [];
+function showOtpToast(otpCode) {
+    const toast = byId("mock-sms-toast");
+    const textEl = byId("sms-text");
+    if (!toast || !textEl) return;
+
+    byId("sms-app-name").textContent = otpCode ? "SMARTBANK SMS" : "SMARTBANK";
+    textEl.textContent = otpCode ? t("toast.codeDemo", { code: otpCode }) : t("toast.codeMailed");
+
+    codeToastTimers.forEach(clearTimeout);
+    codeToastTimers = [];
+    toast.classList.remove("hidden");
+    codeToastTimers.push(setTimeout(() => toast.classList.add("show"), 50));
+    codeToastTimers.push(setTimeout(() => {
+        toast.classList.remove("show");
+        codeToastTimers.push(setTimeout(() => toast.classList.add("hidden"), 500));
+    }, 10000));
+}
+
+// Roving-tabindex tab list (arrow keys, Home, End). Panels are the elements named by aria-controls.
+function initTabList(tablist, onSelect) {
+    if (!tablist) return null;
+    const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+
+    const select = (tab, focus) => {
+        tabs.forEach(other => {
+            const on = other === tab;
+            other.classList.toggle("active", on);
+            other.setAttribute("aria-selected", on ? "true" : "false");
+            other.tabIndex = on ? 0 : -1;
+            const panel = byId(other.getAttribute("aria-controls"));
+            if (panel) panel.classList.toggle("hidden", !on);
+        });
+        if (focus) tab.focus();
+        if (onSelect) onSelect(tab);
+    };
+
+    tabs.forEach((tab, index) => {
+        tab.addEventListener("click", () => select(tab, false));
+        tab.addEventListener("keydown", event => {
+            let next = null;
+            if (event.key === "ArrowRight") next = tabs[(index + 1) % tabs.length];
+            else if (event.key === "ArrowLeft") next = tabs[(index - 1 + tabs.length) % tabs.length];
+            else if (event.key === "Home") next = tabs[0];
+            else if (event.key === "End") next = tabs[tabs.length - 1];
+            if (next) { event.preventDefault(); select(next, true); }
+        });
+    });
+    return { select, tabs };
+}
+
+
+// Localization dictionary. One key per line ("key": "text"), identical key sets in en and tr (a unit test checks it).
+// {name} placeholders are filled by t(key, { name: ... }). Server error keys are stored as "err.<ErrorKey>".
+const i18n = {
+    en: {
+        // Common
+        "common.close": "Close",
+        "common.cancel": "Cancel",
+        "common.confirm": "Confirm",
+        "common.delete": "Delete",
+        "common.ok": "OK",
+        "common.send": "Send",
+        "common.retry": "Retry",
+        "common.loading": "Loading...",
+        "common.logout": "Logout",
+        "a11y.skip": "Skip to main content",
+        "a11y.langToggle": "Switch language",
+        "dialog.confirmTitle": "Please confirm",
+        "unit.gram": "Gr",
+
+        // Page titles
+        "title.login": "SmartBank - Secure Banking Portal",
+        "title.dashboard": "SmartBank - Customer Dashboard",
+        "title.agent": "SmartBank - Support Center Dashboard",
+
+        // Form fields and placeholders
+        "field.tckn": "T.C. Identity Number",
+        "field.password": "Password (6 digits)",
+        "field.newPassword": "New Password (6 digits)",
+        "field.twofaCode": "Verification code",
+        "field.verificationCode": "Verification Code",
+        "field.firstName": "First Name",
+        "field.lastName": "Last Name",
+        "field.username": "Username",
+        "field.email": "Email Address",
+        "ph.tckn": "11 digits",
+        "ph.password": "6-digit password",
+        "ph.newPassword": "Create a 6-digit password",
+        "ph.code": "6-digit code",
+        "ph.emailCode": "6-digit code sent to your e-mail",
+        "ph.firstName": "First name",
+        "ph.lastName": "Last name",
+        "ph.username": "Create a username",
+        "ph.email": "name@example.com",
+
+        // Login / register / forgot password
+        "login.title": "Sign In",
+        "login.subtitle": "Access your financial dashboard",
+        "login.submit": "Sign In",
+        "login.verify": "Verify & Sign In",
+        "login.back": "Use a different account",
+        "login.forgot": "Forgot Password?",
+        "login.noAccount": "Don't have an account?",
+        "login.register": "Register here",
+        "login.twofaHint": "Enter the code that was sent to your e-mail address.",
+        "login.twofaHintDemo": "Enter the code from the notification at the top of the page (public demo).",
+        "login.tcknInvalid": "The T.C. Identity Number must have 11 digits.",
+        "login.passwordInvalid": "The password must have 6 digits.",
+        "login.codeInvalid": "Please enter the 6-digit verification code.",
+        "register.title": "Create Account",
+        "register.subtitle": "Register today using your T.C. Identity Number",
+        "register.submit": "Register",
+        "register.hasAccount": "Already have an account?",
+        "register.signIn": "Sign In",
+        "register.firstNameInvalid": "The first name can only contain letters, spaces, hyphens and apostrophes.",
+        "register.lastNameInvalid": "The last name can only contain letters, spaces, hyphens and apostrophes.",
+        "register.usernameRequired": "Please choose a username.",
+        "register.emailInvalid": "Please enter a valid e-mail address.",
+        "register.tcknInvalid": "The T.C. Identity Number is not valid: its check digits do not match. Please re-check the number.",
+        "register.passwordInvalid": "The password must have exactly 6 digits.",
+        "forgot.title": "Reset Password",
+        "forgot.subtitle": "Reset your password using your T.C. Identity Number",
+        "forgot.sendCode": "Send Code",
+        "forgot.submit": "Reset Password",
+        "forgot.back": "Back to Sign In",
+        "forgot.tcknInvalid": "The T.C. Identity Number must have 11 digits.",
+        "forgot.codeSent": "If this T.C. Identity Number is registered, a verification code has been sent to its e-mail address.",
+        "forgot.success": "Your password was reset. You can sign in now.",
+        "toast.now": "just now",
+        "toast.codeMailed": "SmartBank: A verification code was sent to your registered e-mail address.",
+        "toast.codeDemo": "SmartBank: Your security verification code is {code}. Do not share it.",
+
+        // Market rates
+        "market.title": "Live Market Rates",
+        "market.live": "LIVE",
+        "market.updated": "Last update:",
+        "market.offline": "Rates unavailable. Retrying...",
+        "market.unavailable": "Market rates could not be loaded.",
+        "market.buy": "BUY",
+        "market.sell": "SELL",
+
+        // Dashboard shell
+        "sidebar.open": "Quick actions",
+        "sidebar.title": "Quick Actions",
+        "sidebar.addMoneyTitle": "Add Money",
+        "sidebar.addMoneyDesc": "Add 1000 TRY to your TRY demand account",
+        "sidebar.addMoneyBtn": "Add +1000 TRY",
+        "sidebar.added": "1000 TRY was added to your account.",
+        "sidebar.noTryAccount": "You have no TRY demand account.",
+        "tabs.label": "Sections",
+        "tabs.accounts": "Accounts & Transfer",
+        "tabs.cards": "Credit Cards & Statements",
+        "tabs.orders": "Standing Orders",
+
+        // Accounts
+        "accounts.title": "Accounts",
+        "accounts.new": "+ New Account",
+        "accounts.loading": "Loading account details...",
+        "accounts.none": "No active accounts.",
+        "accounts.code": "Account code:",
+        "accounts.delete": "Close",
+        "accounts.deleted": "The account was closed.",
+        "accounts.deleteConfirm": "Are you sure you want to permanently close this account?",
+        "accounts.deleteNoTarget": "This account has a balance, but you have no other account to transfer it to, so it cannot be closed.",
+        "accounts.closeTransferTitle": "Account Closure Balance Transfer",
+        "accounts.closeTransferDesc": "The account you want to close has a balance of {balance}. Select the account that receives it:",
+        "accounts.targetLabel": "Target account for the balance",
+        "accounts.transferAndClose": "Transfer & Close Account",
+        "accounts.timeInfo": "%{rate} interest | Term: 30 days",
+        "acc.titleDemand": "SmartSavings",
+        "acc.titleTime": "SmartDeposit (Time)",
+        "acc.titleGold": "SmartGold",
+        "acc.titleSilver": "SmartSilver",
+
+        // Operations: transfer and exchange
+        "ops.label": "Operations",
+        "ops.transferTab": "Money Transfer",
+        "ops.exchangeTab": "Buy / Sell Currency",
+        "transfer.title": "Transfer Funds",
+        "transfer.desc": "Send money instantly using the account number",
+        "transfer.source": "Source Account",
+        "transfer.savedContacts": "Pick a saved recipient (quick fill)",
+        "transfer.savedContactsPlaceholder": "-- Select saved recipient --",
+        "transfer.manageContacts": "Manage recipients",
+        "transfer.dest": "Destination Account Number",
+        "transfer.amount": "Amount",
+        "transfer.description": "Description",
+        "transfer.descriptionPh": "E.g., rent, groceries",
+        "transfer.category": "Category",
+        "transfer.saveContact": "Add the recipient to my saved contacts",
+        "transfer.aliasPh": "Nickname (e.g. Ali Savings)",
+        "transfer.aliasLabel": "Nickname",
+        "transfer.submit": "Execute Transfer",
+        "transfer.success": "Transfer executed successfully!",
+        "transfer.noSource": "Please select a source account.",
+        "transfer.noDest": "Please enter the destination account number.",
+        "cat.other": "Other",
+        "cat.market": "Groceries",
+        "cat.bills": "Bills",
+        "cat.fun": "Entertainment",
+        "cat.invest": "Investment",
+        "exchange.title": "Currency & Precious Metals",
+        "exchange.desc": "Buy or sell currency and gold/silver instantly using your TRY account",
+        "exchange.action": "Transaction Type",
+        "exchange.buy": "Buy (currency / metal)",
+        "exchange.sell": "Sell (currency / metal)",
+        "exchange.asset": "Currency / Metal",
+        "exchange.usd": "USD - US Dollar",
+        "exchange.eur": "EUR - Euro",
+        "exchange.xau": "XAU - Gold (gram)",
+        "exchange.xag": "XAG - Silver (gram)",
+        "exchange.source": "Source Account (payment / proceeds)",
+        "exchange.amount": "Asset Amount",
+        "exchange.rate": "Rate:",
+        "exchange.total": "Total:",
+        "exchange.submit": "Complete Transaction",
+        "exchange.noTry": "You have no TRY account",
+        "exchange.noAsset": "You have no {asset} account (buying opens one)",
+        "exchange.noAccount": "Please select a valid account.",
+        "exchange.success": "Exchange transaction completed successfully!",
+
+        // History and receipt
+        "history.title": "Transaction History",
+        "history.desc": "Recent financial movements (click a row to see the receipt)",
+        "history.date": "Date",
+        "history.type": "Type",
+        "history.description": "Description",
+        "history.amount": "Amount",
+        "history.empty": "Select an account to view history",
+        "history.none": "There are no transactions yet.",
+        "history.loading": "Loading transactions...",
+        "history.showMore": "Show More ({count} more)",
+        "history.showLess": "Show Less",
+        "history.openReceipt": "Open the receipt",
+        "txType.Transfer": "Transfer",
+        "txType.Deposit": "Deposit",
+        "txType.DepositMoney": "Deposit",
+        "txType.Withdrawal": "Withdrawal",
+        "txType.Exchange": "Exchange",
+        "txType.ExchangeMoney": "Exchange",
+        "slip.title": "Transaction Receipt",
+        "slip.stamp": "SmartBank A.Ş. Approved",
+        "slip.date": "Date:",
+        "slip.ref": "Reference No:",
+        "slip.type": "Transaction Type:",
+        "slip.sender": "Sender:",
+        "slip.receiver": "Receiver:",
+        "slip.accountNo": "Account No:",
+        "slip.amount": "Amount:",
+        "slip.description": "Description:",
+        "slip.customer": "SmartBank Customer",
+
+        // Contacts
+        "contacts.manageTitle": "Manage Saved Contacts",
+        "contacts.manageDesc": "You can edit contact nicknames or delete them from your list.",
+        "contacts.none": "No saved contacts found.",
+        "contacts.editLabel": "Edit {name}",
+        "contacts.deleteLabel": "Delete {name}",
+        "contacts.editTitle": "Edit nickname",
+        "contacts.editMessage": "Enter a new nickname for \"{name}\":",
+        "contacts.aliasLabel": "Nickname",
+        "contacts.aliasEmpty": "The nickname cannot be empty.",
+        "contacts.deleteConfirm": "Are you sure you want to delete this contact?",
+        "contacts.defaultAlias": "Saved contact",
+        "contacts.saveFailed": "The transfer was made, but the recipient could not be saved.",
+
+        // Card customizer and 2FA
+        "customizer.title": "Card & Security Workspace",
+        "customizer.desc": "Custom card style & 2FA security",
+        "customizer.flip": "Flip the card",
+        "customizer.signature": "AUTHORIZED SIGNATURE",
+        "customizer.cardInfo": "This card is property of SmartBank. Use is subject to bank rules.",
+        "customizer.theme": "Choose Theme:",
+        "theme.neon": "Neon Blue",
+        "theme.sunset": "Sunset Orange",
+        "theme.metallic": "Metallic Dark",
+        "theme.glass": "Glassmorphism",
+        "twofa.title": "2FA Security",
+        "twofa.desc": "Requires a verification code for transfers over 1000 TRY",
+        "twofa.pinTitle": "Confirm with your password",
+        "twofa.pinEnable": "Enter your 6-digit password to turn two-factor verification on.",
+        "twofa.pinDisable": "Enter your 6-digit password to turn two-factor verification off.",
+        "twofa.pinLabel": "Password (6 digits)",
+        "twofa.pinInvalid": "The password must have 6 digits.",
+        "twofa.enabled": "Two-factor verification is on.",
+        "twofa.disabled": "Two-factor verification is off.",
+
+        // Credit cards
+        "cards.title": "Credit Cards",
+        "cards.apply": "+ New Application",
+        "cards.applyNow": "Apply Now",
+        "cards.applyConfirm": "Do you confirm the credit card application?",
+        "cards.applyDone": "Your credit card was created!",
+        "cards.loading": "Loading credit card details...",
+        "cards.none": "You have no active credit cards.",
+        "cards.emptyTitle": "No Credit Card Found",
+        "cards.emptyDesc": "Apply now to split your payments and enjoy SmartCredit benefits.",
+        "cards.selectPrompt": "Please select a credit card to view its details and statement.",
+        "cards.panelLabel": "Credit card details",
+        "cards.limitShort": "Limit",
+        "cards.availableShort": "Available",
+        "cards.viewStatement": "View Statement",
+        "cards.detailsTitle": "SmartCredit Card Details",
+        "cards.limit": "Total Limit",
+        "cards.available": "Available Limit",
+        "cards.debt": "Current Debt",
+        "cards.stmtTitle": "Account Summary (Statement)",
+        "cards.period": "Period",
+        "cards.periodDebt": "Period Debt",
+        "cards.minPayment": "Minimum Payment",
+        "cards.dueDate": "Due Date",
+        "cards.periodTx": "Period Transactions",
+        "cards.txAmount": "Amount",
+        "cards.noSpend": "No spending yet.",
+        "cards.noStatement": "There is no statement for this card yet.",
+        "cards.statusPaid": "Fully Paid",
+        "cards.statusUnpaid": "Unpaid (minimum due: {min})",
+        "cards.statusMinPaid": "Minimum paid (remaining debt: {remaining})",
+        "cards.payTitle": "Pay Debt",
+        "cards.paySource": "Payment account",
+        "cards.payAmount": "Amount to pay",
+        "cards.payAmountPh": "Amount",
+        "cards.pay": "Pay",
+        "cards.payMin": "Pay Minimum",
+        "cards.payFull": "Pay in Full",
+        "cards.paySuccess": "Payment completed successfully!",
+        "cards.noTryAccount": "You have no TRY demand account",
+        "cards.advanceTitle": "Advance Period",
+        "cards.advanceDesc": "Simulates the due date: interest is applied to unpaid debt and a new statement is issued.",
+        "cards.advanceBtn": "Close Period (Apply Interest)",
+        "cards.advanceConfirm": "This simulates the due date: interest is applied to the unpaid debt and a new statement is issued. Continue?",
+        "cards.advanceDone": "The billing period was advanced and interest was calculated.",
+        "cards.chargeTitle": "Simulate Spending",
+        "cards.chargeMerchant": "Merchant",
+        "cards.chargeMerchantPh": "Merchant (e.g. Starbucks)",
+        "cards.chargeAmount": "Amount",
+        "cards.chargeAmountPh": "Amount",
+        "cards.chargeBtn": "Spend",
+        "cards.chargeNoMerchant": "Please enter the merchant name.",
+        "cards.chargeSuccess": "Transaction approved!",
+
+        // New account dialog
+        "newacc.title": "Open New Account",
+        "newacc.selectType": "Select Account Type:",
+        "newacc.tryName": "TRY Demand Account",
+        "newacc.tryDesc": "For daily transactions and transfers (TRY)",
+        "newacc.usdName": "USD Demand Account",
+        "newacc.usdDesc": "For dollar savings and transfers (USD)",
+        "newacc.eurName": "EUR Demand Account",
+        "newacc.eurDesc": "For euro savings and transfers (EUR)",
+        "newacc.xauName": "Gold (gram) Account",
+        "newacc.xauDesc": "For gold investment and savings (XAU)",
+        "newacc.xagName": "Silver (gram) Account",
+        "newacc.xagDesc": "For silver investment and savings (XAG)",
+        "newacc.timeName": "TRY Time Deposit (Tiered Interest)",
+        "newacc.timeDesc": "High tiered return over a 30-day term (TRY)",
+        "newacc.ratesTitle": "Current Deposit Interest Rates",
+        "newacc.range": "Amount Range",
+        "newacc.rate": "Interest Rate",
+        "newacc.rangeOver": "{from} TRY and above",
+        "newacc.calcTitle": "Deposit Profit Calculator (30-day term)",
+        "newacc.calcPh": "Enter amount (e.g. 100000)",
+        "newacc.calcBtn": "Calculate",
+        "newacc.calcRate": "Applied interest rate:",
+        "newacc.calcProfit": "Net profit at maturity:",
+        "newacc.submit": "Open Account",
+        "newacc.created": "Your new account was opened.",
+
+        // Standing orders
+        "orders.title": "My Standing Orders",
+        "orders.loading": "Loading standing orders...",
+        "orders.none": "You have no standing orders.",
+        "orders.newTitle": "Create Standing Order",
+        "orders.newDesc": "Set up automatic money transfers or automatic credit card payments.",
+        "orders.source": "TRY demand account to pay from",
+        "orders.type": "Order type",
+        "orders.typeTransfer": "Regular money transfer",
+        "orders.typeCard": "Automatic credit card payment",
+        "orders.dest": "Recipient account number",
+        "orders.amount": "Recurring amount",
+        "orders.frequency": "Frequency",
+        "orders.daily": "Every day",
+        "orders.weekly": "Every week",
+        "orders.monthly": "Every month",
+        "orders.targetCard": "Credit card to pay",
+        "orders.submit": "Save Order",
+        "orders.created": "The standing order was created.",
+        "orders.noSource": "Please select the source account.",
+        "orders.noCard": "Please select a credit card.",
+        "orders.titleCard": "Automatic statement payment",
+        "orders.titleTransfer": "Regular money transfer",
+        "orders.descCard": "The credit card statement is paid in full automatically on the due date.",
+        "orders.descTransfer": "{freq} transfer of {amount} to {dest}",
+        "orders.dailyAdj": "Daily",
+        "orders.weeklyAdj": "Weekly",
+        "orders.monthlyAdj": "Monthly",
+        "orders.sourceLabel": "Source",
+        "orders.cancel": "Cancel Order",
+        "orders.cancelConfirm": "Do you want to cancel this standing order?",
+
+        // One-time code dialog
+        "otp.title": "Security Verification",
+        "otp.desc": "Please enter the 6-digit verification code sent to you to approve this transfer.",
+        "otp.label": "Verification code",
+        "otp.submit": "Confirm Code",
+        "otp.invalid": "Please enter the 6-digit code.",
+
+        // Live chat (customer widget and agent panel)
+        "chat.toggle": "Live Support",
+        "chat.title": "Live Chat Support",
+        "chat.welcome": "Welcome! Need help with your accounts, transfers, or card limits?",
+        "chat.start": "Start Session",
+        "chat.typing": "Typing...",
+        "chat.inputLabel": "Your message",
+        "chat.inputPlaceholder": "Type a message...",
+        "chat.loadingMessages": "Loading messages...",
+        "chat.historyFailed": "The chat history could not be loaded.",
+        "chat.started": "Chat session started.",
+        "chat.sessionClosed": "This session has been closed.",
+        "chat.offline": "The chat connection is offline. Trying to reconnect...",
+        "chat.reconnecting": "Reconnecting...",
+        "chat.sendFailed": "The message could not be sent.",
+        "chat.startFailed": "The chat session could not be started.",
+        "chat.confirmTitle": "Transfer Confirmation",
+        "chat.sourceAccount": "Source Account",
+        "chat.destAccount": "Recipient Account",
+        "chat.confirm": "Confirm",
+        "chat.processing": "Processing...",
+        "chat.cancelled": "Cancelled",
+        "chat.confirmExpired": "This request is from an earlier conversation and can no longer be confirmed.",
+        "chat.confirmInvalid": "The amount in this request is not valid, so it cannot be confirmed.",
+        "chat.confirmFailed": "The transfer could not be confirmed. Please try again.",
+        "chat.successTitle": "Transfer Successful",
+        "chat.successDesc": "{amount} was sent to {dest}.",
+        "chat.failedTitle": "Transfer Failed",
+        "chat.transferredTitle": "Session Transferred",
+        "chat.transferredDesc": "The chat has been transferred to the {dept} department.",
+        "hub.tooManyChats": "You have started too many chats. Please try again later.",
+        "hub.startFailed": "The support session could not be started.",
+        "hub.accessDenied": "You do not have access to this chat session.",
+        "hub.empty": "The message cannot be empty.",
+        "hub.tooLong": "The message is too long.",
+        "hub.tooFast": "You are sending messages too fast. Please wait a moment.",
+        "hub.sendFailed": "The message could not be sent.",
+        "hub.unauthorized": "You are not authorized to do this.",
+        "hub.tooManyTransfers": "Too many transfer attempts. Please wait a moment.",
+        "hub.closeFailed": "The session could not be closed.",
+        "hub.agentRequired": "A support agent account is required.",
+        "hub.generic": "Something went wrong with the chat. Please try again.",
+
+        // Agent panel
+        "agent.badge": "Support Center",
+        "agent.metricResolved": "Resolved Chats",
+        "agent.metricTime": "Avg Response Time",
+        "agent.metricCsat": "CSAT Score",
+        "agent.metricStatus": "Your Status",
+        "agent.statusActive": "Active",
+        "agent.statusBusy": "Busy",
+        "agent.statusBreak": "Break",
+        "agent.activeChats": "Active Support Chats",
+        "agent.refresh": "Refresh",
+        "agent.noActive": "No active chats at the moment",
+        "agent.loadingChats": "Loading chats...",
+        "agent.loadingConversation": "Loading conversation...",
+        "agent.userLabel": "User:",
+        "agent.sessionId": "Session ID: {id}",
+        "agent.selectChat": "Select a Support Session",
+        "agent.selectChatDesc": "Click on a chat session on the left sidebar to start helping customers.",
+        "agent.closeSession": "Close Session",
+        "agent.closeOffline": "The chat connection is offline, so the session could not be closed.",
+        "agent.closeFailed": "The session could not be closed.",
+        "agent.transferLabel": "Transfer to department",
+        "agent.transferTo": "Transfer to...",
+        "agent.transferred": "The chat was transferred to {dept}.",
+        "agent.deptGeneral": "General Support",
+        "agent.deptLoans": "Loans Department",
+        "agent.deptCards": "Card Services",
+        "agent.deptInvestments": "Investment Advisory",
+        "agent.copilotTitle": "AI Co-Pilot Recommendation",
+        "agent.copilotLoading": "Generating suggestion...",
+        "agent.copilotFailed": "Could not generate a suggestion.",
+        "agent.regenerate": "Regenerate suggestion",
+        "agent.useSuggestion": "Use Recommendation",
+        "agent.inputLabel": "Support message",
+        "agent.inputPlaceholder": "Type support message...",
+
+        // Errors (server error keys and client-side problems)
+        "err.Generic": "Something went wrong. Please try again.",
+        "err.ConnectionError": "Connection to the server failed. Please check your connection and try again.",
+        "err.ServerError": "The server had a problem. Please try again in a moment.",
+        "err.SessionExpired": "Your session has expired. Please sign in again.",
+        "err.Forbidden": "You are not allowed to do this.",
+        "err.TooManyRequests": "Too many requests. Please wait a moment and try again.",
+        "err.ValidationError": "Please check the entered information.",
+        "err.UsernameAlreadyExists": "This username is already taken.",
+        "err.TcknAlreadyExists": "This T.C. Identity Number is already registered.",
+        "err.EmailAlreadyExists": "This e-mail address is already registered.",
+        "err.InvalidCredentials": "Invalid T.C. Identity Number or password.",
+        "err.AccountLocked": "Too many failed attempts. Your account is temporarily locked, please try again later.",
+        "err.TooManyOtpAttempts": "Too many wrong codes. Please request a new code and try again.",
+        "err.InvalidOrExpiredCode": "Invalid or expired verification code.",
+        "err.InvalidOtpCode": "Invalid or expired verification code.",
+        "err.InvalidRefreshToken": "Your session is no longer valid. Please sign in again.",
+        "err.TcknNotFound": "This T.C. Identity Number is not registered.",
+        "err.UserNotFound": "The user was not found.",
+        "err.PinRequired": "Please enter your 6-digit password.",
+        "err.Requires2FA": "Two-factor verification required.",
+        "err.SuspectedFraudDuplicate": "Suspicious activity: the same transfer was submitted within 30 seconds.",
+        "err.SuspectedFraudHighValue": "Suspicious activity: the transfer amount exceeds the standard limit.",
+        "err.InsufficientFunds": "Insufficient funds in the source account.",
+        "err.InsufficientLimit": "Insufficient credit card limit.",
+        "err.SourceAccountNotFound": "The source account was not found.",
+        "err.DestinationAccountNotFound": "The destination account was not found.",
+        "err.AccountNotFound": "The account was not found.",
+        "err.TargetAccountNotFound": "The target account was not found.",
+        "err.TargetAccountRequired": "Please choose an account to transfer the remaining balance to.",
+        "err.TryAccountNotFound": "You need a TRY demand account for this.",
+        "err.UnauthorizedAccountAccess": "You do not have access to this account.",
+        "err.CannotDeleteLastAccount": "Your last account cannot be closed.",
+        "err.CannotTransferToSelf": "You cannot transfer money to the same account.",
+        "err.CurrencyMismatch": "Transfers between different currencies are not supported.",
+        "err.InvalidSourceAccount": "This account cannot be used as the source.",
+        "err.InvalidExchangeSource": "This account cannot be used for this exchange.",
+        "err.FailedToOpenAssetAccount": "The account for this currency or metal could not be opened.",
+        "err.InvalidAmount": "The amount must be greater than zero.",
+        "err.InvalidAmountScale": "The amount can have at most 2 decimal places.",
+        "err.InvalidCurrency": "This currency is not supported.",
+        "err.InvalidAction": "This transaction type is not valid.",
+        "err.InvalidOrderType": "This standing order type is not valid.",
+        "err.InvalidFrequency": "This frequency is not valid.",
+        "err.RateUnavailable": "The exchange rate is not available right now. Please try again in a moment.",
+        "err.RateNotFound": "The exchange rate for this currency was not found.",
+        "err.TransactionFailed": "The transaction could not be completed.",
+        "err.ConcurrentModification": "The data changed while you were working. Please try again.",
+        "err.CreditCardNotFound": "The credit card was not found.",
+        "err.MaxCreditCardsLimitReached": "You have reached the maximum number of credit cards.",
+        "err.PaymentFailed": "The payment failed.",
+        "err.ChargeFailed": "The purchase was declined.",
+        "err.ContactNotFound": "The saved contact was not found.",
+        "err.OrderNotFound": "The standing order was not found.",
+        "err.SessionNotFound": "The chat session was not found.",
+        "err.UnauthorizedSessionAccess": "You do not have access to this chat session."
+    },
+    tr: {
+        // Common
+        "common.close": "Kapat",
+        "common.cancel": "Vazgeç",
+        "common.confirm": "Onayla",
+        "common.delete": "Sil",
+        "common.ok": "Tamam",
+        "common.send": "Gönder",
+        "common.retry": "Tekrar Dene",
+        "common.loading": "Yükleniyor...",
+        "common.logout": "Çıkış Yap",
+        "a11y.skip": "Ana içeriğe geç",
+        "a11y.langToggle": "Dili değiştir",
+        "dialog.confirmTitle": "Lütfen onaylayın",
+        "unit.gram": "Gr",
+
+        // Page titles
+        "title.login": "SmartBank - Güvenli Bankacılık Portalı",
+        "title.dashboard": "SmartBank - Müşteri Paneli",
+        "title.agent": "SmartBank - Destek Merkezi Paneli",
+
+        // Form fields and placeholders
+        "field.tckn": "T.C. Kimlik Numarası",
+        "field.password": "Şifre (6 haneli)",
+        "field.newPassword": "Yeni Şifre (6 haneli)",
+        "field.twofaCode": "Doğrulama kodu",
+        "field.verificationCode": "Doğrulama Kodu",
+        "field.firstName": "Adı",
+        "field.lastName": "Soyadı",
+        "field.username": "Kullanıcı Adı",
+        "field.email": "E-posta Adresi",
+        "ph.tckn": "11 haneli numara",
+        "ph.password": "6 haneli şifre",
+        "ph.newPassword": "6 haneli bir şifre belirleyin",
+        "ph.code": "6 haneli kod",
+        "ph.emailCode": "E-postanıza gelen 6 haneli kod",
+        "ph.firstName": "Adınız",
+        "ph.lastName": "Soyadınız",
+        "ph.username": "Bir kullanıcı adı belirleyin",
+        "ph.email": "ad@ornek.com",
+
+        // Login / register / forgot password
+        "login.title": "Giriş Yap",
+        "login.subtitle": "Finansal panelinize erişin",
+        "login.submit": "Giriş Yap",
+        "login.verify": "Doğrula ve Giriş Yap",
+        "login.back": "Başka bir hesapla giriş yap",
+        "login.forgot": "Şifremi Unuttum?",
+        "login.noAccount": "Hesabınız yok mu?",
+        "login.register": "Buradan kaydolun",
+        "login.twofaHint": "E-posta adresinize gönderilen kodu girin.",
+        "login.twofaHintDemo": "Sayfanın üstündeki bildirimde görünen kodu girin (herkese açık demo).",
+        "login.tcknInvalid": "T.C. Kimlik Numarası 11 haneli olmalıdır.",
+        "login.passwordInvalid": "Şifre 6 haneli olmalıdır.",
+        "login.codeInvalid": "Lütfen 6 haneli doğrulama kodunu girin.",
+        "register.title": "Hesap Oluştur",
+        "register.subtitle": "T.C. Kimlik numaranız ile hemen kaydolun",
+        "register.submit": "Kaydol",
+        "register.hasAccount": "Zaten hesabınız var mı?",
+        "register.signIn": "Giriş Yap",
+        "register.firstNameInvalid": "Ad yalnızca harf, boşluk, tire ve kesme işareti içerebilir.",
+        "register.lastNameInvalid": "Soyad yalnızca harf, boşluk, tire ve kesme işareti içerebilir.",
+        "register.usernameRequired": "Lütfen bir kullanıcı adı seçin.",
+        "register.emailInvalid": "Lütfen geçerli bir e-posta adresi girin.",
+        "register.tcknInvalid": "T.C. Kimlik Numarası geçerli değil: kontrol basamakları uyuşmuyor. Lütfen numarayı kontrol edin.",
+        "register.passwordInvalid": "Şifre tam olarak 6 haneli olmalıdır.",
+        "forgot.title": "Şifreyi Sıfırla",
+        "forgot.subtitle": "T.C. Kimlik numaranız ile şifrenizi kolayca sıfırlayın",
+        "forgot.sendCode": "Kod Gönder",
+        "forgot.submit": "Şifreyi Sıfırla",
+        "forgot.back": "Giriş Ekranına Dön",
+        "forgot.tcknInvalid": "T.C. Kimlik Numarası 11 haneli olmalıdır.",
+        "forgot.codeSent": "Bu T.C. Kimlik Numarası kayıtlıysa, e-posta adresine bir doğrulama kodu gönderildi.",
+        "forgot.success": "Şifreniz sıfırlandı. Şimdi giriş yapabilirsiniz.",
+        "toast.now": "şimdi",
+        "toast.codeMailed": "SmartBank: Doğrulama kodu kayıtlı e-posta adresinize gönderildi.",
+        "toast.codeDemo": "SmartBank: Güvenlik doğrulama kodunuz {code}. Bu kodu kimseyle paylaşmayın.",
+
+        // Market rates
+        "market.title": "Canlı Piyasalar",
+        "market.live": "CANLI",
+        "market.updated": "Son güncelleme:",
+        "market.offline": "Kurlar alınamıyor. Yeniden deneniyor...",
+        "market.unavailable": "Piyasa kurları yüklenemedi.",
+        "market.buy": "ALIŞ",
+        "market.sell": "SATIŞ",
+
+        // Dashboard shell
+        "sidebar.open": "Hızlı işlemler",
+        "sidebar.title": "Hızlı İşlemler",
+        "sidebar.addMoneyTitle": "Hesaba Para Yükle",
+        "sidebar.addMoneyDesc": "Vadesiz TL hesabınıza 1000 TL yükleyin",
+        "sidebar.addMoneyBtn": "+1000 TL Ekle",
+        "sidebar.added": "Hesabınıza 1000 TL eklendi.",
+        "sidebar.noTryAccount": "Vadesiz TL hesabınız bulunmuyor.",
+        "tabs.label": "Bölümler",
+        "tabs.accounts": "Hesaplarım & Transfer",
+        "tabs.cards": "Kredi Kartlarım & Ekstre",
+        "tabs.orders": "Talimatlarım",
+
+        // Accounts
+        "accounts.title": "Hesaplarım",
+        "accounts.new": "+ Yeni Hesap Aç",
+        "accounts.loading": "Hesap bilgileri yükleniyor...",
+        "accounts.none": "Aktif hesabınız bulunmuyor.",
+        "accounts.code": "Hesap Kodu:",
+        "accounts.delete": "Kapat",
+        "accounts.deleted": "Hesap kapatıldı.",
+        "accounts.deleteConfirm": "Bu hesabı kalıcı olarak kapatmak istediğinize emin misiniz?",
+        "accounts.deleteNoTarget": "Hesapta bakiye var ve aktarabileceğiniz başka bir hesabınız yok. Hesap kapatılamaz.",
+        "accounts.closeTransferTitle": "Hesap Kapatma Bakiye Aktarımı",
+        "accounts.closeTransferDesc": "Kapatmak istediğiniz hesapta {balance} bakiye bulunmaktadır. Bakiyenin aktarılacağı hesabı seçin:",
+        "accounts.targetLabel": "Bakiyenin aktarılacağı hesap",
+        "accounts.transferAndClose": "Aktar ve Hesabı Kapat",
+        "accounts.timeInfo": "%{rate} faiz | Vade: 30 gün",
+        "acc.titleDemand": "Vadesiz Hesap",
+        "acc.titleTime": "SmartDeposit (Vadeli)",
+        "acc.titleGold": "SmartGold (Altın)",
+        "acc.titleSilver": "SmartSilver (Gümüş)",
+
+        // Operations: transfer and exchange
+        "ops.label": "İşlemler",
+        "ops.transferTab": "Para Transferi",
+        "ops.exchangeTab": "Döviz Al/Sat",
+        "transfer.title": "Para Gönder",
+        "transfer.desc": "Hesap numarasını kullanarak anında para transferi yapın",
+        "transfer.source": "Kaynak Hesap",
+        "transfer.savedContacts": "Kayıtlı alıcı seç (hızlı doldur)",
+        "transfer.savedContactsPlaceholder": "-- Kayıtlı alıcı seç --",
+        "transfer.manageContacts": "Alıcıları yönet",
+        "transfer.dest": "Alıcı Hesap Numarası",
+        "transfer.amount": "Tutar",
+        "transfer.description": "Açıklama",
+        "transfer.descriptionPh": "Örn. kira, market",
+        "transfer.category": "Kategori",
+        "transfer.saveContact": "Alıcıyı kayıtlı kişilerime ekle",
+        "transfer.aliasPh": "Rumuz (örn. Ali Enpara)",
+        "transfer.aliasLabel": "Rumuz",
+        "transfer.submit": "Transferi Gerçekleştir",
+        "transfer.success": "Para transferi başarıyla gerçekleştirildi!",
+        "transfer.noSource": "Lütfen bir kaynak hesap seçin.",
+        "transfer.noDest": "Lütfen alıcı hesap numarasını girin.",
+        "cat.other": "Diğer",
+        "cat.market": "Market",
+        "cat.bills": "Fatura",
+        "cat.fun": "Eğlence",
+        "cat.invest": "Yatırım",
+        "exchange.title": "Döviz & Değerli Maden İşlemleri",
+        "exchange.desc": "TRY hesabınızı kullanarak anında döviz veya altın/gümüş alıp satın",
+        "exchange.action": "İşlem Türü",
+        "exchange.buy": "Alış (döviz / maden al)",
+        "exchange.sell": "Satış (döviz / maden sat)",
+        "exchange.asset": "Döviz / Maden Cinsi",
+        "exchange.usd": "USD - Amerikan Doları",
+        "exchange.eur": "EUR - Euro",
+        "exchange.xau": "XAU - Altın (gram)",
+        "exchange.xag": "XAG - Gümüş (gram)",
+        "exchange.source": "Kaynak Hesap (ödeme / tahsilat)",
+        "exchange.amount": "Miktar",
+        "exchange.rate": "İşlem Kuru:",
+        "exchange.total": "Toplam Karşılık:",
+        "exchange.submit": "İşlemi Tamamla",
+        "exchange.noTry": "TRY hesabınız bulunmuyor",
+        "exchange.noAsset": "{asset} hesabınız bulunmuyor (alış yapınca otomatik açılır)",
+        "exchange.noAccount": "Lütfen geçerli bir hesap seçin.",
+        "exchange.success": "Döviz/Maden işlemi başarıyla gerçekleştirildi!",
+
+        // History and receipt
+        "history.title": "Hesap Hareketleri",
+        "history.desc": "Son finansal işlemleriniz (dekont görmek için satıra tıklayın)",
+        "history.date": "Tarih",
+        "history.type": "Tür",
+        "history.description": "Açıklama",
+        "history.amount": "Tutar",
+        "history.empty": "İşlem geçmişini görüntülemek için bir hesap seçin",
+        "history.none": "Henüz işlem bulunmuyor.",
+        "history.loading": "İşlemler yükleniyor...",
+        "history.showMore": "Daha Fazla Göster ({count} işlem daha)",
+        "history.showLess": "Daha Az Göster",
+        "history.openReceipt": "Dekontu aç",
+        "txType.Transfer": "Transfer",
+        "txType.Deposit": "Para Yatırma",
+        "txType.DepositMoney": "Para Yatırma",
+        "txType.Withdrawal": "Para Çekme",
+        "txType.Exchange": "Döviz İşlemi",
+        "txType.ExchangeMoney": "Döviz İşlemi",
+        "slip.title": "İşlem Sonucu Dekontu",
+        "slip.stamp": "SmartBank A.Ş. Onaylıdır",
+        "slip.date": "İşlem Tarihi:",
+        "slip.ref": "Referans No:",
+        "slip.type": "İşlem Türü:",
+        "slip.sender": "Gönderen:",
+        "slip.receiver": "Alıcı:",
+        "slip.accountNo": "Hesap No:",
+        "slip.amount": "Tutar:",
+        "slip.description": "Açıklama:",
+        "slip.customer": "SmartBank Müşterisi",
+
+        // Contacts
+        "contacts.manageTitle": "Kayıtlı Alıcıları Yönet",
+        "contacts.manageDesc": "Kayıtlı alıcılarınızın rumuzlarını düzenleyebilir veya listeden silebilirsiniz.",
+        "contacts.none": "Kayıtlı alıcı bulunamadı.",
+        "contacts.editLabel": "{name} alıcısını düzenle",
+        "contacts.deleteLabel": "{name} alıcısını sil",
+        "contacts.editTitle": "Rumuzu düzenle",
+        "contacts.editMessage": "\"{name}\" alıcısı için yeni bir rumuz girin:",
+        "contacts.aliasLabel": "Rumuz",
+        "contacts.aliasEmpty": "Rumuz boş bırakılamaz.",
+        "contacts.deleteConfirm": "Bu alıcıyı kayıtlı kişilerden silmek istediğinize emin misiniz?",
+        "contacts.defaultAlias": "Kayıtlı Alıcı",
+        "contacts.saveFailed": "Transfer yapıldı ancak alıcı kaydedilemedi.",
+
+        // Card customizer and 2FA
+        "customizer.title": "Kart ve Güvenlik Paneli",
+        "customizer.desc": "Kart stili ve 2FA güvenlik ayarı",
+        "customizer.flip": "Kartı çevir",
+        "customizer.signature": "YETKİLİ İMZA",
+        "customizer.cardInfo": "Bu kart SmartBank'ın mülkiyetindedir. Kullanımı banka kurallarına tabidir.",
+        "customizer.theme": "Tema Seçin:",
+        "theme.neon": "Neon Mavi",
+        "theme.sunset": "Gün Batımı Turuncusu",
+        "theme.metallic": "Metalik Koyu",
+        "theme.glass": "Cam Efekti",
+        "twofa.title": "2FA Güvenliği",
+        "twofa.desc": "1000 TRY üzerindeki transferler için doğrulama kodu ister",
+        "twofa.pinTitle": "Şifrenizle onaylayın",
+        "twofa.pinEnable": "İki aşamalı doğrulamayı açmak için 6 haneli şifrenizi girin.",
+        "twofa.pinDisable": "İki aşamalı doğrulamayı kapatmak için 6 haneli şifrenizi girin.",
+        "twofa.pinLabel": "Şifre (6 haneli)",
+        "twofa.pinInvalid": "Şifre 6 haneli olmalıdır.",
+        "twofa.enabled": "İki aşamalı doğrulama açıldı.",
+        "twofa.disabled": "İki aşamalı doğrulama kapatıldı.",
+
+        // Credit cards
+        "cards.title": "Kredi Kartlarım",
+        "cards.apply": "+ Yeni Başvuru",
+        "cards.applyNow": "Hemen Başvur",
+        "cards.applyConfirm": "Kredi kartı başvurusunu onaylıyor musunuz?",
+        "cards.applyDone": "Kredi kartınız başarıyla oluşturuldu!",
+        "cards.loading": "Kredi kartı bilgileri yükleniyor...",
+        "cards.none": "Aktif kredi kartınız bulunmuyor.",
+        "cards.emptyTitle": "Kredi Kartınız Bulunmuyor",
+        "cards.emptyDesc": "Harcamalarınızı taksitlendirmek ve SmartCredit avantajlarından yararlanmak için hemen başvurun.",
+        "cards.selectPrompt": "Lütfen detaylarını ve ekstre hareketlerini görmek istediğiniz kredi kartını seçiniz.",
+        "cards.panelLabel": "Kredi kartı ayrıntıları",
+        "cards.limitShort": "Limit",
+        "cards.availableShort": "Kalan",
+        "cards.viewStatement": "Ekstre Görüntüle",
+        "cards.detailsTitle": "SmartCredit Kart Detayları",
+        "cards.limit": "Toplam Limit",
+        "cards.available": "Kalan Limit",
+        "cards.debt": "Güncel Borç",
+        "cards.stmtTitle": "Hesap Özeti (Ekstre)",
+        "cards.period": "Dönem",
+        "cards.periodDebt": "Dönem Borcu",
+        "cards.minPayment": "Asgari Ödeme",
+        "cards.dueDate": "Son Ödeme",
+        "cards.periodTx": "Dönem İçi Hareketler",
+        "cards.txAmount": "Tutar",
+        "cards.noSpend": "Henüz harcama bulunmuyor.",
+        "cards.noStatement": "Bu kart için henüz ekstre yok.",
+        "cards.statusPaid": "Tamamı Ödendi",
+        "cards.statusUnpaid": "Ödenmedi (asgari borç: {min})",
+        "cards.statusMinPaid": "Asgari ödendi (kalan borç: {remaining})",
+        "cards.payTitle": "Borç Ödeme",
+        "cards.paySource": "Ödeme yapılacak hesap",
+        "cards.payAmount": "Ödenecek tutar",
+        "cards.payAmountPh": "Tutar",
+        "cards.pay": "Öde",
+        "cards.payMin": "Asgari Öde",
+        "cards.payFull": "Borç Kapat",
+        "cards.paySuccess": "Borç ödeme işlemi başarıyla tamamlandı!",
+        "cards.noTryAccount": "Vadesiz TL hesabınız bulunmuyor",
+        "cards.advanceTitle": "Dönem Atlat",
+        "cards.advanceDesc": "Son ödeme günü simülasyonu. Ödenmeyen borca faiz uygulanıp yeni dönem ekstresi kesilir.",
+        "cards.advanceBtn": "Dönemi Kapat (Faiz Uygula)",
+        "cards.advanceConfirm": "Bu işlem son ödeme gününü simüle eder: ödenmeyen borca faiz uygulanır ve yeni dönem ekstresi kesilir. Devam edilsin mi?",
+        "cards.advanceDone": "Dönem atlatıldı ve faiz hesaplandı.",
+        "cards.chargeTitle": "Harcama Simüle Et",
+        "cards.chargeMerchant": "İşyeri",
+        "cards.chargeMerchantPh": "İşyeri (örn. Starbucks)",
+        "cards.chargeAmount": "Tutar",
+        "cards.chargeAmountPh": "Tutar",
+        "cards.chargeBtn": "Harcama Yap",
+        "cards.chargeNoMerchant": "Lütfen işyeri adını girin.",
+        "cards.chargeSuccess": "Harcama başarıyla yapıldı!",
+
+        // New account dialog
+        "newacc.title": "Yeni Hesap Aç",
+        "newacc.selectType": "Hesap Türü Seçiniz:",
+        "newacc.tryName": "Vadesiz TL Hesabı",
+        "newacc.tryDesc": "Günlük işlemler ve transferler için (TRY)",
+        "newacc.usdName": "Vadesiz Dolar Hesabı",
+        "newacc.usdDesc": "Dolar birikim ve transferler için (USD)",
+        "newacc.eurName": "Vadesiz Euro Hesabı",
+        "newacc.eurDesc": "Euro birikim ve transferler için (EUR)",
+        "newacc.xauName": "Gram Altın Hesabı",
+        "newacc.xauDesc": "Altın yatırımı ve birikimi için (XAU)",
+        "newacc.xagName": "Gram Gümüş Hesabı",
+        "newacc.xagDesc": "Gümüş yatırımı ve birikimi için (XAG)",
+        "newacc.timeName": "Vadeli TL Hesabı (Kademeli Faiz)",
+        "newacc.timeDesc": "30 günlük vadede yüksek kademeli getiri (TRY)",
+        "newacc.ratesTitle": "Güncel Mevduat Faiz Oranları",
+        "newacc.range": "Tutar Aralığı",
+        "newacc.rate": "Faiz Oranı",
+        "newacc.rangeOver": "{from} TRY ve üzeri",
+        "newacc.calcTitle": "Mevduat Kârı Hesaplama (30 günlük vade)",
+        "newacc.calcPh": "Tutar girin (örn. 100000)",
+        "newacc.calcBtn": "Hesapla",
+        "newacc.calcRate": "Uygulanan faiz oranı:",
+        "newacc.calcProfit": "Vade sonu net kazanç:",
+        "newacc.submit": "Hesap Aç",
+        "newacc.created": "Yeni hesabınız açıldı.",
+
+        // Standing orders
+        "orders.title": "Mevcut Talimatlarım",
+        "orders.loading": "Talimatlar yükleniyor...",
+        "orders.none": "Tanımlı talimatınız bulunmuyor.",
+        "orders.newTitle": "Yeni Talimat Tanımla",
+        "orders.newDesc": "Otomatik para transferleri veya kredi kartı otomatik borç ödemesi kurgulayın.",
+        "orders.source": "Ödeme yapılacak vadesiz TL hesabı",
+        "orders.type": "Talimat türü",
+        "orders.typeTransfer": "Düzenli para transferi",
+        "orders.typeCard": "Kredi kartı otomatik borç ödeme",
+        "orders.dest": "Alıcı hesap numarası",
+        "orders.amount": "Yinelenen tutar",
+        "orders.frequency": "Yinelenme sıklığı",
+        "orders.daily": "Her gün",
+        "orders.weekly": "Her hafta",
+        "orders.monthly": "Her ay",
+        "orders.targetCard": "Ödenecek kredi kartı",
+        "orders.submit": "Talimatı Kaydet",
+        "orders.created": "Talimat başarıyla tanımlandı!",
+        "orders.noSource": "Lütfen kaynak hesabı seçin.",
+        "orders.noCard": "Lütfen bir kredi kartı seçin.",
+        "orders.titleCard": "Otomatik ekstre ödeme",
+        "orders.titleTransfer": "Düzenli para transferi",
+        "orders.descCard": "Kredi kartı ekstresi son ödeme gününde otomatik olarak tamamen ödenir.",
+        "orders.descTransfer": "{freq} düzenli transfer: {amount} tutarında, alıcı {dest}",
+        "orders.dailyAdj": "Günlük",
+        "orders.weeklyAdj": "Haftalık",
+        "orders.monthlyAdj": "Aylık",
+        "orders.sourceLabel": "Kaynak",
+        "orders.cancel": "İptal Et",
+        "orders.cancelConfirm": "Bu talimatı iptal etmek istiyor musunuz?",
+
+        // One-time code dialog
+        "otp.title": "Güvenlik Doğrulaması",
+        "otp.desc": "Bu transferi onaylamak için size gönderilen 6 haneli doğrulama kodunu girin.",
+        "otp.label": "Doğrulama kodu",
+        "otp.submit": "Kodu Doğrula",
+        "otp.invalid": "Lütfen 6 haneli kodu girin.",
+
+        // Live chat (customer widget and agent panel)
+        "chat.toggle": "Canlı Destek",
+        "chat.title": "Canlı Destek Sohbeti",
+        "chat.welcome": "Merhaba! Hesaplarınız, transferleriniz veya kart limitleriniz hakkında yardıma mı ihtiyacınız var?",
+        "chat.start": "Sohbeti Başlat",
+        "chat.typing": "Yazıyor...",
+        "chat.inputLabel": "Mesajınız",
+        "chat.inputPlaceholder": "Mesajınızı yazın...",
+        "chat.loadingMessages": "Mesajlar yükleniyor...",
+        "chat.historyFailed": "Sohbet geçmişi yüklenemedi.",
+        "chat.started": "Sohbet oturumu başladı.",
+        "chat.sessionClosed": "Görüşme sonlandırılmıştır.",
+        "chat.offline": "Sohbet bağlantısı kapalı. Yeniden bağlanılmaya çalışılıyor...",
+        "chat.reconnecting": "Yeniden bağlanılıyor...",
+        "chat.sendFailed": "Mesaj gönderilemedi.",
+        "chat.startFailed": "Sohbet oturumu başlatılamadı.",
+        "chat.confirmTitle": "Para Transferi Onayı",
+        "chat.sourceAccount": "Kaynak Hesap",
+        "chat.destAccount": "Alıcı Hesap",
+        "chat.confirm": "Onayla",
+        "chat.processing": "İşleniyor...",
+        "chat.cancelled": "İptal Edildi",
+        "chat.confirmExpired": "Bu istek önceki bir görüşmeden kaldı ve artık onaylanamaz.",
+        "chat.confirmInvalid": "Bu istekteki tutar geçerli değil, bu yüzden onaylanamaz.",
+        "chat.confirmFailed": "Transfer onaylanamadı. Lütfen tekrar deneyin.",
+        "chat.successTitle": "İşlem Başarılı",
+        "chat.successDesc": "{amount}, {dest} numaralı hesaba başarıyla gönderildi.",
+        "chat.failedTitle": "İşlem Başarısız",
+        "chat.transferredTitle": "Oda Transfer Edildi",
+        "chat.transferredDesc": "Sohbet başarıyla {dept} birimine aktarıldı.",
+        "hub.tooManyChats": "Çok fazla sohbet başlattınız. Lütfen daha sonra tekrar deneyin.",
+        "hub.startFailed": "Destek oturumu başlatılamadı.",
+        "hub.accessDenied": "Bu destek odasına erişim yetkiniz yok.",
+        "hub.empty": "Mesaj boş olamaz.",
+        "hub.tooLong": "Mesaj çok uzun.",
+        "hub.tooFast": "Çok hızlı mesaj gönderiyorsunuz. Lütfen biraz bekleyin.",
+        "hub.sendFailed": "Mesaj gönderilemedi.",
+        "hub.unauthorized": "Bu işlem için yetkiniz yok.",
+        "hub.tooManyTransfers": "Çok fazla transfer denemesi. Lütfen biraz bekleyin.",
+        "hub.closeFailed": "Oturum kapatılamadı.",
+        "hub.agentRequired": "Destek temsilcisi hesabı gereklidir.",
+        "hub.generic": "Sohbette bir sorun oluştu. Lütfen tekrar deneyin.",
+
+        // Agent panel
+        "agent.badge": "Destek Merkezi",
+        "agent.metricResolved": "Çözülen Sohbetler",
+        "agent.metricTime": "Ort. Yanıt Süresi",
+        "agent.metricCsat": "CSAT Skoru",
+        "agent.metricStatus": "Durumunuz",
+        "agent.statusActive": "Aktif",
+        "agent.statusBusy": "Meşgul",
+        "agent.statusBreak": "Mola",
+        "agent.activeChats": "Aktif Destek Talepleri",
+        "agent.refresh": "Yenile",
+        "agent.noActive": "Şu anda aktif destek talebi bulunmuyor",
+        "agent.loadingChats": "Sohbetler yükleniyor...",
+        "agent.loadingConversation": "Görüşme yükleniyor...",
+        "agent.userLabel": "Kullanıcı:",
+        "agent.sessionId": "Oturum No: {id}",
+        "agent.selectChat": "Bir Sohbet Odası Seçin",
+        "agent.selectChatDesc": "Müşterilere yardımcı olmaya başlamak için sol paneldeki aktif sohbet odalarından birine tıklayın.",
+        "agent.closeSession": "Oturumu Kapat",
+        "agent.closeOffline": "Sohbet bağlantısı kapalı olduğu için oturum kapatılamadı.",
+        "agent.closeFailed": "Oturum kapatılamadı.",
+        "agent.transferLabel": "Birime aktar",
+        "agent.transferTo": "Aktar...",
+        "agent.transferred": "Sohbet {dept} birimine aktarıldı.",
+        "agent.deptGeneral": "Genel Destek",
+        "agent.deptLoans": "Kredi Departmanı",
+        "agent.deptCards": "Kart Hizmetleri",
+        "agent.deptInvestments": "Yatırım Danışmanlığı",
+        "agent.copilotTitle": "AI Co-Pilot Önerisi",
+        "agent.copilotLoading": "Öneri oluşturuluyor...",
+        "agent.copilotFailed": "Öneri oluşturulamadı.",
+        "agent.regenerate": "Öneriyi yenile",
+        "agent.useSuggestion": "Öneriyi Kullan",
+        "agent.inputLabel": "Destek mesajı",
+        "agent.inputPlaceholder": "Destek mesajı yazın...",
+
+        // Errors (server error keys and client-side problems)
+        "err.Generic": "Bir sorun oluştu. Lütfen tekrar deneyin.",
+        "err.ConnectionError": "Sunucuya bağlanılamadı. Lütfen bağlantınızı kontrol edip tekrar deneyin.",
+        "err.ServerError": "Sunucuda bir sorun oluştu. Lütfen biraz sonra tekrar deneyin.",
+        "err.SessionExpired": "Oturumunuzun süresi doldu. Lütfen tekrar giriş yapın.",
+        "err.Forbidden": "Bu işlemi yapmaya yetkiniz yok.",
+        "err.TooManyRequests": "Çok fazla istek gönderildi. Lütfen biraz bekleyip tekrar deneyin.",
+        "err.ValidationError": "Lütfen girdiğiniz bilgileri kontrol edin.",
+        "err.UsernameAlreadyExists": "Bu kullanıcı adı zaten alınmış.",
+        "err.TcknAlreadyExists": "Bu T.C. Kimlik Numarası zaten kayıtlı.",
+        "err.EmailAlreadyExists": "Bu e-posta adresi zaten kayıtlı.",
+        "err.InvalidCredentials": "Hatalı T.C. Kimlik Numarası veya şifre.",
+        "err.AccountLocked": "Çok fazla başarısız deneme. Hesabınız geçici olarak kilitlendi, lütfen daha sonra tekrar deneyin.",
+        "err.TooManyOtpAttempts": "Çok fazla hatalı kod girdiniz. Lütfen yeni bir kod isteyip tekrar deneyin.",
+        "err.InvalidOrExpiredCode": "Geçersiz veya süresi dolmuş doğrulama kodu.",
+        "err.InvalidOtpCode": "Geçersiz veya süresi dolmuş doğrulama kodu.",
+        "err.InvalidRefreshToken": "Oturumunuz artık geçerli değil. Lütfen tekrar giriş yapın.",
+        "err.TcknNotFound": "Bu T.C. Kimlik Numarası sistemde kayıtlı değil.",
+        "err.UserNotFound": "Kullanıcı bulunamadı.",
+        "err.PinRequired": "Lütfen 6 haneli şifrenizi girin.",
+        "err.Requires2FA": "İki aşamalı güvenlik doğrulaması gerekiyor.",
+        "err.SuspectedFraudDuplicate": "Şüpheli işlem: 30 saniye içinde aynı transfer tekrar gönderildi.",
+        "err.SuspectedFraudHighValue": "Şüpheli işlem: transfer tutarı standart limitleri aşıyor.",
+        "err.InsufficientFunds": "Gönderen hesapta yetersiz bakiye.",
+        "err.InsufficientLimit": "Kredi kartı limiti yetersiz.",
+        "err.SourceAccountNotFound": "Kaynak hesap bulunamadı.",
+        "err.DestinationAccountNotFound": "Alıcı hesap bulunamadı.",
+        "err.AccountNotFound": "Hesap bulunamadı.",
+        "err.TargetAccountNotFound": "Hedef hesap bulunamadı.",
+        "err.TargetAccountRequired": "Lütfen kalan bakiyenin aktarılacağı bir hesap seçin.",
+        "err.TryAccountNotFound": "Bu işlem için vadesiz bir TL hesabınız olmalı.",
+        "err.UnauthorizedAccountAccess": "Bu hesaba erişim yetkiniz yok.",
+        "err.CannotDeleteLastAccount": "Son hesabınız kapatılamaz.",
+        "err.CannotTransferToSelf": "Kendi hesabınıza para transferi yapamazsınız.",
+        "err.CurrencyMismatch": "Farklı para birimleri arasında transfer desteklenmiyor.",
+        "err.InvalidSourceAccount": "Bu hesap kaynak olarak kullanılamaz.",
+        "err.InvalidExchangeSource": "Bu hesap bu döviz işlemi için kullanılamaz.",
+        "err.FailedToOpenAssetAccount": "Bu döviz veya maden için hesap açılamadı.",
+        "err.InvalidAmount": "Tutar sıfırdan büyük olmalıdır.",
+        "err.InvalidAmountScale": "Tutar en fazla 2 ondalık basamak içerebilir.",
+        "err.InvalidCurrency": "Bu para birimi desteklenmiyor.",
+        "err.InvalidAction": "Bu işlem türü geçerli değil.",
+        "err.InvalidOrderType": "Bu talimat türü geçerli değil.",
+        "err.InvalidFrequency": "Bu sıklık geçerli değil.",
+        "err.RateUnavailable": "Döviz kuru şu anda alınamıyor. Lütfen biraz sonra tekrar deneyin.",
+        "err.RateNotFound": "Bu para birimi için kur bulunamadı.",
+        "err.TransactionFailed": "İşlem tamamlanamadı.",
+        "err.ConcurrentModification": "Siz işlem yaparken veriler değişti. Lütfen tekrar deneyin.",
+        "err.CreditCardNotFound": "Kredi kartı bulunamadı.",
+        "err.MaxCreditCardsLimitReached": "Azami kredi kartı sayısına ulaştınız.",
+        "err.PaymentFailed": "Ödeme işlemi başarısız oldu.",
+        "err.ChargeFailed": "Harcama reddedildi.",
+        "err.ContactNotFound": "Kayıtlı alıcı bulunamadı.",
+        "err.OrderNotFound": "Talimat bulunamadı.",
+        "err.SessionNotFound": "Sohbet oturumu bulunamadı.",
+        "err.UnauthorizedSessionAccess": "Bu destek odasına erişim yetkiniz yok."
+    }
+};
+
+
+
+// Request counters: a loader remembers the number of its latest request and drops answers that arrive out of order.
+const requestSeq = { transactions: 0, statements: 0, orders: 0, sessions: 0, agentChat: 0, copilot: 0 };
+
+// Keeps a numeric input digits-only (T.C. numbers, PINs, one-time codes).
+function digitsOnly(input) {
+    if (!input) return;
+    input.addEventListener("input", () => {
+        const cleaned = input.value.replace(/\D/g, "");
+        if (cleaned !== input.value) input.value = cleaned;
+    });
+}
+
+// <a href="#" role="button"> that also answers to the Space key, like a real button.
+function bindLink(link, handler) {
+    if (!link) return;
+    link.addEventListener("click", event => { event.preventDefault(); handler(event); });
+    link.addEventListener("keydown", event => {
+        if (event.key === " ") { event.preventDefault(); handler(event); }
+    });
 }
 
 /* ==========================================================================
    AUTHENTICATION LOGIC (index.html)
    ========================================================================== */
+const NAME_PATTERN = /^[\p{L}\p{M}]+(?:[ '’.-]+[\p{L}\p{M}]+)*\.?$/u;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 function initAuthEvents() {
-    const loginCard = document.getElementById("login-card");
-    const registerCard = document.getElementById("register-card");
-    const forgotCard = document.getElementById("forgot-card");
-    
-    const linkToRegister = document.getElementById("link-to-register");
-    const linkToLogin = document.getElementById("link-to-login");
-    const linkToForgot = document.getElementById("link-to-forgot");
-    const linkForgotToLogin = document.getElementById("link-forgot-to-login");
+    const cards = ["login-card", "register-card", "forgot-card"].map(byId);
+    const showCard = (card) => {
+        cards.forEach(other => other.classList.toggle("hidden", other !== card));
+        ["login-error", "register-error", "forgot-error", "forgot-success"].forEach(id => hideMessage(byId(id)));
+        const first = card.querySelector("input:not([readonly])");
+        if (first) first.focus();
+    };
 
-    if (linkToRegister) {
-        linkToRegister.addEventListener("click", (e) => {
-            e.preventDefault();
-            loginCard.classList.add("hidden");
-            registerCard.classList.remove("hidden");
-            if (forgotCard) forgotCard.classList.add("hidden");
-            document.getElementById("register-error").classList.add("hidden");
-        });
-    }
+    ["login-tckn", "login-password", "login-2fa-code", "reg-tckn", "reg-password", "forgot-tckn", "forgot-code", "forgot-new-password"]
+        .forEach(id => digitsOnly(byId(id)));
 
-    if (linkToLogin) {
-        linkToLogin.addEventListener("click", (e) => {
-            e.preventDefault();
-            registerCard.classList.add("hidden");
-            if (forgotCard) forgotCard.classList.add("hidden");
-            loginCard.classList.remove("hidden");
-            document.getElementById("login-error").classList.add("hidden");
-        });
-    }
+    bindLink(byId("link-to-register"), () => showCard(byId("register-card")));
+    bindLink(byId("link-to-login"), () => showCard(byId("login-card")));
+    bindLink(byId("link-to-forgot"), () => {
+        ["forgot-tckn", "forgot-code", "forgot-new-password"].forEach(id => { byId(id).value = ""; });
+        showCard(byId("forgot-card"));
+    });
+    bindLink(byId("link-forgot-to-login"), () => showCard(byId("login-card")));
 
-    if (linkToForgot) {
-        linkToForgot.addEventListener("click", (e) => {
-            e.preventDefault();
-            loginCard.classList.add("hidden");
-            registerCard.classList.add("hidden");
-            if (forgotCard) {
-                forgotCard.classList.remove("hidden");
-                const errorDiv = document.getElementById("forgot-error");
-                const successDiv = document.getElementById("forgot-success");
-                if (errorDiv) errorDiv.classList.add("hidden");
-                if (successDiv) successDiv.classList.add("hidden");
+    initLoginForm();
+    initRegisterForm();
+    initForgotForm();
+}
+
+function initLoginForm() {
+    const form = byId("login-form");
+    const submit = byId("btn-login-submit");
+    const errorDiv = byId("login-error");
+    const state = { step: "credentials", demo: false };
+
+    const applyStep = (focus) => {
+        const is2fa = state.step === "2fa";
+        byId("login-2fa-group").classList.toggle("hidden", !is2fa);
+        byId("btn-login-back").classList.toggle("hidden", !is2fa);
+        byId("login-tckn").readOnly = is2fa;
+        byId("login-password").readOnly = is2fa;
+        submit.textContent = t(is2fa ? "login.verify" : "login.submit");
+        byId("login-2fa-hint").textContent = t(state.demo ? "login.twofaHintDemo" : "login.twofaHint");
+        if (is2fa && focus) byId("login-2fa-code").focus();
+    };
+    onLanguageChange(() => applyStep(false));
+
+    byId("btn-login-back").addEventListener("click", () => {
+        state.step = "credentials";
+        state.demo = false;
+        byId("login-2fa-code").value = "";
+        byId("login-password").value = "";
+        hideMessage(errorDiv);
+        applyStep(false);
+        byId("login-password").focus();
+    });
+
+    const fail = (text, focusId) => {
+        showMessage(errorDiv, text, "error");
+        if (focusId) byId(focusId).focus();
+    };
+
+    const finishLogin = (data) => {
+        if (!data || !data.token) { fail(t("err.Generic")); return; }
+        saveAuth(data.token, buildUser(data), data.refreshToken, data.accessTokenExpiresAt);
+        redirectByUserRole();
+    };
+
+    form.addEventListener("submit", event => {
+        event.preventDefault();
+        withBusy(submit, async () => {
+            hideMessage(errorDiv);
+            const tckn = byId("login-tckn").value.trim();
+            const password = byId("login-password").value;
+
+            if (state.step === "2fa") {
+                const code = byId("login-2fa-code").value.trim();
+                if (!/^\d{6}$/.test(code)) { fail(t("login.codeInvalid"), "login-2fa-code"); return; }
+
+                const res = await api("/auth/verify-2fa", { method: "POST", auth: false, body: { tckn, code } });
+                if (!res.ok) { fail(messageFromResponse(res), "login-2fa-code"); return; }
+                finishLogin(res.data);
+                return;
             }
-            ["forgot-tckn", "forgot-code", "forgot-new-password"].forEach((id) => {
-                const input = document.getElementById(id);
-                if (input) input.value = "";
-            });
-        });
-    }
 
-    if (linkForgotToLogin) {
-        linkForgotToLogin.addEventListener("click", (e) => {
-            e.preventDefault();
-            if (forgotCard) forgotCard.classList.add("hidden");
-            registerCard.classList.add("hidden");
-            loginCard.classList.remove("hidden");
-            document.getElementById("login-error").classList.add("hidden");
-        });
-    }
+            if (!/^\d{11}$/.test(tckn)) { fail(t("login.tcknInvalid"), "login-tckn"); return; }
+            if (!/^\d{6}$/.test(password)) { fail(t("login.passwordInvalid"), "login-password"); return; }
 
-    // Handle Login Form
-    const loginForm = document.getElementById("login-form");
-    if (loginForm) {
-        loginForm.addEventListener("submit", async (e) => {
-            e.preventDefault();
-            const tckn = document.getElementById("login-tckn").value;
-            const password = document.getElementById("login-password").value;
-            const twoFaGroup = document.getElementById("login-2fa-group");
-            const codeInput = document.getElementById("login-2fa-code");
-            const btnSubmit = document.getElementById("btn-login-submit");
-            const errorDiv = document.getElementById("login-error");
-
-            errorDiv.classList.add("hidden");
-
-            const is2FaStep = twoFaGroup && !twoFaGroup.classList.contains("hidden");
-
-            if (is2FaStep) {
-                const code = codeInput.value.trim();
-                if (code.length !== 6 || isNaN(code)) {
-                    errorDiv.textContent = currentLanguage === "tr" ? "Lütfen 6 haneli doğrulama kodunu girin." : "Please enter the 6-digit verification code.";
-                    errorDiv.classList.remove("hidden");
+            const res = await api("/auth/login", { method: "POST", auth: false, body: { tckn, password } });
+            if (!res.ok) {
+                if (res.data && res.data.errorKey === "Requires2FA") {
+                    // The server only appends "|OTP:code" in demo mode (Demo:ExposeOtp). Normally the code is e-mailed.
+                    const { otp } = splitOtpMarker(res.data.message);
+                    state.demo = !!otp;
+                    state.step = "2fa";
+                    showOtpToast(otp);
+                    applyStep(true);
                     return;
                 }
-
-                try {
-                    const response = await fetch(`${API_URL}/auth/verify-2fa`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ tckn, code })
-                    });
-
-                    const data = await response.json();
-
-                    if (!response.ok) {
-                        errorDiv.textContent = getLocalizedText(data.errorKey, data.message || "2FA verification failed");
-                        errorDiv.classList.remove("hidden");
-                        return;
-                    }
-
-                    saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName, role: data.role }, data.refreshToken, data.accessTokenExpiresAt);
-                    redirectByUserRole();
-                } catch (err) {
-                    errorDiv.textContent = getLocalizedText("ConnectionError", "Connection to server failed.");
-                    errorDiv.classList.remove("hidden");
-                }
-            } else {
-                try {
-                    const response = await fetch(`${API_URL}/auth/login`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ tckn, password })
-                    });
-
-                    const data = await response.json();
-
-                    if (!response.ok) {
-                        if (data.errorKey === "Requires2FA") {
-                            // The server only appends "|OTP:code" in demo mode (Demo:ExposeOtp). Normally the code
-                            // is e-mailed and the toast just says so; there is no fallback code to type.
-                            const otpCode = (data.message || "").split("|OTP:")[1] || "";
-
-                            showMockSMSToast(otpCode);
-                            
-                            // Transform login card to 2FA verification mode
-                            document.getElementById("login-tckn").readOnly = true;
-                            document.getElementById("login-password").readOnly = true;
-                            twoFaGroup.classList.remove("hidden");
-                            btnSubmit.textContent = currentLanguage === "tr" ? "Doğrula ve Giriş Yap" : "Verify & Sign In";
-                            codeInput.focus();
-                            return;
-                        }
-
-                        errorDiv.textContent = getLocalizedText(data.errorKey, data.message || "Login failed");
-                        errorDiv.classList.remove("hidden");
-                        return;
-                    }
-
-                    saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName, role: data.role }, data.refreshToken, data.accessTokenExpiresAt);
-                    redirectByUserRole();
-                } catch (err) {
-                    errorDiv.textContent = getLocalizedText("ConnectionError", "Connection to server failed.");
-                    errorDiv.classList.remove("hidden");
-                }
+                fail(messageFromResponse(res));
+                return;
             }
+            finishLogin(res.data);
         });
-    }
+    });
+}
 
-    // Handle Register Form
-    const registerForm = document.getElementById("register-form");
-    if (registerForm) {
-        registerForm.addEventListener("submit", async (e) => {
-            e.preventDefault();
-            const firstName = document.getElementById("reg-firstname").value.trim();
-            const lastName = document.getElementById("reg-lastname").value.trim();
-            const username = document.getElementById("reg-username").value.trim();
-            const tckn = document.getElementById("reg-tckn").value.trim();
-            const email = document.getElementById("reg-email").value.trim();
-            const password = document.getElementById("reg-password").value.trim();
-            const errorDiv = document.getElementById("register-error");
+function initRegisterForm() {
+    const form = byId("register-form");
+    const submit = byId("btn-register-submit");
+    const errorDiv = byId("register-error");
 
-            errorDiv.classList.add("hidden");
+    form.addEventListener("submit", event => {
+        event.preventDefault();
+        withBusy(submit, async () => {
+            hideMessage(errorDiv);
+            const firstName = byId("reg-firstname").value.trim();
+            const lastName = byId("reg-lastname").value.trim();
+            const username = byId("reg-username").value.trim();
+            const email = byId("reg-email").value.trim();
+            const tckn = byId("reg-tckn").value.trim();
+            const password = byId("reg-password").value;
 
-            // Letter only validation for first name and last name
-            const lettersOnlyRegex = /^[a-zA-ZçğıöşüÇĞİÖŞÜ\s]+$/;
-            const lettersOnlyNoSpaceRegex = /^[a-zA-ZçğıöşüÇĞİÖŞÜ]+$/;
-            
-            if (!lettersOnlyRegex.test(firstName)) {
-                errorDiv.textContent = currentLanguage === "tr" ? "İsim alanı sadece harf içerebilir." : "First name can only contain letters.";
-                errorDiv.classList.remove("hidden");
-                return;
-            }
-            if (!lettersOnlyNoSpaceRegex.test(lastName)) {
-                errorDiv.textContent = currentLanguage === "tr" ? "Soyisim alanı sadece harf içerebilir (boşluksuz)." : "Last name can only contain letters (no spaces).";
-                errorDiv.classList.remove("hidden");
-                return;
-            }
+            const fail = (text, focusId) => { showMessage(errorDiv, text, "error"); byId(focusId).focus(); };
 
+            if (!NAME_PATTERN.test(firstName)) { fail(t("register.firstNameInvalid"), "reg-firstname"); return; }
+            if (!NAME_PATTERN.test(lastName)) { fail(t("register.lastNameInvalid"), "reg-lastname"); return; }
+            if (!username) { fail(t("register.usernameRequired"), "reg-username"); return; }
+            if (!EMAIL_PATTERN.test(email)) { fail(t("register.emailInvalid"), "reg-email"); return; }
             // The same check-digit rule as the server (docs/DEFENSE.md, T15): catches a mistyped number before the request.
-            if (!isValidTckn(tckn)) {
-                errorDiv.textContent = currentLanguage === "tr"
-                    ? "T.C. Kimlik Numarası geçerli değil: kontrol basamakları uyuşmuyor. Lütfen numarayı kontrol edin."
-                    : "T.C. Kimlik Numarası is not valid: its check digits do not match. Please re-check the number.";
-                errorDiv.classList.remove("hidden");
-                return;
-            }
+            if (!isValidTckn(tckn)) { fail(t("register.tcknInvalid"), "reg-tckn"); return; }
+            if (!/^\d{6}$/.test(password)) { fail(t("register.passwordInvalid"), "reg-password"); return; }
 
-            try {
-                const response = await fetch(`${API_URL}/auth/register`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ firstName, lastName, username, email, tckn, password })
-                });
+            const res = await api("/auth/register", { method: "POST", auth: false, body: { firstName, lastName, username, email, tckn, password } });
+            if (!res.ok) { showMessage(errorDiv, messageFromResponse(res), "error"); return; }
+            if (!res.data || !res.data.token) { showMessage(errorDiv, t("err.Generic"), "error"); return; }
 
-                const data = await response.json();
-
-                if (!response.ok) {
-                    // If validation array comes back
-                    if (data.errors) {
-                        const validationMsg = Object.values(data.errors).flat().join(" ");
-                        errorDiv.textContent = validationMsg;
-                    } else {
-                        errorDiv.textContent = getLocalizedText(data.errorKey, data.message || "Registration failed");
-                    }
-                    errorDiv.classList.remove("hidden");
-                    return;
-                }
-
-                saveAuth(data.token, { id: data.userId, username: data.username, tckn: data.tckn, fullName: data.fullName, role: data.role }, data.refreshToken, data.accessTokenExpiresAt);
-                redirectByUserRole();
-            } catch (err) {
-                errorDiv.textContent = getLocalizedText("ConnectionError", "Connection to server failed.");
-                errorDiv.classList.remove("hidden");
-            }
+            saveAuth(res.data.token, buildUser(res.data), res.data.refreshToken, res.data.accessTokenExpiresAt);
+            redirectByUserRole();
         });
-    }
+    });
+}
 
-    // Handle Forgot Password: step 1 e-mails a one-time code, step 2 sets the new PIN with that code.
-    const forgotForm = document.getElementById("forgot-form");
-    if (forgotForm) {
-        const errorDiv = document.getElementById("forgot-error");
-        const successDiv = document.getElementById("forgot-success");
-        const btnSend = document.getElementById("btn-forgot-send");
+// Forgot password: step 1 e-mails a one-time code, step 2 sets the new PIN with that code.
+function initForgotForm() {
+    const form = byId("forgot-form");
+    const errorDiv = byId("forgot-error");
+    const successDiv = byId("forgot-success");
+    const btnSend = byId("btn-forgot-send");
 
-        const hideMessages = () => {
-            if (errorDiv) errorDiv.classList.add("hidden");
-            if (successDiv) successDiv.classList.add("hidden");
-        };
-        const showError = (text) => {
-            if (!errorDiv) return;
-            errorDiv.textContent = text;
-            errorDiv.classList.remove("hidden");
-        };
-        const showSuccess = (text) => {
-            if (!successDiv) return;
-            successDiv.textContent = text;
-            successDiv.classList.remove("hidden");
-        };
-        const errorTextFrom = (data, fallback) => {
-            if (data.errors) return Object.values(data.errors).flat().join(" ");
-            if (data.errorKey) return getLocalizedText(data.errorKey, data.message || fallback);
-            return data.message || fallback;
-        };
+    const hideAll = () => { hideMessage(errorDiv); hideMessage(successDiv); };
+    const fail = (text, focusId) => { hideAll(); showMessage(errorDiv, text, "error"); if (focusId) byId(focusId).focus(); };
 
-        if (btnSend) {
-            btnSend.addEventListener("click", async () => {
-                const tckn = document.getElementById("forgot-tckn").value.trim();
-                hideMessages();
+    btnSend.addEventListener("click", async () => {
+        const tckn = byId("forgot-tckn").value.trim();
+        hideAll();
+        if (!/^\d{11}$/.test(tckn)) { fail(t("forgot.tcknInvalid"), "forgot-tckn"); return; }
 
-                if (!/^\d{11}$/.test(tckn)) {
-                    showError(currentLanguage === "tr" ? "T.C. Kimlik Numarası 11 haneli olmalıdır." : "T.C. Identity Number must be 11 digits.");
-                    return;
-                }
+        const sent = await withBusy(btnSend, async () => {
+            const res = await api("/auth/forgot-password", { method: "POST", auth: false, body: { tckn } });
+            if (!res.ok) { fail(messageFromResponse(res)); return false; }
+            // The answer is the same whether or not the T.C. number is registered.
+            showMessage(successDiv, t("forgot.codeSent"), "success");
+            byId("forgot-code").focus();
+            return true;
+        });
 
-                btnSend.disabled = true;
-                try {
-                    const response = await fetch(`${API_URL}/auth/forgot-password`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ tckn })
-                    });
-                    const data = await response.json();
-
-                    if (!response.ok) {
-                        showError(errorTextFrom(data, "Could not send the code"));
-                        btnSend.disabled = false;
-                        return;
-                    }
-
-                    // The answer is the same whether or not the T.C. number is registered.
-                    showSuccess(getLocalizedText("ResetCodeSent", data.message));
-                    const codeInput = document.getElementById("forgot-code");
-                    if (codeInput) codeInput.focus();
-
-                    // The server also throttles repeats; this just keeps the button from being hammered.
-                    setTimeout(() => { btnSend.disabled = false; }, 60000);
-                } catch (err) {
-                    showError(getLocalizedText("ConnectionError", "Connection to server failed."));
-                    btnSend.disabled = false;
-                }
-            });
+        if (sent) {
+            // The server also throttles repeats; this just keeps the button from being hammered.
+            btnSend.disabled = true;
+            setTimeout(() => { btnSend.disabled = false; }, 60000);
         }
+    });
 
-        forgotForm.addEventListener("submit", async (e) => {
-            e.preventDefault();
-            const tckn = document.getElementById("forgot-tckn").value.trim();
-            const code = document.getElementById("forgot-code").value.trim();
-            const newPassword = document.getElementById("forgot-new-password").value;
+    form.addEventListener("submit", event => {
+        event.preventDefault();
+        withBusy(byId("btn-forgot-submit"), async () => {
+            hideAll();
+            const tckn = byId("forgot-tckn").value.trim();
+            const code = byId("forgot-code").value.trim();
+            const newPassword = byId("forgot-new-password").value;
 
-            hideMessages();
+            if (!/^\d{11}$/.test(tckn)) { fail(t("forgot.tcknInvalid"), "forgot-tckn"); return; }
+            if (!/^\d{6}$/.test(code)) { fail(t("login.codeInvalid"), "forgot-code"); return; }
+            if (!/^\d{6}$/.test(newPassword)) { fail(t("register.passwordInvalid"), "forgot-new-password"); return; }
 
-            try {
-                const response = await fetch(`${API_URL}/auth/reset-password`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ tckn, code, newPassword })
-                });
-                const data = await response.json();
+            const res = await api("/auth/reset-password", { method: "POST", auth: false, body: { tckn, code, newPassword } });
+            if (!res.ok) { fail(messageFromResponse(res)); return; }
 
-                if (!response.ok) {
-                    showError(errorTextFrom(data, "Password reset failed"));
-                    return;
-                }
-
-                showSuccess(getLocalizedText("PasswordResetSuccess", "Password reset successfully!"));
-                ["forgot-tckn", "forgot-code", "forgot-new-password"].forEach((id) => {
-                    const input = document.getElementById(id);
-                    if (input) input.value = "";
-                });
-            } catch (err) {
-                showError(getLocalizedText("ConnectionError", "Connection to server failed."));
-            }
+            showMessage(successDiv, t("forgot.success"), "success");
+            ["forgot-tckn", "forgot-code", "forgot-new-password"].forEach(id => { byId(id).value = ""; });
         });
-    }
+    });
 }
 
 /* ==========================================================================
-   CUSTOMER DASHBOARD LOGIC (dashboard.html)
+   CUSTOMER DASHBOARD: accounts and transaction history (dashboard.html)
    ========================================================================== */
+let activeAccountId = null;      // selected account (drives the history table)
+let activeCreditCardId = null;   // selected credit card (drives the card panel)
+let showAllTransactions = false;
+let currentTransactions = { accountId: null, items: [] };
+let savedContacts = [];
+let standingOrders = [];
+
+function infoRow(text, columns, extraClass) {
+    return h("tr", null, h("td", { colspan: String(columns), class: `text-center ${extraClass || "text-muted"}`, text }));
+}
+
+function accountTitle(acc) {
+    if (acc.accountType === "TimeDeposit") return t("acc.titleTime");
+    if (acc.currency === "XAU") return t("acc.titleGold");
+    if (acc.currency === "XAG") return t("acc.titleSilver");
+    return t("acc.titleDemand");
+}
+
+function findAccount(id) {
+    return (accountsStore.data || []).find(acc => acc.id === id) || null;
+}
+
+function renderAccounts(accounts) {
+    const listEl = byId("accounts-list");
+    if (!listEl) return;
+    const list = Array.isArray(accounts) ? accounts : [];
+
+    if (activeAccountId && !list.some(acc => acc.id === activeAccountId)) activeAccountId = null;
+    clearChildren(listEl);
+
+    if (!list.length) {
+        listEl.append(h("div", { class: "text-muted", text: t("accounts.none") }));
+    }
+
+    list.forEach(acc => {
+        const isActive = acc.id === activeAccountId;
+        const card = h("div", { class: `account-card glassmorphism${isActive ? " active" : ""}`, dataset: { accountId: acc.id } },
+            h("button", {
+                type: "button", class: "card-hit", "aria-pressed": isActive ? "true" : "false",
+                "aria-label": `${accountTitle(acc)} ${acc.accountNumber}`,
+                onclick: () => selectAccount(acc.id)
+            }),
+            h("div", { class: "account-header" },
+                h("span", { text: accountTitle(acc) }),
+                h("span", { class: "account-currency", text: acc.currency })),
+            h("div", { class: "account-balance", text: formatMoney(acc.balance, acc.currency) }),
+            h("div", { class: "account-number", text: acc.accountNumber }),
+            h("div", { class: "account-meta" }, `${t("accounts.code")} `, h("span", { class: "account-meta-value", text: acc.accountCode || "-" })));
+
+        if (acc.accountType === "TimeDeposit" && Number(acc.interestRate) > 0) {
+            card.append(h("div", { class: "account-extra", text: t("accounts.timeInfo", { rate: formatNumber(acc.interestRate, 2) }) }));
+        }
+
+        const deleteButton = h("button", { type: "button", class: "btn btn-danger btn-xs account-delete", text: t("accounts.delete"),
+            "aria-label": `${t("accounts.delete")}: ${acc.accountNumber}` });
+        deleteButton.addEventListener("click", () => startAccountDeletion(acc, deleteButton));
+        card.append(h("div", { class: "account-actions" }, deleteButton));
+        listEl.append(card);
+    });
+
+    fillTransferSource();
+    if (!activeAccountId && list.length) selectAccount(list[0].id);
+}
+
+function selectAccount(accountId) {
+    if (accountId !== activeAccountId) showAllTransactions = false;
+    activeAccountId = accountId;
+    document.querySelectorAll("#accounts-list .account-card").forEach(card => {
+        const on = card.dataset.accountId === accountId;
+        card.classList.toggle("active", on);
+        const hit = card.querySelector(".card-hit");
+        if (hit) hit.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+    loadTransactions(accountId);
+}
+
 async function loadAccounts() {
-    const listEl = document.getElementById("accounts-list");
-    listEl.innerHTML = '<div class="loading-spinner">Loading account details...</div>';
+    const listEl = byId("accounts-list");
+    if (listEl && !accountsStore.data) {
+        clearChildren(listEl);
+        listEl.append(h("div", { class: "loading-spinner", text: t("accounts.loading") }));
+    }
 
-    try {
-        const response = await fetch(`${API_URL}/banking/accounts`, {
-            headers: { "Authorization": `Bearer ${currentToken}` }
-        });
+    const result = await accountsStore.refresh();
+    if (!result.ok && listEl) {
+        clearChildren(listEl);
+        listEl.append(
+            h("div", { class: "alert alert-danger", role: "alert", text: messageFromResponse(result.res) }),
+            h("button", { type: "button", class: "btn btn-secondary btn-sm", text: t("common.retry"), onclick: () => loadAccounts() }));
+    }
+}
 
-        if (!response.ok) {
-            if (response.status === 401) {
-                logout();
-                return;
-            }
-            listEl.innerHTML = '<div class="alert alert-danger">Failed to load accounts.</div>';
-            return;
+function fillTransferSource() {
+    const select = byId("transfer-source");
+    if (!select) return;
+    const previous = select.value;
+    clearChildren(select);
+    (accountsStore.data || []).forEach(acc => {
+        select.append(h("option", { value: acc.accountNumber, text: `${acc.accountNumber} (${formatMoney(acc.balance, acc.currency)})` }));
+    });
+    if (previous && Array.from(select.options).some(option => option.value === previous)) select.value = previous;
+}
+
+// Closing an account: with a balance the money moves to another account of the customer first.
+async function startAccountDeletion(acc, button) {
+    const runDeletion = async (targetId) => {
+        const query = targetId ? `?targetAccountId=${encodeURIComponent(targetId)}` : "";
+        const res = await api(`/banking/accounts/${encodeURIComponent(acc.id)}${query}`, { method: "DELETE" });
+        if (!res.ok) { notify(messageFromResponse(res), "error"); return false; }
+        notify(t("accounts.deleted"), "success");
+        if (activeAccountId === acc.id) activeAccountId = null;
+        await accountsStore.refresh(true);
+        return true;
+    };
+
+    if (!(acc.balance > 0)) {
+        if (!(await uiConfirm(t("accounts.deleteConfirm"), { danger: true, confirmText: t("accounts.delete") }))) return;
+        await withBusy(button, () => runDeletion(null));
+        return;
+    }
+
+    const targets = (accountsStore.data || []).filter(other => other.id !== acc.id);
+    if (!targets.length) { notify(t("accounts.deleteNoTarget"), "error"); return; }
+
+    const dialog = createDialog({
+        title: t("accounts.closeTransferTitle"),
+        description: t("accounts.closeTransferDesc", { balance: formatMoney(acc.balance, acc.currency) })
+    });
+    const selectId = `delete-target-${dialogSequence}`;
+    const select = h("select", { id: selectId, class: "form-control" },
+        targets.map(other => h("option", { value: other.id, text: `${other.accountNumber} (${formatMoney(other.balance, other.currency)})` })));
+    dialog.body.append(h("div", { class: "dialog-field" }, h("label", { for: selectId, text: t("accounts.targetLabel") }), select));
+
+    const cancel = h("button", { type: "button", class: "btn btn-secondary", text: t("common.cancel") });
+    const confirmButton = h("button", { type: "button", class: "btn btn-primary", text: t("accounts.transferAndClose") });
+    cancel.addEventListener("click", () => dialog.close());
+    confirmButton.addEventListener("click", () => withBusy(confirmButton, async () => {
+        if (await runDeletion(select.value)) dialog.close();
+    }));
+    dialog.footer.append(cancel, confirmButton);
+    dialog.open({ initialFocus: select });
+}
+
+/* ---------- transaction history ---------- */
+const CATEGORY_ICONS = { "Market": "🛒", "Fatura": "📄", "Eğlence": "🍿", "Yatırım": "📈" };
+
+function transactionIcon(tx) {
+    return CATEGORY_ICONS[tx.category] || "💸";
+}
+
+// Is this movement money leaving the given account? Uses the structured fields; the description is only a last resort.
+function isOutgoingTransaction(tx, accountNumber) {
+    switch (tx.type) {
+        case "Deposit":
+        case "DepositMoney":
+            return false;
+        case "Transfer":
+            if (tx.destinationAccountNumber === accountNumber) return false;
+            return tx.sourceAccountNumber === accountNumber;
+        case "Exchange":
+        case "ExchangeMoney": {
+            if (tx.sourceAccountNumber === accountNumber && tx.destinationAccountNumber !== accountNumber) return true;
+            if (tx.destinationAccountNumber === accountNumber && tx.sourceAccountNumber !== accountNumber) return false;
+            const description = String(tx.description ?? "").toLocaleLowerCase("tr-TR");
+            return description.includes("alım") || description.includes("alim") || description.includes("buy");
         }
-
-        const accounts = await response.json();
-        window.latestAccountsList = accounts;
-        listEl.innerHTML = "";
-
-        // Populate Source Account Dropdown in Transfer Card
-        const sourceSelect = document.getElementById("transfer-source");
-        sourceSelect.innerHTML = "";
-
-        if (accounts.length === 0) {
-            listEl.innerHTML = '<div class="text-muted">No accounts active.</div>';
-            return;
-        }
-
-        accounts.forEach(acc => {
-            // Render Card
-            const card = document.createElement("div");
-            card.className = `account-card glassmorphism ${activeAccountId === acc.id ? 'active' : ''}`;
-            
-            let cardTitle = "SmartSavings";
-            if (acc.accountType === "TimeDeposit") {
-                cardTitle = "SmartDeposit (Vadeli)";
-            } else if (acc.currency === "XAU") {
-                cardTitle = "SmartGold (Altın)";
-            } else if (acc.currency === "XAG") {
-                cardTitle = "SmartSilver (Gümüş)";
-            } else {
-                cardTitle = currentLanguage === "tr" ? "Vadesiz Hesap" : "SmartSavings";
-            }
-
-            let balanceStr = "";
-            if (acc.currency === "XAU" || acc.currency === "XAG") {
-                balanceStr = `${acc.balance.toFixed(2)} Gr`;
-            } else if (acc.currency === "USD") {
-                balanceStr = `$${acc.balance.toFixed(2)}`;
-            } else if (acc.currency === "EUR") {
-                balanceStr = `€${acc.balance.toFixed(2)}`;
-            } else {
-                balanceStr = `${acc.balance.toFixed(2)} TRY`;
-            }
-
-            let extraHtml = "";
-            if (acc.accountType === "TimeDeposit") {
-                const interestRateVal = acc.interestRate ? acc.interestRate.toFixed(2) : "48.00";
-                extraHtml = `
-                    <div style="font-size: 0.7rem; color: #00f260; margin-top: 0.35rem; font-weight: 600;">
-                        %${interestRateVal} Faiz | Vade: 30 Gün
-                    </div>
-                `;
-            }
-
-            card.innerHTML = `
-                <div class="account-header">
-                    <span>${esc(cardTitle)}</span>
-                    <span class="account-currency">${esc(acc.currency)}</span>
-                </div>
-                <div class="account-balance">${balanceStr}</div>
-                <div class="account-number">${esc(acc.accountNumber)}</div>
-                <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 0.25rem;">Hesap Kodu: <span style="font-weight: 600; color: var(--text-main);">${esc(acc.accountCode || '-')}</span></div>
-                ${extraHtml}
-                <div class="account-actions" style="display: flex; gap: 0.5rem; margin-top: 0.75rem; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 0.5rem;">
-                    <button class="btn btn-danger btn-xs btn-acc-delete" data-accid="${esc(acc.id)}" style="padding: 0.2rem 0.5rem; font-size: 0.7rem; background: rgba(255, 75, 92, 0.1); border-color: rgba(255, 75, 92, 0.2); color: #ff4b5c; font-weight: 600; margin-left: auto;">Sil</button>
-                </div>
-            `;
-
-            card.addEventListener("click", () => {
-                document.querySelectorAll(".account-card").forEach(c => c.classList.remove("active"));
-                card.classList.add("active");
-                activeAccountId = acc.id;
-                
-                // Deselect credit cards visually when clicking bank accounts
-                const creditCards = document.querySelectorAll("#credit-cards-list .account-card");
-                creditCards.forEach(cc => cc.classList.remove("active"));
-                activeCreditCardId = null;
-
-                loadTransactions(acc.id);
-            });
-
-            listEl.appendChild(card);
-
-            // Bind Stop-Propagated Action Event Listeners
-            const deleteBtn = card.querySelector(".btn-acc-delete");
-            if (deleteBtn) {
-                deleteBtn.addEventListener("click", async (e) => {
-                    e.stopPropagation();
-
-                    const executeAccountDeletion = async (accountId, targetAccountId) => {
-                        try {
-                            const url = `${API_URL}/banking/accounts/${accountId}${targetAccountId ? '?targetAccountId=' + targetAccountId : ''}`;
-                            const res = await fetch(url, {
-                                method: "DELETE",
-                                headers: { "Authorization": `Bearer ${currentToken}` }
-                            });
-                            if (!res.ok) {
-                                const errData = await res.json();
-                                alert(getLocalizedText(errData.errorKey, errData.message || "Hesap silinemedi."));
-                                return;
-                            }
-                            activeAccountId = null;
-                            await loadAccounts();
-                        } catch (err) {
-                            alert("Hata oluştu.");
-                        }
-                    };
-
-                    if (acc.balance > 0) {
-                        const otherAccounts = (window.latestAccountsList || []).filter(a => a.id !== acc.id);
-                        
-                        if (otherAccounts.length === 0) {
-                            alert(currentLanguage === "tr" ? 
-                                "Hesapta bakiye bulunmaktadır ve aktarabileceğiniz başka bir hesabınız yoktur. Silme işlemi yapılamaz." : 
-                                "This account has a balance, but you have no other accounts to transfer it to. Cannot delete.");
-                            return;
-                        }
-
-                        // Create modern dynamic modal
-                        const modalId = "delete-acc-transfer-modal";
-                        const existingModal = document.getElementById(modalId);
-                        if (existingModal) existingModal.remove();
-
-                        const modalEl = document.createElement("div");
-                        modalEl.id = modalId;
-                        modalEl.style = `
-                            position: fixed;
-                            top: 0;
-                            left: 0;
-                            width: 100%;
-                            height: 100%;
-                            background: rgba(0,0,0,0.85);
-                            backdrop-filter: blur(8px);
-                            display: flex;
-                            align-items: center;
-                            justify-content: center;
-                            z-index: 10000;
-                            transition: all 0.3s ease;
-                        `;
-
-                        const optionsHtml = otherAccounts.map(a => `<option value="${esc(a.id)}">${esc(a.accountNumber)} (${a.balance.toFixed(2)} ${esc(a.currency)})</option>`).join("");
-
-                        modalEl.innerHTML = `
-                            <div class="card glassmorphism" style="width: 440px; padding: 2rem; border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; background: rgba(15, 23, 42, 0.98); box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); animation: modalFadeIn 0.3s ease;">
-                                <h3 style="margin-bottom: 0.5rem; font-size: 1.25rem; font-weight: 700; color: #fff; letter-spacing: -0.025em;">
-                                    ${currentLanguage === "tr" ? "Hesap Kapatma Bakiye Aktarımı" : "Account Closure Balance Transfer"}
-                                </h3>
-                                <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.5rem; line-height: 1.5;">
-                                    ${currentLanguage === "tr" ? `Silmek istediğiniz hesapta <strong>${acc.balance.toFixed(2)} ${esc(acc.currency)}</strong> bakiye bulunmaktadır. Silmeden önce bakiyenizin aktarılacağı diğer hesabınızı seçin:` : `The account you want to delete has a balance of <strong>${acc.balance.toFixed(2)} ${esc(acc.currency)}</strong>. Please select the target account to transfer your balance:`}
-                                </p>
-                                <div class="form-group" style="margin-bottom: 1.5rem;">
-                                    <label style="font-size: 0.75rem; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em;">
-                                        ${currentLanguage === "tr" ? "Bakiyenin Aktarılacağı Hedef Hesap" : "Target Account For Transfer"}
-                                    </label>
-                                    <select id="delete-acc-target-select" class="form-control" style="width: 100%; padding: 0.75rem; background: #0f172a !important; border: 1px solid rgba(255,255,255,0.15) !important; color: #fff !important; border-radius: 10px; font-size: 0.85rem; outline: none !important; box-shadow: none !important;">
-                                        ${optionsHtml}
-                                    </select>
-                                </div>
-                                <div style="display: flex; gap: 1rem; justify-content: flex-end;">
-                                    <button id="delete-acc-cancel-btn" class="btn btn-secondary" style="padding: 0.6rem 1.2rem; font-size: 0.8rem; border-radius: 10px; font-weight: 600;">
-                                        ${currentLanguage === "tr" ? "Vazgeç" : "Cancel"}
-                                    </button>
-                                    <button id="delete-acc-confirm-btn" class="btn btn-primary" style="padding: 0.6rem 1.2rem; font-size: 0.8rem; border-radius: 10px; font-weight: 600; background: linear-gradient(135deg, #00f260, #0575e6); border: none; color: #fff; cursor: pointer;">
-                                        ${currentLanguage === "tr" ? "Aktar ve Hesabı Kapat" : "Transfer & Close Account"}
-                                    </button>
-                                </div>
-                            </div>
-                        `;
-                        
-                        document.body.appendChild(modalEl);
-
-                        document.getElementById("delete-acc-cancel-btn").addEventListener("click", () => {
-                            modalEl.remove();
-                        });
-
-                        document.getElementById("delete-acc-confirm-btn").addEventListener("click", async () => {
-                            const targetId = document.getElementById("delete-acc-target-select").value;
-                            modalEl.remove();
-                            await executeAccountDeletion(acc.id, targetId);
-                        });
-                    } else {
-                        const confirmationMsg = currentLanguage === "tr" ? 
-                            "Bu hesabı kalıcı olarak kapatmak istediğinize emin misiniz?" : 
-                            "Are you sure you want to permanently close this account?";
-                        if (!confirm(confirmationMsg)) return;
-                        await executeAccountDeletion(acc.id, null);
-                    }
-                });
-            }
-
-
-
-            // Populate Dropdown option
-            const opt = document.createElement("option");
-            opt.value = acc.accountNumber;
-            opt.textContent = `${acc.accountNumber} (${balanceStr})`;
-            sourceSelect.appendChild(opt);
-        });
-
-        // Auto-select first account to load transactions if none active
-        if (!activeAccountId && accounts.length > 0) {
-            activeAccountId = accounts[0].id;
-            const firstCard = document.querySelectorAll("#accounts-list .account-card")[0];
-            if (firstCard) firstCard.classList.add("active");
-            loadTransactions(activeAccountId);
-        }
-
-        // No sync card preview for active account anymore (only syncs for credit cards)
-    } catch (err) {
-        listEl.innerHTML = '<div class="alert alert-danger">Server connection failed.</div>';
+        default:
+            return tx.sourceAccountNumber === accountNumber;
     }
 }
 
 async function loadTransactions(accountId) {
-    const bodyEl = document.getElementById("transactions-body");
-    const loadMoreBtn = document.getElementById("btn-tx-load-more");
-    bodyEl.innerHTML = '<tr><td colspan="4" class="text-center">Loading transactions...</td></tr>';
+    const bodyEl = byId("transactions-body");
+    if (!bodyEl || !accountId) return;
 
-    try {
-        const response = await fetch(`${API_URL}/banking/transactions/${accountId}`, {
-            headers: { "Authorization": `Bearer ${currentToken}` }
-        });
+    const seq = ++requestSeq.transactions;
+    clearChildren(bodyEl);
+    bodyEl.append(infoRow(t("history.loading"), 4));
 
-        if (!response.ok) {
-            bodyEl.innerHTML = '<tr><td colspan="4" class="text-center text-danger">Failed to load history.</td></tr>';
-            return;
-        }
+    const res = await api(`/banking/transactions/${encodeURIComponent(accountId)}`);
+    if (seq !== requestSeq.transactions) return; // a newer request replaced this one
 
-        const transactions = await response.json();
-        bodyEl.innerHTML = "";
-
-        const activeCardEl = document.querySelector(".account-card.active");
-        const activeCardNo = activeCardEl ? activeCardEl.querySelector(".account-number").textContent : "";
-        const activeCardBalanceText = activeCardEl ? activeCardEl.querySelector(".account-balance").textContent : "0";
-        const runningBalance = parseFloat(activeCardBalanceText);
-
-        // Helper function for category icons
-        const getCategoryIcon = (category, desc) => {
-            const d = (desc || "").toLowerCase();
-            const c = (category || "").toLowerCase();
-            if (c === "market" || d.includes("market") || d.includes("yemek") || d.includes("gıda") || d.includes("grocery") || d.includes("shop") || d.includes("bakkal") || d.includes("kahve") || d.includes("coffee") || d.includes("starbucks")) {
-                return "🛒";
-            }
-            if (c === "fatura" || d.includes("fatura") || d.includes("bill") || d.includes("elektrik") || d.includes("su") || d.includes("doğalgaz") || d.includes("dogalgaz") || d.includes("internet") || d.includes("telefon") || d.includes("tlf")) {
-                return "📄";
-            }
-            if (c === "eğlence" || d.includes("eğlence") || d.includes("eglence") || d.includes("sinema") || d.includes("netflix") || d.includes("game") || d.includes("oyun") || d.includes("steam") || d.includes("spotify") || d.includes("music")) {
-                return "🍿";
-            }
-            if (c === "yatırım" || d.includes("yatırım") || d.includes("yatirim") || d.includes("hisse") || d.includes("stock") || d.includes("crypto") || d.includes("btc") || d.includes("altın") || d.includes("altin")) {
-                return "📈";
-            }
-            return "💸";
-        };
-
-        // Handle load more button visibility and text
-        if (loadMoreBtn) {
-            if (transactions.length > 5) {
-                loadMoreBtn.style.display = "inline-block";
-                if (showAllTransactions) {
-                    loadMoreBtn.textContent = currentLanguage === "tr" ? "Daha Az Göster ▲" : "Show Less ▲";
-                } else {
-                    loadMoreBtn.textContent = currentLanguage === "tr" ? `Daha Fazla Göster (${transactions.length - 5} işlem daha) ▼` : `Show More (${transactions.length - 5} more) ▼`;
-                }
-                loadMoreBtn.onclick = () => {
-                    showAllTransactions = !showAllTransactions;
-                    loadTransactions(accountId);
-                };
-            } else {
-                loadMoreBtn.style.display = "none";
-            }
-        }
-
-        const visibleTransactions = showAllTransactions ? transactions : transactions.slice(0, 5);
-
-        // 1. Render transaction rows
-        if (transactions.length === 0) {
-            bodyEl.innerHTML = `<tr><td colspan="4" class="text-center text-muted" id="txt-no-tx">${getLocalizedText("txt-no-tx", "Select an account to view history")}</td></tr>`;
-        } else {
-            visibleTransactions.forEach(tx => {
-                const date = new Date(tx.createdAt).toLocaleDateString(currentLanguage === "tr" ? "tr-TR" : "en-US", {
-                    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
-                });
-
-                let isOutgoing = false;
-                if (tx.type === "Deposit" || tx.type === "DepositMoney") {
-                    isOutgoing = false;
-                } else if (tx.type === "Transfer") {
-                    if (tx.destinationAccountNumber === activeCardNo) {
-                        isOutgoing = false;
-                    } else if (tx.sourceAccountNumber === activeCardNo) {
-                        isOutgoing = true;
-                    }
-                } else if (tx.type === "Exchange" || tx.type === "ExchangeMoney") {
-                    if (tx.sourceAccountNumber === activeCardNo && tx.destinationAccountNumber !== activeCardNo) {
-                        isOutgoing = true;
-                    } else if (tx.destinationAccountNumber === activeCardNo && tx.sourceAccountNumber !== activeCardNo) {
-                        isOutgoing = false;
-                    } else {
-                        isOutgoing = tx.description.toLowerCase().includes("alımı") || tx.description.toLowerCase().includes("buy");
-                    }
-                } else {
-                    isOutgoing = tx.sourceAccountNumber === activeCardNo;
-                }
-                const amountPrefix = isOutgoing ? "-" : "+";
-                const amountClass = isOutgoing ? "tx-amount-negative" : "tx-amount-positive";
-                const icon = getCategoryIcon(tx.category, tx.description);
-
-                const row = document.createElement("tr");
-                row.style.cursor = "pointer";
-                row.innerHTML = `
-                    <td>${date}</td>
-                    <td><span class="badge-role">${esc(getLocalizedText(tx.type, tx.type))}</span></td>
-                    <td><span style="margin-right: 0.5rem; font-size: 1.1rem;">${icon}</span>${esc(tx.description || "-")}</td>
-                    <td class="text-right ${amountClass}">${amountPrefix}${tx.amount.toFixed(2)}</td>
-                `;
-                row.addEventListener("click", () => {
-                    showTransactionSlip(tx);
-                });
-                bodyEl.appendChild(row);
-            });
-        }
-
-        // 2. Calculate category statistics (Doughnut Chart)
-        let categoriesSum = {
-            Market: 0,
-            Fatura: 0,
-            Eğlence: 0,
-            Yatırım: 0,
-            Diğer: 0
-        };
-
-        transactions.forEach(tx => {
-            let isOutgoing = false;
-            if (tx.type === "Deposit" || tx.type === "DepositMoney") {
-                isOutgoing = false;
-            } else if (tx.type === "Transfer") {
-                isOutgoing = (tx.sourceAccountNumber === activeCardNo && tx.destinationAccountNumber !== activeCardNo);
-            } else if (tx.type === "Exchange" || tx.type === "ExchangeMoney") {
-                isOutgoing = (tx.sourceAccountNumber === activeCardNo && tx.destinationAccountNumber !== activeCardNo) || 
-                             (tx.sourceAccountNumber === activeCardNo && (tx.description.toLowerCase().includes("alımı") || tx.description.toLowerCase().includes("buy")));
-            } else {
-                isOutgoing = tx.sourceAccountNumber === activeCardNo;
-            }
-            if (isOutgoing) {
-                const desc = (tx.description || "").toLowerCase();
-                if (desc.includes("market") || desc.includes("yemek") || desc.includes("gıda") || desc.includes("grocery") || desc.includes("shop") || desc.includes("bakkal")) {
-                    categoriesSum.Market += tx.amount;
-                } else if (desc.includes("fatura") || desc.includes("bill") || desc.includes("elektrik") || desc.includes("su") || desc.includes("doğalgaz") || desc.includes("dogalgaz") || desc.includes("internet") || desc.includes("telefon") || desc.includes("tlf")) {
-                    categoriesSum.Fatura += tx.amount;
-                } else if (desc.includes("eğlence") || desc.includes("eglence") || desc.includes("sinema") || desc.includes("netflix") || desc.includes("game") || desc.includes("oyun") || desc.includes("steam") || desc.includes("spotify") || desc.includes("music")) {
-                    categoriesSum.Eğlence += tx.amount;
-                } else if (desc.includes("yatırım") || desc.includes("yatirim") || desc.includes("hisse") || desc.includes("stock") || desc.includes("crypto") || desc.includes("btc") || desc.includes("altın") || desc.includes("altin")) {
-                    categoriesSum.Yatırım += tx.amount;
-                } else {
-                    categoriesSum.Diğer += tx.amount;
-                }
-            }
-        });
-
-        // 3. Calculate balance trend history (Line Chart)
-        let balanceHistory = [runningBalance];
-        let labels = [currentLanguage === "tr" ? "Güncel" : "Current"];
-        
-        let tempBalance = runningBalance;
-        transactions.forEach(tx => {
-            const isOutgoing = tx.sourceAccountNumber === activeCardNo;
-            if (isOutgoing) {
-                tempBalance += tx.amount;
-            } else {
-                tempBalance -= tx.amount;
-            }
-            balanceHistory.unshift(tempBalance);
-            
-            const date = new Date(tx.createdAt).toLocaleDateString(currentLanguage === "tr" ? "tr-TR" : "en-US", {
-                month: 'short', day: 'numeric'
-            });
-            labels.unshift(date);
-        });
-
-        if (balanceHistory.length > 7) {
-            balanceHistory = balanceHistory.slice(-7);
-            labels = labels.slice(-7);
-        }
-
-        if (balanceHistory.length <= 1) {
-            const mockMonths = currentLanguage === "tr" ? ["20 Haz", "21 Haz", "22 Haz", "23 Haz", "24 Haz"] : ["Jun 20", "Jun 21", "Jun 22", "Jun 23", "Jun 24"];
-            for (let i = 4; i >= 0; i--) {
-                labels.unshift(mockMonths[i]);
-                balanceHistory.unshift(runningBalance - (i + 1) * 100);
-            }
-        }
-
-        // 4. Update Charts
-        updateSpendingChart(categoriesSum);
-        updateTrendChart(labels, balanceHistory);
-
-    } catch (err) {
-        bodyEl.innerHTML = '<tr><td colspan="4" class="text-center text-danger">Server connection failed.</td></tr>';
+    if (!res.ok || !Array.isArray(res.data)) {
+        clearChildren(bodyEl);
+        bodyEl.append(infoRow(messageFromResponse(res), 4, "text-danger"));
+        byId("btn-tx-load-more").classList.add("hidden");
+        return;
     }
+    currentTransactions = { accountId, items: res.data };
+    renderTransactions();
 }
 
-function updateSpendingChart(categoriesSum) {
-    const ctx = document.getElementById('spendingChart');
-    if (!ctx) return;
+function renderTransactions() {
+    const bodyEl = byId("transactions-body");
+    const moreButton = byId("btn-tx-load-more");
+    if (!bodyEl) return;
 
-    if (spendingChartInstance) {
-        spendingChartInstance.destroy();
+    const { accountId, items } = currentTransactions;
+    const acc = findAccount(accountId);
+    const accountNumber = acc ? acc.accountNumber : "";
+    clearChildren(bodyEl);
+
+    if (!items.length) {
+        bodyEl.append(infoRow(accountId ? t("history.none") : t("history.empty"), 4));
+        moreButton.classList.add("hidden");
+        return;
     }
 
-    const labels = Object.keys(categoriesSum);
-    const data = Object.values(categoriesSum);
-    const total = data.reduce((a, b) => a + b, 0);
+    const visible = showAllTransactions ? items : items.slice(0, 5);
+    visible.forEach(tx => {
+        const outgoing = isOutgoingTransaction(tx, accountNumber);
+        const typeLabel = hasKey(`txType.${tx.type}`) ? t(`txType.${tx.type}`) : String(tx.type ?? "-");
+        const row = h("tr", { class: "clickable-row", tabindex: "0", title: t("history.openReceipt") },
+            h("td", { text: formatShortDateTime(tx.createdAt) }),
+            h("td", null, h("span", { class: "badge-role", text: typeLabel })),
+            h("td", null, h("span", { class: "tx-icon", "aria-hidden": "true", text: transactionIcon(tx) }), tx.description || "-"),
+            h("td", { class: `text-right ${outgoing ? "tx-amount-negative" : "tx-amount-positive"}`,
+                text: `${outgoing ? "-" : "+"}${formatMoney(tx.amount, tx.currency || (acc && acc.currency))}` }));
+        row.addEventListener("click", () => showTransactionSlip(tx));
+        row.addEventListener("keydown", event => {
+            if (event.key === "Enter" || event.key === " ") { event.preventDefault(); showTransactionSlip(tx); }
+        });
+        bodyEl.append(row);
+    });
 
-    let chartData, chartLabels, chartColors;
-
-    if (total === 0) {
-        chartData = [1];
-        chartLabels = [currentLanguage === 'tr' ? 'Harcama Yok' : 'No Spendings'];
-        chartColors = ['rgba(255, 255, 255, 0.1)'];
+    if (items.length > 5) {
+        moreButton.textContent = showAllTransactions ? t("history.showLess") : t("history.showMore", { count: items.length - 5 });
+        moreButton.classList.remove("hidden");
     } else {
-        chartData = data;
-        chartLabels = labels.map(l => currentLanguage === 'tr' ? l : (l === 'Eğlence' ? 'Leisure' : l === 'Yatırım' ? 'Investment' : l === 'Diğer' ? 'Others' : l));
-        chartColors = [
-            '#00f260', // Market
-            '#0575e6', // Fatura
-            '#f5af19', // Eğlence
-            '#8a2be2', // Yatırım
-            '#ff4b5c'  // Diğer
-        ];
+        moreButton.classList.add("hidden");
     }
-
-    spendingChartInstance = new Chart(ctx, {
-        type: 'doughnut',
-        data: {
-            labels: chartLabels,
-            datasets: [{
-                data: chartData,
-                backgroundColor: chartColors,
-                borderWidth: 1,
-                borderColor: 'rgba(255,255,255,0.05)'
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    position: 'bottom',
-                    labels: {
-                        color: 'hsl(215, 20%, 65%)',
-                        font: { size: 10, family: 'Inter' },
-                        boxWidth: 12
-                    }
-                }
-            },
-            cutout: '60%'
-        }
-    });
-}
-
-function updateTrendChart(labels, balanceHistory) {
-    const ctx = document.getElementById('trendChart');
-    if (!ctx) return;
-
-    if (trendChartInstance) {
-        trendChartInstance.destroy();
-    }
-
-    trendChartInstance = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: labels,
-            datasets: [{
-                label: currentLanguage === 'tr' ? 'Bakiye (TRY)' : 'Balance (TRY)',
-                data: balanceHistory,
-                borderColor: '#00f260',
-                backgroundColor: 'rgba(0, 242, 96, 0.15)',
-                borderWidth: 2,
-                fill: true,
-                tension: 0.4,
-                pointBackgroundColor: '#00f260',
-                pointBorderColor: 'rgba(255,255,255,0.8)',
-                pointRadius: 4
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: { display: false }
-            },
-            scales: {
-                x: {
-                    grid: { color: 'rgba(255, 255, 255, 0.03)' },
-                    ticks: { color: 'hsl(215, 20%, 65%)', font: { size: 9 } }
-                },
-                y: {
-                    grid: { color: 'rgba(255, 255, 255, 0.03)' },
-                    ticks: { color: 'hsl(215, 20%, 65%)', font: { size: 9 } }
-                }
-            }
-        }
-    });
-}
-
-function updateCardPreview(cardNumber, cvv, expiryDate, theme, typeText) {
-    const previewNum = document.getElementById("preview-card-number");
-    const previewExpiry = document.getElementById("preview-card-expiry");
-    const previewCvv = document.getElementById("preview-card-cvv");
-    const previewType = document.getElementById("preview-card-type-badge");
-    const previewTheme = document.getElementById("debit-card-preview");
-
-    if (previewNum) {
-        let formatted = cardNumber ? cardNumber.replace(/\s?/g, '').replace(/(\d{4})/g, '$1 ').trim() : "**** **** **** ****";
-        if (typeText === "CREDIT CARD" && cardNumber && cardNumber.replace(/\s?/g, '').length >= 12) {
-            const raw = cardNumber.replace(/\s?/g, '');
-            formatted = "**** **** **** " + raw.slice(-4);
-        }
-        previewNum.textContent = formatted;
-    }
-    if (previewExpiry) {
-        previewExpiry.textContent = "EXP " + (expiryDate || "12/31");
-    }
-    if (previewCvv) {
-        // The CVV is never stored: it only arrives in the response that issues the card.
-        previewCvv.textContent = cvv || "•••";
-    }
-    if (previewType) {
-        previewType.textContent = typeText || "DEBIT";
-    }
-    if (previewTheme) {
-        previewTheme.className = "debit-card card-front " + (theme || "theme-neon-blue");
-        
-        const previewThemeBack = document.getElementById("debit-card-preview-back");
-        if (previewThemeBack) {
-            previewThemeBack.className = "debit-card card-back " + (theme || "theme-neon-blue");
-        }
-
-        // Sync active state in customizer buttons
-        const themeButtons = document.querySelectorAll(".theme-btn");
-        themeButtons.forEach(btn => {
-            if (btn.getAttribute("data-theme") === theme) {
-                btn.classList.add("active");
-            } else {
-                btn.classList.remove("active");
-            }
-        });
-    }
-}
-
-function initCardCustomizer() {
-    const cardPreview = document.getElementById("debit-card-preview");
-    const cardHolder = document.getElementById("preview-card-holder");
-    const themeButtons = document.querySelectorAll(".theme-btn");
-
-    if (cardHolder && currentUser) {
-        const name = currentUser.fullName.toUpperCase();
-        cardHolder.textContent = name;
-        if (name.length > 20) {
-            cardHolder.style.fontSize = "0.55rem";
-        } else if (name.length > 15) {
-            cardHolder.style.fontSize = "0.62rem";
-        } else {
-            cardHolder.style.fontSize = "0.75rem";
-        }
-    }
-
-    themeButtons.forEach(btn => {
-        btn.addEventListener("click", () => {
-            themeButtons.forEach(b => b.classList.remove("active"));
-            btn.classList.add("active");
-
-            const newTheme = btn.getAttribute("data-theme");
-            if (cardPreview) {
-                cardPreview.className = "debit-card " + newTheme;
-            }
-        });
-    });
-
-    if (cardPreview) {
-        cardPreview.addEventListener("mousemove", (e) => {
-            const rect = cardPreview.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-
-            const normX = (x / rect.width) - 0.5;
-            const normY = (y / rect.height) - 0.5;
-
-            const maxRotate = 15;
-            const rotateY = normX * maxRotate;
-            const rotateX = -normY * maxRotate;
-
-            cardPreview.style.transform = `rotateY(${rotateY}deg) rotateX(${rotateX}deg)`;
-            cardPreview.style.setProperty('--mouse-x', `${(x / rect.width) * 100}%`);
-            cardPreview.style.setProperty('--mouse-y', `${(y / rect.height) * 100}%`);
-        });
-
-        cardPreview.addEventListener("mouseleave", () => {
-            cardPreview.style.transform = "rotateY(0deg) rotateX(0deg)";
-        });
-    }
-}
-
-function initDashboardEvents() {
-    document.getElementById("transfer-form").addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const sourceAccountNumber = document.getElementById("transfer-source").value;
-        const destinationAccountNumber = document.getElementById("transfer-dest").value.trim();
-        const amount = parseFloat(document.getElementById("transfer-amount").value);
-        const description = document.getElementById("transfer-desc-input").value.trim();
-        const category = document.getElementById("transfer-category-input").value;
-        const msgEl = document.getElementById("transfer-message");
-
-        msgEl.className = "alert hidden";
-
-        try {
-            const response = await fetch(`${API_URL}/banking/transfer`, {
-                method: "POST",
-                headers: { 
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${currentToken}`
-                },
-                body: JSON.stringify({ sourceAccountNumber, destinationAccountNumber, amount, description, category })
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-                // Check if OTP verification is required
-                if (data.errorKey === "Requires2FA" || 
-                    data.errorKey === "SuspectedFraudDuplicate" || 
-                    data.errorKey === "SuspectedFraudHighValue") {
-                    
-                    // Parse OTP code from message (format: "message|OTP:######")
-                    let reasonMsg = data.message || "";
-                    let otpCode = "";
-                    if (reasonMsg.includes("|OTP:")) {
-                        const parts = reasonMsg.split("|OTP:");
-                        reasonMsg = parts[0];
-                        otpCode = parts[1];
-                    }
-
-                    // Localize the reason key or fall back to parsed reasonMsg
-                    const localizedReason = getLocalizedText(data.errorKey, reasonMsg);
-
-                    // Show Simulated SMS Toast containing the OTP code
-                    showMockSMSToast(otpCode);
-
-                    // Show OTP Modal
-                    showOTPModal(localizedReason, async (codeEntered) => {
-                        // Submit code to execute transfer
-                        try {
-                            const secondResponse = await fetch(`${API_URL}/banking/transfer`, {
-                                method: "POST",
-                                headers: { 
-                                    "Content-Type": "application/json",
-                                    "Authorization": `Bearer ${currentToken}`
-                                },
-                                body: JSON.stringify({ 
-                                    sourceAccountNumber, 
-                                    destinationAccountNumber, 
-                                    amount, 
-                                    description,
-                                    category,
-                                    otpCode: codeEntered 
-                                })
-                            });
-
-                            const secondData = await secondResponse.json();
-
-                            if (!secondResponse.ok) {
-                                return {
-                                    success: false,
-                                    message: getLocalizedText(secondData.errorKey, secondData.message || "Verification failed.")
-                                };
-                            }
-
-                            // Success!
-                            msgEl.textContent = getLocalizedText("TransferSuccess", "Transfer executed successfully!");
-                            msgEl.className = "alert alert-success";
-                            if (typeof handleSaveContactAfterTransfer === "function") {
-                                handleSaveContactAfterTransfer(destinationAccountNumber);
-                            }
-
-                            // Reset inputs
-                            document.getElementById("transfer-dest").value = "";
-                            document.getElementById("transfer-amount").value = "";
-                            document.getElementById("transfer-desc-input").value = "";
-
-                            // Refresh cards and transactions
-                            loadAccounts();
-                            if (activeAccountId) {
-                                loadTransactions(activeAccountId);
-                            }
-                            
-                            // Celebrate!
-                            if (typeof confetti === "function") {
-                                confetti({
-                                    particleCount: 120,
-                                    spread: 80,
-                                    origin: { y: 0.6 }
-                                });
-                            }
-
-                            return { success: true };
-                        } catch (err) {
-                            return { success: false, message: "Connection to server failed." };
-                        }
-                    });
-
-                    return;
-                }
-
-                msgEl.textContent = getLocalizedText(data.errorKey, data.message || "Transfer failed");
-                msgEl.className = "alert alert-danger";
-                return;
-            }
-
-            msgEl.textContent = getLocalizedText("TransferSuccess", "Transfer executed successfully!");
-            msgEl.className = "alert alert-success";
-            if (typeof handleSaveContactAfterTransfer === "function") {
-                handleSaveContactAfterTransfer(destinationAccountNumber);
-            }
-
-            // Reset inputs
-            document.getElementById("transfer-dest").value = "";
-            document.getElementById("transfer-amount").value = "";
-            document.getElementById("transfer-desc-input").value = "";
-
-            // Refresh cards and transactions
-            loadAccounts();
-            if (activeAccountId) {
-                loadTransactions(activeAccountId);
-            }
-        } catch (err) {
-            msgEl.textContent = "Server connection failed.";
-            msgEl.className = "alert alert-danger";
-        }
-    });
-}
-
-/* ==========================================================================
-   AGENT DASHBOARD LOGIC (agent.html)
-   ========================================================================== */
-let selectedSessionId = null;
-
-async function loadActiveSessions() {
-    const listEl = document.getElementById("active-sessions-list");
-    listEl.innerHTML = '<div class="loading-spinner">Loading chats...</div>';
-
-    try {
-        const response = await fetch(`${API_URL}/chat/active-sessions`, {
-            headers: { "Authorization": `Bearer ${currentToken}` }
-        });
-
-        if (!response.ok) {
-            listEl.innerHTML = '<div class="alert alert-danger">Failed to load active chats.</div>';
-            return;
-        }
-
-        const sessions = await response.json();
-        listEl.innerHTML = "";
-
-        if (sessions.length === 0) {
-            listEl.innerHTML = `<div class="text-muted text-center py-4" id="txt-no-active-chats">${getLocalizedText("txt-no-active-chats", "No active chats")}</div>`;
-            return;
-        }
-
-        sessions.forEach(sess => {
-            const item = document.createElement("div");
-            item.className = `session-item ${selectedSessionId === sess.id ? 'active' : ''}`;
-            
-            const date = new Date(sess.createdAt).toLocaleTimeString(currentLanguage === "tr" ? "tr-TR" : "en-US", {
-                hour: '2-digit', minute: '2-digit'
-            });
-
-            item.innerHTML = `
-                <h5>${esc(sess.title)}</h5>
-                <p>User: <strong>${esc(sess.username)}</strong> | ${date}</p>
-            `;
-
-            item.addEventListener("click", () => {
-                document.querySelectorAll(".session-item").forEach(i => i.classList.remove("active"));
-                item.classList.add("active");
-                loadAgentChat(sess.id, sess.title);
-            });
-
-            listEl.appendChild(item);
-        });
-    } catch (err) {
-        listEl.innerHTML = '<div class="alert alert-danger">Server connection failed.</div>';
-    }
-}
-
-async function loadAgentChat(sessionId, title) {
-    selectedSessionId = sessionId;
-
-    const placeholder = document.getElementById("agent-placeholder");
-    if (placeholder) placeholder.classList.add("hidden");
-
-    document.getElementById("agent-chat-header").classList.remove("hidden");
-    document.getElementById("agent-chat-form").classList.remove("hidden");
-    
-    document.getElementById("agent-chat-title").textContent = title;
-    document.getElementById("agent-chat-session-id").textContent = `Session ID: ${sessionId}`;
-
-    const msgContainer = document.getElementById("agent-chat-messages");
-    msgContainer.innerHTML = '<div class="loading-spinner">Loading conversation...</div>';
-
-    try {
-        const response = await fetch(`${API_URL}/chat/messages/${sessionId}`, {
-            headers: { "Authorization": `Bearer ${currentToken}` }
-        });
-
-        if (!response.ok) {
-            msgContainer.innerHTML = '<div class="alert alert-danger">Failed to load message history.</div>';
-            return;
-        }
-
-        const messages = await response.json();
-        msgContainer.innerHTML = "";
-
-        messages.forEach(msg => {
-            const bubble = document.createElement("div");
-            // Roles: "User", "AI", "Agent" -> maps to css class
-            const roleClass = msg.sender.toLowerCase();
-            bubble.className = `message-bubble ${roleClass}`;
-            
-            const time = new Date(msg.createdAt).toLocaleTimeString(currentLanguage === "tr" ? "tr-TR" : "en-US", {
-                hour: '2-digit', minute: '2-digit'
-            });
-
-            bubble.innerHTML = `
-                ${esc(msg.content)}
-                <span class="message-timestamp">${time}</span>
-            `;
-            msgContainer.appendChild(bubble);
-        });
-
-        // Scroll to bottom
-        msgContainer.scrollTop = msgContainer.scrollHeight;
-
-        // Initialize/Join SignalR connection for this room
-        if (typeof joinAgentChatSession === "function") {
-            joinAgentChatSession(sessionId);
-        }
-
-        // Fetch AI suggestion
-        fetchCoPilotSuggestion(sessionId);
-    } catch (err) {
-        msgContainer.innerHTML = '<div class="alert alert-danger">Server connection failed.</div>';
-    }
-}
-
-function initAgentEvents() {
-    document.getElementById("btn-refresh-sessions").addEventListener("click", loadActiveSessions);
-
-    document.getElementById("btn-close-session").addEventListener("click", async () => {
-        if (!selectedSessionId) return;
-
-        try {
-            // Tell Hub to close session
-            if (typeof signalRConnection !== "undefined" && signalRConnection.state === "Connected") {
-                await signalRConnection.invoke("CloseSessionAsync", selectedSessionId);
-            }
-
-            // Close session via API just to be sure
-            await loadActiveSessions();
-            
-            // Clean interface
-            document.getElementById("agent-chat-header").classList.add("hidden");
-            document.getElementById("agent-chat-form").classList.add("hidden");
-            document.getElementById("agent-chat-messages").innerHTML = `
-                <div class="agent-chat-placeholder" id="agent-placeholder">
-                    <span class="chat-placeholder-icon">📥</span>
-                    <h3 id="txt-select-chat">${getLocalizedText("txt-select-chat", "Select a Support Session")}</h3>
-                    <p class="text-muted" id="txt-select-chat-desc">${getLocalizedText("txt-select-chat-desc", "Click sidebar...")}</p>
-                </div>
-            `;
-            selectedSessionId = null;
-        } catch (err) {
-            alert("Could not close session.");
-        }
-    });
-
-    document.getElementById("agent-chat-form").addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const inputEl = document.getElementById("agent-chat-input");
-        const text = inputEl.value.trim();
-        if (!text || !selectedSessionId) return;
-
-        try {
-            if (typeof signalRConnection !== "undefined" && signalRConnection.state === "Connected") {
-                await signalRConnection.invoke("SendMessageAsync", selectedSessionId, text);
-                inputEl.value = "";
-            } else {
-                alert("SignalR Connection is offline.");
-            }
-        } catch (err) {
-            alert("Failed to send message.");
-        }
-    });
-}
-
-/* ==========================================================================
-   Phase 3 Security, 2FA, OTP & Mock SMS Helpers
-   ========================================================================== */
-
-async function load2FAStatus() {
-    const switch2Fa = document.getElementById("switch-2fa");
-    if (!switch2Fa) return;
-
-    try {
-        const response = await fetch(`${API_URL}/auth/2fa-status`, {
-            headers: { "Authorization": `Bearer ${currentToken}` }
-        });
-
-        if (response.ok) {
-            const data = await response.json();
-            switch2Fa.checked = data.enabled;
-        }
-    } catch (err) {
-        console.error("Failed to load 2FA status:", err);
-    }
-}
-
-function init2FASettings() {
-    const switch2Fa = document.getElementById("switch-2fa");
-    if (!switch2Fa) return;
-
-    switch2Fa.addEventListener("change", async () => {
-        const enable = switch2Fa.checked;
-        try {
-            const response = await fetch(`${API_URL}/auth/toggle-2fa`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${currentToken}`
-                },
-                body: JSON.stringify({ Enable: enable })
-            });
-
-            if (!response.ok) {
-                // Revert switch status on error
-                switch2Fa.checked = !enable;
-                alert("Failed to update 2FA status.");
-            }
-        } catch (err) {
-            switch2Fa.checked = !enable;
-            alert("Connection error.");
-        }
-    });
-}
-
-function showMockSMSToast(otpCode) {
-    const toast = document.getElementById("mock-sms-toast");
-    const textEl = document.getElementById("sms-text");
-    if (!toast || !textEl) return;
-
-    // Without a code (the normal case) the server e-mailed it: say so instead of showing a made-up code.
-    // With a code the server is in demo mode (Demo:ExposeOtp) and the toast stands in for the mailbox.
-    const messageTemplate = !otpCode
-        ? (currentLanguage === "tr"
-            ? "SmartBank: Doğrulama kodu kayıtlı e-posta adresinize gönderildi."
-            : "SmartBank: A verification code was sent to your registered e-mail address.")
-        : (currentLanguage === "tr"
-            ? `SmartBank SMS: Güvenlik doğrulama kodunuz: ${otpCode}. Lütfen bu kodu kimseyle paylaşmayın.`
-            : `SmartBank SMS: Your security verification code is ${otpCode}. Do not share it.`);
-
-    textEl.textContent = messageTemplate;
-    toast.classList.remove("hidden");
-    
-    // Trigger animation
-    setTimeout(() => {
-        toast.classList.add("show");
-    }, 50);
-
-    // Hide after 8 seconds
-    setTimeout(() => {
-        toast.classList.remove("show");
-        setTimeout(() => {
-            toast.classList.add("hidden");
-        }, 500);
-    }, 8000);
-}
-
-let currentOtpCallback = null;
-
-function showOTPModal(reasonMessage, confirmCallback) {
-    const modal = document.getElementById("otp-modal");
-    const descEl = document.getElementById("otp-modal-desc");
-    const inputEl = document.getElementById("otp-code-input");
-    const errorEl = document.getElementById("otp-error-msg");
-    const submitBtn = document.getElementById("btn-submit-otp");
-
-    if (!modal || !descEl || !inputEl || !errorEl || !submitBtn) return;
-
-    descEl.textContent = reasonMessage;
-    inputEl.value = "";
-    errorEl.classList.add("hidden");
-    errorEl.textContent = "";
-    submitBtn.disabled = false;
-    
-    currentOtpCallback = confirmCallback;
-
-    modal.classList.remove("hidden");
-    inputEl.focus();
-}
-
-function initOTPModalEvents() {
-    const modal = document.getElementById("otp-modal");
-    const closeBtn = document.getElementById("btn-close-otp");
-    const submitBtn = document.getElementById("btn-submit-otp");
-    const inputEl = document.getElementById("otp-code-input");
-    const errorEl = document.getElementById("otp-error-msg");
-
-    if (!modal) return;
-
-    const closeModal = () => {
-        modal.classList.add("hidden");
-        currentOtpCallback = null;
-    };
-
-    if (closeBtn) {
-        closeBtn.addEventListener("click", closeModal);
-    }
-
-    // Modal click outer close
-    modal.addEventListener("click", (e) => {
-        if (e.target === modal) {
-            closeModal();
-        }
-    });
-
-    const submitOtp = async () => {
-        const code = inputEl.value.trim();
-        if (code.length !== 6) {
-            errorEl.textContent = currentLanguage === "tr" ? "Lütfen 6 haneli kodu girin." : "Please enter a 6-digit code.";
-            errorEl.classList.remove("hidden");
-            return;
-        }
-
-        submitBtn.disabled = true;
-        errorEl.classList.add("hidden");
-
-        if (currentOtpCallback) {
-            const result = await currentOtpCallback(code);
-            if (result.success) {
-                closeModal();
-            } else {
-                errorEl.textContent = result.message || "Verification failed.";
-                errorEl.classList.remove("hidden");
-                submitBtn.disabled = false;
-            }
-        }
-    };
-
-    if (submitBtn) {
-        submitBtn.addEventListener("click", submitOtp);
-    }
-
-    if (inputEl) {
-        inputEl.addEventListener("keypress", (e) => {
-            if (e.key === "Enter") {
-                submitOtp();
-            }
-        });
-    }
-}
-
-/* ==========================================================================
-   Phase 4 Agent Cockpit & AI Co-Pilot Helpers
-   ========================================================================== */
-
-async function loadAgentMetrics() {
-    const valResolved = document.getElementById("val-metric-resolved");
-    const valTime = document.getElementById("val-metric-time");
-    const valCsat = document.getElementById("val-metric-csat");
-
-    if (!valResolved) return;
-
-    try {
-        const response = await fetch(`${API_URL}/chat/agent-metrics`, {
-            headers: { "Authorization": `Bearer ${currentToken}` }
-        });
-
-        if (response.ok) {
-            const data = await response.json();
-            valResolved.textContent = data.resolvedCount;
-            valTime.textContent = data.avgResponseTime;
-            valCsat.textContent = data.csatScore;
-        }
-    } catch (err) {
-        console.error("Failed to load agent metrics:", err);
-    }
-}
-
-function initAgentStatusControl() {
-    const select = document.getElementById("agent-status-select");
-    const dot = document.getElementById("status-indicator-dot");
-
-    if (!select || !dot) return;
-
-    select.addEventListener("change", () => {
-        const status = select.value;
-        
-        // Remove existing classes
-        dot.className = "status-dot";
-        
-        if (status === "Active") {
-            dot.classList.add("online");
-        } else if (status === "Busy") {
-            dot.classList.add("busy");
-        } else if (status === "Break") {
-            dot.classList.add("break");
-        }
-    });
-}
-
-async function fetchCoPilotSuggestion(sessionId) {
-    const container = document.getElementById("ai-copilot-container");
-    const textEl = document.getElementById("ai-suggestion-text");
-
-    if (!container || !textEl) return;
-
-    // Show suggestion box, show loading text
-    container.classList.remove("hidden");
-    textEl.textContent = currentLanguage === "tr" ? "Yapay zeka önerisi oluşturuluyor..." : "Generating suggestion...";
-
-    try {
-        const response = await fetch(`${API_URL}/chat/suggest-response/${sessionId}`, {
-            headers: { "Authorization": `Bearer ${currentToken}` }
-        });
-
-        if (response.ok) {
-            const data = await response.json();
-            textEl.textContent = data.suggestion || (currentLanguage === "tr" ? "Öneri oluşturulamadı." : "Could not generate suggestion.");
-        } else {
-            textEl.textContent = currentLanguage === "tr" ? "Öneri oluşturulamadı." : "Could not generate suggestion.";
-        }
-    } catch (err) {
-        textEl.textContent = currentLanguage === "tr" ? "Bağlantı hatası." : "Connection error.";
-    }
-}
-
-function initCoPilotEvents() {
-    const btnRegen = document.getElementById("btn-regenerate-suggestion");
-    const btnUse = document.getElementById("btn-use-suggestion");
-    const inputEl = document.getElementById("agent-chat-input");
-
-    if (btnRegen) {
-        btnRegen.addEventListener("click", () => {
-            if (selectedSessionId) {
-                fetchCoPilotSuggestion(selectedSessionId);
-            }
-        });
-    }
-
-    if (btnUse) {
-        btnUse.addEventListener("click", () => {
-            const textEl = document.getElementById("ai-suggestion-text");
-            if (textEl && inputEl) {
-                const text = textEl.textContent.trim();
-                // Filter out default loading/error messages
-                if (text && 
-                    !text.startsWith("Generating") && 
-                    !text.startsWith("Yapay zeka") && 
-                    !text.startsWith("Could not") && 
-                    !text.startsWith("Öneri") &&
-                    !text.startsWith("Click") &&
-                    !text.startsWith("Bağlantı")) {
-                    
-                    inputEl.value = text;
-                    inputEl.focus();
-                }
-            }
-        });
-    }
-}
-
-function initTransferControlEvents() {
-    const btnTransfer = document.getElementById("btn-transfer-chat");
-    const selectDept = document.getElementById("select-transfer-dept");
-
-    if (!btnTransfer || !selectDept) return;
-
-    btnTransfer.addEventListener("click", async () => {
-        const dept = selectDept.value;
-        if (!dept || !selectedSessionId) return;
-
-        btnTransfer.disabled = true;
-        
-        try {
-            const response = await fetch(`${API_URL}/chat/transfer-session/${selectedSessionId}`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${currentToken}`
-                },
-                body: JSON.stringify({ department: dept })
-            });
-
-            if (response.ok) {
-                alert(currentLanguage === "tr" ? `Sohbet başarıyla ${dept} birimine aktarıldı.` : `Chat successfully transferred to ${dept}.`);
-                
-                // Refresh sessions list
-                loadActiveSessions();
-                
-                // Clear active session
-                selectedSessionId = null;
-                document.getElementById("agent-chat-header").classList.add("hidden");
-                document.getElementById("agent-chat-form").classList.add("hidden");
-                document.getElementById("ai-copilot-container").classList.add("hidden");
-                document.getElementById("agent-chat-messages").innerHTML = `
-                    <div class="agent-chat-placeholder" id="agent-placeholder">
-                        <span class="chat-placeholder-icon">📥</span>
-                        <h3 id="txt-select-chat">${getLocalizedText("txt-select-chat", "Select a Support Session")}</h3>
-                        <p class="text-muted" id="txt-select-chat-desc">${getLocalizedText("txt-select-chat-desc", "Click sidebar...")}</p>
-                    </div>
-                `;
-            } else {
-                alert("Failed to transfer chat.");
-            }
-        } catch (err) {
-            alert("Connection error.");
-        } finally {
-            btnTransfer.disabled = false;
-            selectDept.value = "";
-        }
-    });
-}
-
-/* ==========================================================================
-   Canlı Piyasalar Ticker & Fiyat Güncelleme (index.html)
-   ========================================================================== */
-let previousRates = {};
-
-async function loadMarketRates() {
-    const listEl = document.getElementById("market-rates-list");
-    const updatedEl = document.getElementById("txt-rates-updated");
-
-    try {
-        const response = await fetch(`${API_URL}/market/rates`);
-        if (!response.ok) return;
-
-        const rates = await response.json();
-        activeMarketRates = rates;
-        if (typeof updateExchangeRateDisplay === "function") {
-            updateExchangeRateDisplay();
-        }
-
-        if (listEl) {
-            listEl.innerHTML = "";
-
-            const now = new Date();
-            const timeString = now.toLocaleTimeString(currentLanguage === "tr" ? "tr-TR" : "en-US");
-            if (updatedEl) {
-                updatedEl.textContent = `${getLocalizedText("txt-rates-updated", "Son Güncelleme: ")} ${timeString}`;
-            }
-
-            rates.forEach(rate => {
-                const key = rate.code;
-                const prev = previousRates[key];
-                previousRates[key] = rate.sell;
-
-                let directionClass = "";
-                let trendSymbol = "•";
-                let flashClass = "";
-
-                if (prev !== undefined) {
-                    if (rate.sell > prev) {
-                        directionClass = "up";
-                        trendSymbol = "▲";
-                        flashClass = "flash-green";
-                    } else if (rate.sell < prev) {
-                        directionClass = "down";
-                        trendSymbol = "▼";
-                        flashClass = "flash-red";
-                    }
-                }
-
-                if (!directionClass) {
-                    if (rate.change > 0) {
-                        directionClass = "up";
-                        trendSymbol = "▲";
-                    } else if (rate.change < 0) {
-                        directionClass = "down";
-                        trendSymbol = "▼";
-                    }
-                }
-
-                const row = document.createElement("div");
-                row.className = "rate-row";
-                
-                const badgeClass = rate.code.toLowerCase();
-                const displayName = currentLanguage === "tr" ? rate.name : rate.nameEn;
-
-                row.innerHTML = `
-                    <div class="rate-info">
-                        <div class="rate-symbol-badge ${badgeClass}">
-                            ${rate.code === 'USD' ? '💵' : rate.code === 'EUR' ? '💶' : rate.code === 'XAU' ? '🪙' : '🥈'}
-                        </div>
-                        <div class="rate-name-wrapper">
-                            <span class="rate-code">${esc(rate.code)}</span>
-                            <span class="rate-name">${esc(displayName)}</span>
-                        </div>
-                    </div>
-                    <div class="rate-prices">
-                        <div class="price-box">
-                            <span class="price-label">${currentLanguage === "tr" ? "ALIŞ" : "BUY"}</span>
-                            <span class="price-val ${flashClass}">${rate.buy.toFixed(rate.code === 'USD' || rate.code === 'EUR' ? 4 : 2)}</span>
-                        </div>
-                        <div class="price-box">
-                            <span class="price-label">${currentLanguage === "tr" ? "SATIŞ" : "SELL"}</span>
-                            <span class="price-val ${flashClass}">${rate.sell.toFixed(rate.code === 'USD' || rate.code === 'EUR' ? 4 : 2)}</span>
-                        </div>
-                    </div>
-                    <div class="rate-trend">
-                        <span class="trend-badge ${directionClass}">
-                            ${trendSymbol} ${Math.abs(rate.change).toFixed(2)}%
-                        </span>
-                    </div>
-                `;
-                listEl.appendChild(row);
-            });
-        }
-    } catch (err) {
-        // Silent catch
-    }
-}
-
-function initMarketRates() {
-    loadMarketRates();
-    setInterval(loadMarketRates, 5000);
-}
-
-/* ==========================================================================
-   Kredi Kartları & Ekstre Yönetimi (dashboard.html)
-   ========================================================================== */
-async function loadCreditCards() {
-    const listEl = document.getElementById("credit-cards-list");
-    if (!listEl) return;
-
-    listEl.innerHTML = '<div class="loading-spinner">Yükleniyor...</div>';
-
-    try {
-        const response = await fetch(`${API_URL}/banking/credit-cards`, {
-            headers: { "Authorization": `Bearer ${currentToken}` }
-        });
-
-        if (!response.ok) {
-            listEl.innerHTML = '<div class="alert alert-danger">Kredi kartları yüklenemedi.</div>';
-            return;
-        }
-
-        const cards = await response.json();
-        listEl.innerHTML = "";
-
-        if (cards.length === 0) {
-            listEl.innerHTML = currentLanguage === "tr" ? '<div class="text-muted">Aktif kredi kartınız bulunmuyor.</div>' : '<div class="text-muted">No active credit cards found.</div>';
-            const noSelectedPanel = document.getElementById("cc-no-selected");
-            const detailsContent = document.getElementById("cc-details-content");
-            if (detailsContent) detailsContent.classList.add("hidden");
-            if (noSelectedPanel) {
-                noSelectedPanel.classList.remove("hidden");
-                noSelectedPanel.innerHTML = `
-                    <div class="text-center" style="padding: 2rem 1rem;">
-                        <span style="font-size: 3rem; display: block; margin-bottom: 1rem;">💳</span>
-                        <h4 style="margin: 0 0 0.5rem 0; color: var(--accent-color); font-weight: 700;">
-                            ${currentLanguage === "tr" ? "Kredi Kartınız Bulunmuyor" : "No Credit Card Found"}
-                        </h4>
-                        <p class="text-muted" style="font-size: 0.85rem; margin-bottom: 1.5rem; max-width: 300px; margin-left: auto; margin-right: auto;">
-                            ${currentLanguage === "tr" ? "Harcamalarınızı taksitlendirmek ve SmartCredit avantajlarından yararlanmak için hemen başvurun." : "Apply now to split your payments and enjoy SmartCredit benefits."}
-                        </p>
-                        <button id="btn-apply-cc-empty" class="btn btn-primary btn-sm" style="width: 100%; max-width: 240px; margin: 0 auto;">
-                            ${currentLanguage === "tr" ? "Hemen Başvur" : "Apply Now"}
-                        </button>
-                    </div>
-                `;
-                document.getElementById("btn-apply-cc-empty").addEventListener("click", () => {
-                    const applyBtn = document.getElementById("btn-apply-creditcard");
-                    if (applyBtn) applyBtn.click();
-                });
-            }
-            return;
-        }
-
-        // Restore default state of no-selected panel when cards are present
-        const noSelectedPanel = document.getElementById("cc-no-selected");
-        if (noSelectedPanel) {
-            noSelectedPanel.innerHTML = currentLanguage === "tr" ? 
-                "💳 Lütfen detaylarını ve ekstre hareketlerini görmek istediğiniz kredi kartını seçiniz." :
-                "💳 Please select a credit card to view details and statements.";
-        }
-
-        cards.forEach(card => {
-            const cardEl = document.createElement("div");
-            cardEl.className = `account-card credit glassmorphism ${activeCreditCardId === card.id ? 'active' : ''}`;
-            const maskedNo = "**** **** **** " + card.cardNumber.slice(-4);
-            
-            const btnText = currentLanguage === "tr" ? "Ekstre Görüntüle" : "View Statement";
-            cardEl.innerHTML = `
-                <div class="account-header">
-                    <span>SmartCredit</span>
-                    <span class="account-currency">TRY</span>
-                </div>
-                <div class="account-balance">${card.currentDebt.toFixed(2)} TRY</div>
-                <div class="account-number">${esc(maskedNo)}</div>
-                <div class="credit-limit-info">
-                    <span>Limit: ${card.cardLimit.toFixed(2)} TRY</span>
-                    <span>Kalan: ${card.availableLimit.toFixed(2)} TRY</span>
-                </div>
-                <button class="btn btn-secondary btn-xs btn-stmt-view" style="margin-top: 0.75rem; width: 100%;">${btnText}</button>
-            `;
-
-            cardEl.addEventListener("click", () => {
-                document.querySelectorAll(".account-card").forEach(c => c.classList.remove("active"));
-                cardEl.classList.add("active");
-                activeCreditCardId = card.id;
-                
-                // Deselect accounts visually when clicking credit cards
-                const accountsCards = document.querySelectorAll("#accounts-list .account-card");
-                accountsCards.forEach(ac => ac.classList.remove("active"));
-                activeAccountId = null;
-
-                showStatementModal(card);
-                updateCardPreview(card.cardNumber, card.cardCvv, card.expiryDate, card.cardTheme, "CREDIT CARD");
-            });
-
-            listEl.appendChild(cardEl);
-        });
-
-        // Sync card preview for active credit card
-        if (!activeCreditCardId && cards.length > 0) {
-            activeCreditCardId = cards[0].id;
-        }
-        const activeCc = cards.find(x => x.id === activeCreditCardId);
-        if (activeCc) {
-            updateCardPreview(activeCc.cardNumber, activeCc.cardCvv, activeCc.expiryDate, activeCc.cardTheme, "CREDIT CARD");
-            showStatementModal(activeCc);
-        }
-    } catch (err) {
-        listEl.innerHTML = '<div class="alert alert-danger">Sunucu bağlantısı başarısız.</div>';
-    }
-}
-
-let currentStatement = null;
-
-async function showStatementModal(card) {
-    activeCreditCardId = card.id;
-    const modal = document.getElementById("statement-modal");
-    
-    // Reset messages and forms
-    const payMsg = document.getElementById("pay-debt-message");
-    if (payMsg) payMsg.className = "alert hidden";
-    const payAmt = document.getElementById("pay-debt-amount");
-    if (payAmt) payAmt.value = "";
-
-    const ccPayMsg = document.getElementById("cc-pay-message");
-    if (ccPayMsg) ccPayMsg.className = "alert hidden";
-    const ccPayAmt = document.getElementById("cc-pay-amount");
-    if (ccPayAmt) ccPayAmt.value = "";
-
-    // Toggle on-page card details panel
-    const noSelectedPanel = document.getElementById("cc-no-selected");
-    const detailsContent = document.getElementById("cc-details-content");
-    if (noSelectedPanel) noSelectedPanel.classList.add("hidden");
-    if (detailsContent) detailsContent.classList.remove("hidden");
-
-    // Populate static card details on page
-    const maskedNo = "**** **** **** " + card.cardNumber.slice(-4);
-    const maskedNoEl = document.getElementById("cc-details-masked-no");
-    if (maskedNoEl) maskedNoEl.textContent = maskedNo;
-    const limitEl = document.getElementById("cc-details-limit");
-    if (limitEl) limitEl.textContent = `${card.cardLimit.toFixed(2)} TRY`;
-    const availEl = document.getElementById("cc-details-avail");
-    if (availEl) availEl.textContent = `${card.availableLimit.toFixed(2)} TRY`;
-    const debtEl = document.getElementById("cc-details-debt");
-    if (debtEl) debtEl.textContent = `${card.currentDebt.toFixed(2)} TRY`;
-
-    // Populate modal body tables
-    const stmtTxBodyModal = document.getElementById("statement-transactions-body");
-    if (stmtTxBodyModal) stmtTxBodyModal.innerHTML = '<tr><td colspan="3" class="text-center">Yükleniyor...</td></tr>';
-    const stmtTxBodyPage = document.getElementById("cc-stmt-transactions-body");
-    if (stmtTxBodyPage) stmtTxBodyPage.innerHTML = '<tr><td colspan="3" class="text-center">Yükleniyor...</td></tr>';
-    
-    try {
-        const response = await fetch(`${API_URL}/banking/credit-cards/${card.id}/statements`, {
-            headers: { "Authorization": `Bearer ${currentToken}` }
-        });
-
-        if (!response.ok) return;
-
-        const statements = await response.json();
-        if (statements.length === 0) {
-            const noStmt = "-";
-            const zeroTry = "0.00 TRY";
-            
-            document.getElementById("val-stmt-period").textContent = noStmt;
-            document.getElementById("val-stmt-debt").textContent = zeroTry;
-            document.getElementById("val-stmt-min").textContent = zeroTry;
-            document.getElementById("val-stmt-due").textContent = noStmt;
-
-            document.getElementById("val-cc-stmt-period").textContent = noStmt;
-            document.getElementById("val-cc-stmt-debt").textContent = zeroTry;
-            document.getElementById("val-cc-stmt-min").textContent = zeroTry;
-            document.getElementById("val-cc-stmt-due").textContent = noStmt;
-            return;
-        }
-
-        const stmt = statements[0];
-        currentStatement = stmt;
-
-        document.getElementById("val-stmt-period").textContent = stmt.periodName;
-        document.getElementById("val-stmt-debt").textContent = `${stmt.periodDebt.toFixed(2)} TRY`;
-        document.getElementById("val-stmt-min").textContent = `${stmt.minimumPayment.toFixed(2)} TRY`;
-
-        document.getElementById("val-cc-stmt-period").textContent = stmt.periodName;
-        document.getElementById("val-cc-stmt-debt").textContent = `${stmt.periodDebt.toFixed(2)} TRY`;
-        document.getElementById("val-cc-stmt-min").textContent = `${stmt.minimumPayment.toFixed(2)} TRY`;
-        
-        const dueDate = new Date(stmt.dueDate).toLocaleDateString(currentLanguage === "tr" ? "tr-TR" : "en-US", {
-            year: 'numeric', month: 'short', day: 'numeric'
-        });
-        document.getElementById("val-stmt-due").textContent = dueDate;
-        document.getElementById("val-cc-stmt-due").textContent = dueDate;
-
-        const statusBanner = document.getElementById("stmt-payment-status-banner");
-        const statusText = document.getElementById("stmt-status-text");
-        
-        const remaining = Math.max(0, stmt.periodDebt - stmt.paidAmount);
-        
-        if (statusBanner && statusText) {
-            if (stmt.isPaid || remaining <= 0) {
-                statusBanner.className = "statement-payment-status paid";
-                statusText.textContent = getLocalizedText("stmt-status-paid", "Paid");
-            } else {
-                statusBanner.className = "statement-payment-status unpaid";
-                const minRemaining = Math.max(0, stmt.minimumPayment - stmt.paidAmount);
-                if (minRemaining <= 0) {
-                    statusText.textContent = currentLanguage === "tr" ? `Asgari Ödendi (Kalan Borç: ${remaining.toFixed(2)} TRY)` : `Min Paid (Remaining: ${remaining.toFixed(2)} TRY)`;
-                } else {
-                    statusText.textContent = currentLanguage === "tr" ? `Ödenmedi (Asgari Borç: ${minRemaining.toFixed(2)} TRY)` : `Unpaid (Min Debt: ${minRemaining.toFixed(2)} TRY)`;
-                }
-            }
-        }
-
-        if (stmtTxBodyModal) stmtTxBodyModal.innerHTML = "";
-        if (stmtTxBodyPage) stmtTxBodyPage.innerHTML = "";
-
-        if (stmt.transactions.length === 0) {
-            const noSpend = `<tr><td colspan="3" class="text-center text-muted">${currentLanguage === "tr" ? "Harcama bulunmuyor" : "No spendings"}</td></tr>`;
-            if (stmtTxBodyModal) stmtTxBodyModal.innerHTML = noSpend;
-            if (stmtTxBodyPage) stmtTxBodyPage.innerHTML = noSpend;
-        } else {
-            stmt.transactions.forEach(t => {
-                const date = new Date(t.createdAt).toLocaleDateString(currentLanguage === "tr" ? "tr-TR" : "en-US", {
-                    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
-                });
-                const tr = document.createElement("tr");
-                tr.innerHTML = `
-                    <td>${date}</td>
-                    <td>${esc(t.description)}</td>
-                    <td class="text-right tx-amount-negative">-${t.amount.toFixed(2)}</td>
-                `;
-                const trCopy = tr.cloneNode(true);
-                if (stmtTxBodyModal) stmtTxBodyModal.appendChild(tr);
-                if (stmtTxBodyPage) stmtTxBodyPage.appendChild(trCopy);
-            });
-        }
-
-        populatePaymentAccountsSelect();
-
-    } catch (err) {
-        // error
-    }
-}
-
-async function populatePaymentAccountsSelect() {
-    const select = document.getElementById("pay-debt-source");
-    const selectOnPage = document.getElementById("cc-pay-source");
-    
-    if (select) select.innerHTML = "";
-    if (selectOnPage) selectOnPage.innerHTML = "";
-
-    try {
-        const response = await fetch(`${API_URL}/banking/accounts`, {
-            headers: { "Authorization": `Bearer ${currentToken}` }
-        });
-        if (!response.ok) return;
-
-        const accounts = await response.json();
-        const tryAccounts = accounts.filter(a => a.currency === "TRY");
-
-        if (tryAccounts.length === 0) {
-            const emptyText = currentLanguage === "tr" ? "Vadesiz TL hesabınız bulunmuyor" : "No demand TRY accounts available";
-            if (select) {
-                const opt = document.createElement("option");
-                opt.textContent = emptyText;
-                select.appendChild(opt);
-            }
-            if (selectOnPage) {
-                const opt = document.createElement("option");
-                opt.textContent = emptyText;
-                selectOnPage.appendChild(opt);
-            }
-            return;
-        }
-
-        tryAccounts.forEach(acc => {
-            if (select) {
-                const opt = document.createElement("option");
-                opt.value = acc.accountNumber;
-                opt.textContent = `${acc.accountNumber} (${acc.balance.toFixed(2)} TRY)`;
-                select.appendChild(opt);
-            }
-            if (selectOnPage) {
-                const opt = document.createElement("option");
-                opt.value = acc.accountNumber;
-                opt.textContent = `${acc.accountNumber} (${acc.balance.toFixed(2)} TRY)`;
-                selectOnPage.appendChild(opt);
-            }
-        });
-    } catch (err) {
-        // error
-    }
-}
-
-function initCreditCardEvents() {
-    const closeBtn = document.getElementById("btn-close-statement");
-    if (closeBtn) {
-        closeBtn.addEventListener("click", () => {
-            document.getElementById("statement-modal").classList.add("hidden");
-            activeCreditCardId = null;
-            document.querySelectorAll(".account-card").forEach(c => c.classList.remove("active"));
-        });
-    }
-
-    // Modal presets
-    const btnMin = document.getElementById("btn-pay-minimum");
-    if (btnMin) {
-        btnMin.addEventListener("click", () => {
-            if (!currentStatement) return;
-            const minRemaining = Math.max(0, currentStatement.minimumPayment - currentStatement.paidAmount);
-            document.getElementById("pay-debt-amount").value = minRemaining.toFixed(2);
-        });
-    }
-
-    const btnFull = document.getElementById("btn-pay-full");
-    if (btnFull) {
-        btnFull.addEventListener("click", () => {
-            if (!currentStatement) return;
-            const remaining = Math.max(0, currentStatement.periodDebt - currentStatement.paidAmount);
-            document.getElementById("pay-debt-amount").value = remaining.toFixed(2);
-        });
-    }
-
-    // On-page presets
-    const btnCcMin = document.getElementById("btn-cc-pay-min");
-    if (btnCcMin) {
-        btnCcMin.addEventListener("click", () => {
-            if (!currentStatement) return;
-            const minRemaining = Math.max(0, currentStatement.minimumPayment - currentStatement.paidAmount);
-            document.getElementById("cc-pay-amount").value = minRemaining.toFixed(2);
-        });
-    }
-
-    const btnCcFull = document.getElementById("btn-cc-pay-full");
-    if (btnCcFull) {
-        btnCcFull.addEventListener("click", () => {
-            if (!currentStatement) return;
-            const remaining = Math.max(0, currentStatement.periodDebt - currentStatement.paidAmount);
-            document.getElementById("cc-pay-amount").value = remaining.toFixed(2);
-        });
-    }
-
-    // Modal Pay Submit
-    const payForm = document.getElementById("pay-debt-form");
-    if (payForm) {
-        payForm.addEventListener("submit", async (e) => {
-            e.preventDefault();
-            const sourceAccountNumber = document.getElementById("pay-debt-source").value;
-            const amount = parseFloat(document.getElementById("pay-debt-amount").value);
-            const msgEl = document.getElementById("pay-debt-message");
-
-            msgEl.className = "alert hidden";
-
-            if (!activeCreditCardId) return;
-
-            try {
-                const response = await fetch(`${API_URL}/banking/credit-cards/${activeCreditCardId}/pay`, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "Authorization": `Bearer ${currentToken}`
-                    },
-                    body: JSON.stringify({ sourceAccountNumber, amount })
-                });
-
-                const data = await response.json();
-
-                if (!response.ok) {
-                    msgEl.textContent = getLocalizedText(data.errorKey, data.message || getLocalizedText("PaymentFailed", "Payment failed."));
-                    msgEl.className = "alert alert-danger";
-                    return;
-                }
-
-                msgEl.textContent = getLocalizedText("PaymentSuccess", "Payment completed successfully!");
-                msgEl.className = "alert alert-success";
-
-                loadAccounts();
-                loadCreditCards().then(() => {
-                    fetch(`${API_URL}/banking/credit-cards`, {
-                        headers: { "Authorization": `Bearer ${currentToken}` }
-                    }).then(r => r.json()).then(cards => {
-                        const c = cards.find(x => x.id === activeCreditCardId);
-                        if (c) showStatementModal(c);
-                    });
-                });
-
-            } catch (err) {
-                msgEl.textContent = "Server connection failed.";
-                msgEl.className = "alert alert-danger";
-            }
-        });
-    }
-
-    // On-page Pay Submit
-    const ccPayForm = document.getElementById("cc-pay-debt-form");
-    if (ccPayForm) {
-        ccPayForm.addEventListener("submit", async (e) => {
-            e.preventDefault();
-            const sourceAccountNumber = document.getElementById("cc-pay-source").value;
-            const amount = parseFloat(document.getElementById("cc-pay-amount").value);
-            const msgEl = document.getElementById("cc-pay-message");
-
-            msgEl.className = "alert hidden";
-
-            if (!activeCreditCardId) return;
-
-            try {
-                const response = await fetch(`${API_URL}/banking/credit-cards/${activeCreditCardId}/pay`, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "Authorization": `Bearer ${currentToken}`
-                    },
-                    body: JSON.stringify({ sourceAccountNumber, amount })
-                });
-
-                const data = await response.json();
-
-                if (!response.ok) {
-                    msgEl.textContent = getLocalizedText(data.errorKey, data.message || getLocalizedText("PaymentFailed", "Payment failed."));
-                    msgEl.className = "alert alert-danger";
-                    return;
-                }
-
-                msgEl.textContent = getLocalizedText("PaymentSuccess", "Payment completed successfully!");
-                msgEl.className = "alert alert-success";
-
-                loadAccounts();
-                loadCreditCards().then(() => {
-                    fetch(`${API_URL}/banking/credit-cards`, {
-                        headers: { "Authorization": `Bearer ${currentToken}` }
-                    }).then(r => r.json()).then(cards => {
-                        const c = cards.find(x => x.id === activeCreditCardId);
-                        if (c) showStatementModal(c);
-                    });
-                });
-
-            } catch (err) {
-                msgEl.textContent = "Server connection failed.";
-                msgEl.className = "alert alert-danger";
-            }
-        });
-    }
-
-    // Advance Period Simulation (for both buttons)
-    const handleAdvancePeriod = async () => {
-        if (!activeCreditCardId) return;
-        
-        const advBtn = document.getElementById("btn-advance-period");
-        const advCcBtn = document.getElementById("btn-cc-advance-period");
-        if (advBtn) advBtn.disabled = true;
-        if (advCcBtn) advCcBtn.disabled = true;
-
-        try {
-            const response = await fetch(`${API_URL}/banking/credit-cards/${activeCreditCardId}/advance-period`, {
-                method: "POST",
-                headers: {
-                    "Authorization": `Bearer ${currentToken}`
-                }
-            });
-
-            if (response.ok) {
-                alert(currentLanguage === "tr" ? "Dönem atlatıldı ve faiz hesaplandı!" : "Billing period advanced and interest calculated!");
-                loadAccounts();
-                loadCreditCards().then(() => {
-                    fetch(`${API_URL}/banking/credit-cards`, {
-                        headers: { "Authorization": `Bearer ${currentToken}` }
-                    }).then(r => r.json()).then(cards => {
-                        const c = cards.find(x => x.id === activeCreditCardId);
-                        if (c) showStatementModal(c);
-                    });
-                });
-            } else {
-                alert("Simulation failed.");
-            }
-        } catch (err) {
-            alert("Connection failed.");
-        } finally {
-            if (advBtn) advBtn.disabled = false;
-            if (advCcBtn) advCcBtn.disabled = false;
-        }
-    };
-
-    const advBtn = document.getElementById("btn-advance-period");
-    if (advBtn) {
-        advBtn.addEventListener("click", handleAdvancePeriod);
-    }
-    const advCcBtn = document.getElementById("btn-cc-advance-period");
-    if (advCcBtn) {
-        advCcBtn.addEventListener("click", handleAdvancePeriod);
-    }
-
-    // Credit Card Charge Form Handler
-    const chargeForm = document.getElementById("cc-charge-form");
-    if (chargeForm) {
-        chargeForm.addEventListener("submit", async (e) => {
-            e.preventDefault();
-            if (!activeCreditCardId) return;
-
-            const desc = document.getElementById("cc-charge-desc").value.trim();
-            const amount = parseFloat(document.getElementById("cc-charge-amount").value);
-            const msgDiv = document.getElementById("cc-charge-message");
-            const submitBtn = document.getElementById("btn-cc-charge-submit");
-
-            if (msgDiv) {
-                msgDiv.classList.add("hidden");
-            }
-            submitBtn.disabled = true;
-
-            try {
-                const response = await fetch(`${API_URL}/banking/credit-cards/${activeCreditCardId}/charge?amount=${amount}&description=${encodeURIComponent(desc)}`, {
-                    method: "POST",
-                    headers: {
-                        "Authorization": `Bearer ${currentToken}`
-                    }
-                });
-
-                const data = await response.json();
-
-                if (response.ok) {
-                    if (msgDiv) {
-                        msgDiv.textContent = currentLanguage === "tr" ? "Harcama başarıyla yapıldı!" : "Transaction approved!";
-                        msgDiv.className = "alert alert-success";
-                        msgDiv.classList.remove("hidden");
-                    }
-                    chargeForm.reset();
-                    loadAccounts();
-                    loadCreditCards().then(() => {
-                        if (activeCreditCardId) {
-                            fetch(`${API_URL}/banking/credit-cards`, {
-                                headers: { "Authorization": `Bearer ${currentToken}` }
-                            }).then(r => r.json()).then(cards => {
-                                const c = cards.find(x => x.id === activeCreditCardId);
-                                if (c) {
-                                    const limitEl = document.getElementById("cc-details-limit");
-                                    const availEl = document.getElementById("cc-details-avail");
-                                    const debtEl = document.getElementById("cc-details-debt");
-                                    if (limitEl) limitEl.textContent = `${c.cardLimit.toLocaleString('tr-TR', {minimumFractionDigits:2, maximumFractionDigits:2})} TRY`;
-                                    if (availEl) availEl.textContent = `${(c.cardLimit - c.currentDebt).toLocaleString('tr-TR', {minimumFractionDigits:2, maximumFractionDigits:2})} TRY`;
-                                    if (debtEl) debtEl.textContent = `${c.currentDebt.toLocaleString('tr-TR', {minimumFractionDigits:2, maximumFractionDigits:2})} TRY`;
-                                    
-                                    fetch(`${API_URL}/banking/credit-cards/${activeCreditCardId}/statements`, {
-                                        headers: { "Authorization": `Bearer ${currentToken}` }
-                                    }).then(res => res.json()).then(statements => {
-                                        const latest = statements[statements.length - 1];
-                                        if (latest) {
-                                            const tbody = document.getElementById("cc-stmt-transactions-body");
-                                            if (tbody) {
-                                                if (latest.transactions && latest.transactions.length > 0) {
-                                                    tbody.innerHTML = latest.transactions.map(t => `
-                                                        <tr>
-                                                            <td>${new Date(t.createdAt).toLocaleDateString(currentLanguage === 'tr' ? 'tr-TR' : 'en-US')}</td>
-                                                            <td>${esc(t.description)}</td>
-                                                            <td class="text-right" style="color: #ff4b5c;">-${t.amount.toFixed(2)} TRY</td>
-                                                        </tr>
-                                                    `).join("");
-                                                } else {
-                                                    tbody.innerHTML = `<tr><td colspan="3" class="text-center text-muted">Harcama bulunmuyor.</td></tr>`;
-                                                }
-                                            }
-                                        }
-                                    });
-                                }
-                            });
-                        }
-                    });
-                } else {
-                    if (msgDiv) {
-                        msgDiv.textContent = currentLanguage === "tr" ? (data.message || "Harcama reddedildi (Limit yetersiz).") : "Transaction declined (Insufficient limit).";
-                        msgDiv.className = "alert alert-danger";
-                        msgDiv.classList.remove("hidden");
-                    }
-                }
-            } catch (err) {
-                if (msgDiv) {
-                    msgDiv.textContent = "Bağlantı hatası.";
-                    msgDiv.className = "alert alert-danger";
-                    msgDiv.classList.remove("hidden");
-                }
-            } finally {
-                submitBtn.disabled = false;
-            }
-        });
-    }
-
-    const applyCcBtn = document.getElementById("btn-apply-creditcard");
-    if (applyCcBtn) {
-        applyCcBtn.addEventListener("click", async () => {
-            const confirmMsg = currentLanguage === "tr" ? "Kredi kartı başvurusunu onaylıyor musunuz?" : "Do you confirm the credit card application?";
-            if (!confirm(confirmMsg)) return;
-
-            try {
-                const response = await fetch(`${API_URL}/banking/credit-cards`, {
-                    method: "POST",
-                    headers: {
-                        "Authorization": `Bearer ${currentToken}`
-                    }
-                });
-
-                if (response.ok) {
-                    alert(currentLanguage === "tr" ? "Kredi kartınız başarıyla oluşturuldu!" : "Credit card successfully created!");
-                    loadCreditCards();
-                    if (typeof confetti === "function") confetti();
-                } else {
-                    const errData = await response.json();
-                    alert(getLocalizedText(errData.errorKey, errData.message || "Başvuru reddedildi."));
-                }
-            } catch (e) {
-                alert("Connection failed.");
-            }
-        });
-    }
-}
-
-/* ==========================================================================
-   Vadesiz Hesap Açma (dashboard.html)
-   ========================================================================== */
-function initCreateAccountEvent() {
-    const btn = document.getElementById("btn-create-account");
-    const modal = document.getElementById("create-account-modal");
-    const closeBtn = document.getElementById("btn-close-create-acc");
-    const submitBtn = document.getElementById("btn-submit-create-acc");
-    const cards = document.querySelectorAll(".acc-type-card");
-
-    if (btn && modal) {
-        btn.addEventListener("click", () => {
-            modal.classList.remove("hidden");
-        });
-    }
-
-    if (closeBtn && modal) {
-        closeBtn.addEventListener("click", () => {
-            modal.classList.add("hidden");
-            const tiersPanel = document.getElementById("vadeli-tiers-panel");
-            if (tiersPanel) tiersPanel.classList.add("hidden");
-            const calcResult = document.getElementById("calc-result");
-            if (calcResult) calcResult.classList.add("hidden");
-            const calcPrincipalInput = document.getElementById("calc-principal");
-            if (calcPrincipalInput) calcPrincipalInput.value = "";
-        });
-    }
-
-    // Handle cards click selection
-    cards.forEach(card => {
-        card.addEventListener("click", () => {
-            cards.forEach(c => c.classList.remove("active"));
-            card.classList.add("active");
-            
-            const radio = card.querySelector('input[type="radio"]');
-            if (radio) {
-                radio.checked = true;
-                
-                const tiersPanel = document.getElementById("vadeli-tiers-panel");
-                if (tiersPanel) {
-                    if (radio.value === "TimeDeposit-TRY") {
-                        tiersPanel.classList.remove("hidden");
-                    } else {
-                        tiersPanel.classList.add("hidden");
-                    }
-                }
-            }
-        });
-    });
-
-    // Calculator logic inside modal
-    const calcBtn = document.getElementById("btn-calc-interest");
-    const calcPrincipalInput = document.getElementById("calc-principal");
-    const calcResult = document.getElementById("calc-result");
-    const calcRate = document.getElementById("calc-rate");
-    const calcNetProfit = document.getElementById("calc-net-profit");
-
-    if (calcBtn && calcPrincipalInput) {
-        calcBtn.addEventListener("click", () => {
-            const principal = parseFloat(calcPrincipalInput.value) || 0;
-            if (principal <= 0) {
-                alert(currentLanguage === "tr" ? "Lütfen geçerli bir tutar girin." : "Please enter a valid amount.");
-                return;
-            }
-
-            let rate = 48.00;
-            if (principal < 50000) rate = 48.00;
-            else if (principal < 250000) rate = 49.50;
-            else if (principal < 1000000) rate = 51.00;
-            else rate = 52.50;
-
-            const gross = principal * (rate / 100) * (30 / 365);
-            const tax = gross * 0.075;
-            const net = gross - tax;
-
-            if (calcRate) calcRate.textContent = `%${rate.toFixed(2)}`;
-            if (calcNetProfit) calcNetProfit.textContent = `${net.toFixed(2)} TRY`;
-            if (calcResult) calcResult.classList.remove("hidden");
-        });
-    }
-
-    if (submitBtn && modal) {
-        submitBtn.addEventListener("click", async () => {
-            const activeRadio = document.querySelector('input[name="new-acc-choice"]:checked');
-            if (!activeRadio) return;
-
-            const val = activeRadio.value; // e.g. "DemandDeposit-TRY"
-            const [accountType, currency] = val.split('-');
-
-            submitBtn.disabled = true;
-            try {
-                const response = await fetch(`${API_URL}/banking/accounts?currency=${currency}&accountType=${accountType}`, {
-                    method: "POST",
-                    headers: {
-                        "Authorization": `Bearer ${currentToken}`
-                    }
-                });
-
-                if (response.ok) {
-                    modal.classList.add("hidden");
-                    const tiersPanel = document.getElementById("vadeli-tiers-panel");
-                    if (tiersPanel) tiersPanel.classList.add("hidden");
-                    loadAccounts();
-                } else {
-                    alert(currentLanguage === "tr" ? "Yeni hesap açılamadı." : "Failed to open a new account.");
-                }
-            } catch (err) {
-                alert(currentLanguage === "tr" ? "Sunucu bağlantı hatası." : "Connection failed.");
-            } finally {
-                submitBtn.disabled = false;
-            }
-        });
-    }
-}
-
-/* ==========================================================================
-   PHASE 8 NEW WIDGETS AND SERVICES (dashboard.html)
-   ========================================================================== */
-
-function initTabNavigation() {
-    const tabBtns = document.querySelectorAll(".tab-btn");
-    const tabContents = document.querySelectorAll(".tab-content");
-
-    tabBtns.forEach(btn => {
-        btn.addEventListener("click", () => {
-            const targetTabId = btn.dataset.tab;
-
-            // Update active class on buttons
-            tabBtns.forEach(b => b.classList.remove("active"));
-            btn.classList.add("active");
-
-            // Update active class on content containers
-            tabContents.forEach(content => {
-                if (content.id === targetTabId) {
-                    content.classList.remove("hidden");
-                } else {
-                    content.classList.add("hidden");
-                }
-            });
-
-            // If switching to standing orders, refresh lists
-            if (targetTabId === "tab-standing-orders") {
-                loadStandingOrders();
-            }
-        });
-    });
-}
-
-function initExchangeWidget() {
-    const exchangeForm = document.getElementById("exchange-form");
-    const actionSelect = document.getElementById("exchange-action");
-    const assetSelect = document.getElementById("exchange-asset");
-    const sourceSelect = document.getElementById("exchange-source");
-    const amountInput = document.getElementById("exchange-amount");
-    const rateDisplay = document.getElementById("exchange-current-rate");
-    const totalDisplay = document.getElementById("exchange-total-cost");
-    const msgEl = document.getElementById("exchange-message");
-
-    if (!exchangeForm) return;
-
-    const updateExchangeSourceOptions = async () => {
-        try {
-            const res = await fetch(`${API_URL}/banking/accounts`, {
-                headers: { "Authorization": `Bearer ${currentToken}` }
-            });
-            if (!res.ok) return;
-            const accounts = await res.json();
-            sourceSelect.innerHTML = "";
-
-            const isBuy = actionSelect.value === "buy";
-            const targetCurrency = isBuy ? "TRY" : assetSelect.value;
-
-            const filtered = accounts.filter(a => a.currency === targetCurrency);
-
-            if (filtered.length === 0) {
-                const opt = document.createElement("option");
-                opt.value = "";
-                opt.textContent = isBuy ? 
-                    (currentLanguage === "tr" ? "TRY Hesabınız Bulunmuyor" : "No TRY account found") : 
-                    (currentLanguage === "tr" ? `${assetSelect.value} Hesabınız Bulunmuyor (Alış yapınca otomatik açılır)` : `No ${assetSelect.value} account found (buying opens one)`);
-                sourceSelect.appendChild(opt);
-            } else {
-                filtered.forEach(acc => {
-                    const opt = document.createElement("option");
-                    opt.value = acc.id;
-                    opt.textContent = `${acc.accountNumber} (${acc.balance.toFixed(acc.currency === "TRY" ? 2 : 4)} ${acc.currency})`;
-                    sourceSelect.appendChild(opt);
-                });
-            }
-            updateExchangeCalculations();
-        } catch (e) {}
-    };
-
-    window.updateExchangeRateDisplay = () => {
-        if (!activeMarketRates || activeMarketRates.length === 0) return;
-        const asset = assetSelect.value;
-        const action = actionSelect.value;
-
-        const rateInfo = activeMarketRates.find(r => r.code === asset);
-        if (!rateInfo) return;
-
-        const rate = action === "buy" ? rateInfo.sell : rateInfo.buy;
-        if (rateDisplay) rateDisplay.textContent = `${rate.toFixed(4)} TRY`;
-
-        const amount = parseFloat(amountInput.value) || 0;
-        const total = amount * rate;
-        if (totalDisplay) totalDisplay.textContent = `${total.toFixed(2)} TRY`;
-    };
-
-    const updateExchangeCalculations = () => {
-        window.updateExchangeRateDisplay();
-    };
-
-    actionSelect.addEventListener("change", () => {
-        updateExchangeSourceOptions();
-    });
-    assetSelect.addEventListener("change", () => {
-        updateExchangeSourceOptions();
-    });
-    amountInput.addEventListener("input", updateExchangeCalculations);
-
-    updateExchangeSourceOptions();
-
-    exchangeForm.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        msgEl.className = "alert hidden";
-
-        const sourceAccountId = sourceSelect.value;
-        const asset = assetSelect.value;
-        const action = actionSelect.value;
-        const amount = parseFloat(amountInput.value);
-
-        if (!sourceAccountId) {
-            msgEl.textContent = currentLanguage === "tr" ? "Lütfen geçerli bir hesap seçin." : "Please select a valid account.";
-            msgEl.className = "alert alert-danger";
-            return;
-        }
-        if (isNaN(amount) || amount <= 0) {
-            msgEl.textContent = currentLanguage === "tr" ? "Lütfen geçerli bir miktar girin." : "Please enter a valid amount.";
-            msgEl.className = "alert alert-danger";
-            return;
-        }
-
-        try {
-            const response = await fetch(`${API_URL}/banking/exchange`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${currentToken}`
-                },
-                body: JSON.stringify({ sourceAccountId, asset, action, amount })
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-                msgEl.textContent = getLocalizedText(data.errorKey, data.message || "İşlem başarısız.");
-                msgEl.className = "alert alert-danger";
-                return;
-            }
-
-            msgEl.textContent = currentLanguage === "tr" ? "Döviz/Maden işlemi başarıyla gerçekleştirildi!" : "Exchange transaction completed successfully!";
-            msgEl.className = "alert alert-success";
-
-            amountInput.value = "";
-            updateExchangeSourceOptions();
-            loadAccounts();
-            if (activeAccountId) {
-                loadTransactions(activeAccountId);
-            }
-        } catch (err) {
-            msgEl.textContent = "Bağlantı hatası.";
-            msgEl.className = "alert alert-danger";
-        }
-    });
-}
-
-function initSavedContacts() {
-    const selectEl = document.getElementById("transfer-saved-contacts");
-    const destInput = document.getElementById("transfer-dest");
-    const checkEl = document.getElementById("save-contact-check");
-    const aliasInput = document.getElementById("save-contact-alias");
-
-    if (!selectEl) return;
-
-    if (checkEl && aliasInput) {
-        checkEl.addEventListener("change", () => {
-            if (checkEl.checked) {
-                aliasInput.classList.remove("hidden");
-                aliasInput.required = true;
-            } else {
-                aliasInput.classList.add("hidden");
-                aliasInput.required = false;
-                aliasInput.value = "";
-            }
-        });
-    }
-
-    selectEl.addEventListener("change", () => {
-        if (selectEl.value) {
-            destInput.value = selectEl.value;
-        }
-    });
-
-    window.loadSavedContacts = async () => {
-        try {
-            const res = await fetch(`${API_URL}/banking/contacts`, {
-                headers: { "Authorization": `Bearer ${currentToken}` }
-            });
-            if (!res.ok) return;
-
-            savedContacts = await res.json();
-            selectEl.innerHTML = `<option value="">${currentLanguage === "tr" ? "-- Kayıtlı Alıcı Seç --" : "-- Select Saved Contact --"}</option>`;
-
-            savedContacts.forEach(contact => {
-                const opt = document.createElement("option");
-                opt.value = contact.accountNumber;
-                opt.textContent = `${contact.alias} (${contact.accountNumber})`;
-                selectEl.appendChild(opt);
-            });
-        } catch (e) {}
-    };
-
-    const manageBtn = document.getElementById("btn-manage-contacts");
-    if (manageBtn) {
-        manageBtn.addEventListener("click", () => {
-            showManageContactsModal();
-        });
-    }
-
-    const showManageContactsModal = () => {
-        const modalId = "manage-contacts-modal";
-        const existingModal = document.getElementById(modalId);
-        if (existingModal) existingModal.remove();
-
-        const modalEl = document.createElement("div");
-        modalEl.id = modalId;
-        modalEl.style = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.85);
-            backdrop-filter: blur(8px);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 10000;
-        `;
-
-        const renderContactsList = () => {
-            if (savedContacts.length === 0) {
-                return `<div style="text-align: center; color: var(--text-muted); font-size: 0.85rem; padding: 2rem;">
-                            ${currentLanguage === "tr" ? "Kayıtlı alıcı bulunamadı." : "No saved contacts found."}
-                        </div>`;
-            }
-
-            const rowsHtml = savedContacts.map(c => `
-                <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); border-radius: 8px; margin-bottom: 0.5rem; gap: 1rem;">
-                    <div style="display: flex; flex-direction: column; flex: 1; min-width: 0;">
-                        <span style="font-weight: 700; color: #fff; font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(c.alias)}</span>
-                        <span style="font-size: 0.75rem; color: var(--text-muted); font-family: monospace;">${esc(c.accountNumber)}</span>
-                    </div>
-                    <div style="display: flex; gap: 0.35rem; flex-shrink: 0;">
-                        <button class="btn-contact-edit btn btn-secondary btn-xs" data-accno="${esc(c.accountNumber)}" data-alias="${esc(c.alias)}" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; border-radius: 6px; cursor: pointer;">✏️</button>
-                        <button class="btn-contact-delete btn btn-danger btn-xs" data-id="${esc(c.id)}" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; border-radius: 6px; cursor: pointer;">🗑️</button>
-                    </div>
-                </div>
-            `).join("");
-
-            return `<div style="max-height: 250px; overflow-y: auto; padding-right: 0.25rem;">${rowsHtml}</div>`;
-        };
-
-        const updateModalContent = () => {
-            modalEl.innerHTML = `
-                <div class="card glassmorphism" style="width: 420px; padding: 2rem; border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; background: rgba(15, 23, 42, 0.98); box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); animation: modalFadeIn 0.3s ease;">
-                    <h3 style="margin-bottom: 0.5rem; font-size: 1.25rem; font-weight: 700; color: #fff; letter-spacing: -0.025em;">
-                        ${currentLanguage === "tr" ? "Kayıtlı Alıcıları Yönet" : "Manage Saved Contacts"}
-                    </h3>
-                    <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 1.5rem; line-height: 1.4;">
-                        ${currentLanguage === "tr" ? "Kayıtlı alıcılarınızın lakaplarını düzenleyebilir veya listeden tamamen silebilirsiniz." : "You can edit contact aliases or permanently delete them from your list."}
-                    </p>
-                    
-                    <div id="contacts-list-container" style="margin-bottom: 1.5rem;">
-                        ${renderContactsList()}
-                    </div>
-
-                    <div style="display: flex; justify-content: flex-end;">
-                        <button id="manage-contacts-close-btn" class="btn btn-secondary" style="padding: 0.6rem 1.2rem; font-size: 0.8rem; border-radius: 10px; font-weight: 600; width: 100%; cursor: pointer;">
-                            ${currentLanguage === "tr" ? "Kapat" : "Close"}
-                        </button>
-                    </div>
-                </div>
-            `;
-
-            // Close button listener
-            document.getElementById("manage-contacts-close-btn").addEventListener("click", () => {
-                modalEl.remove();
-            });
-
-            // Edit buttons listener
-            modalEl.querySelectorAll(".btn-contact-edit").forEach(btn => {
-                btn.addEventListener("click", async () => {
-                    const accNo = btn.dataset.accno;
-                    const oldAlias = btn.dataset.alias;
-                    const promptMsg = currentLanguage === "tr" ? 
-                        `"${oldAlias}" alıcısı için yeni bir lakap girin:` : 
-                        `Enter a new alias for "${oldAlias}":`;
-                    const newAlias = prompt(promptMsg, oldAlias);
-                    if (newAlias === null) return; // cancel
-                    const trimmed = newAlias.trim();
-                    if (!trimmed) {
-                        alert(currentLanguage === "tr" ? "Lakap boş bırakılamaz." : "Alias cannot be empty.");
-                        return;
-                    }
-
-                    try {
-                        const response = await fetch(`${API_URL}/banking/contacts`, {
-                            method: "POST",
-                            headers: {
-                                "Content-Type": "application/json",
-                                "Authorization": `Bearer ${currentToken}`
-                            },
-                            body: JSON.stringify({ alias: trimmed, accountNumber: accNo })
-                        });
-                        if (response.ok) {
-                            await loadSavedContacts();
-                            updateModalContent();
-                        } else {
-                            alert("Hata oluştu.");
-                        }
-                    } catch (err) {
-                        alert("Sunucu bağlantı hatası.");
-                    }
-                });
-            });
-
-            // Delete buttons listener
-            modalEl.querySelectorAll(".btn-contact-delete").forEach(btn => {
-                btn.addEventListener("click", async () => {
-                    const contactId = btn.dataset.id;
-                    const confirmMsg = currentLanguage === "tr" ? 
-                        "Bu alıcıyı kayıtlı kişilerden silmek istediğinize emin misiniz?" : 
-                        "Are you sure you want to delete this contact?";
-                    if (!confirm(confirmMsg)) return;
-
-                    try {
-                        const response = await fetch(`${API_URL}/banking/contacts/${contactId}`, {
-                            method: "DELETE",
-                            headers: { "Authorization": `Bearer ${currentToken}` }
-                        });
-                        if (response.ok) {
-                            await loadSavedContacts();
-                            updateModalContent();
-                        } else {
-                            alert("Silinemedi.");
-                        }
-                    } catch (err) {
-                        alert("Hata oluştu.");
-                    }
-                });
-            });
-        };
-
-        updateModalContent();
-        document.body.appendChild(modalEl);
-    };
-
-    loadSavedContacts();
-}
-
-async function handleSaveContactAfterTransfer(destAccount) {
-    const checkEl = document.getElementById("save-contact-check");
-    const aliasInput = document.getElementById("save-contact-alias");
-    if (checkEl && checkEl.checked) {
-        let name = aliasInput ? aliasInput.value.trim() : "";
-        if (!name) {
-            name = (currentLanguage === "tr" ? "Kayıtlı Alıcı " : "Saved Contact ") + destAccount.slice(-4);
-        }
-        try {
-            await fetch(`${API_URL}/banking/contacts`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${currentToken}`
-                },
-                body: JSON.stringify({ alias: name, accountNumber: destAccount })
-            });
-            checkEl.checked = false;
-            if (aliasInput) {
-                aliasInput.value = "";
-                aliasInput.classList.add("hidden");
-            }
-            if (typeof loadSavedContacts === "function") {
-                loadSavedContacts();
-            }
-        } catch(e){}
-    }
-}
-
-function initStandingOrders() {
-    const form = document.getElementById("standing-order-form");
-    const typeSelect = document.getElementById("so-type");
-    const txFields = document.getElementById("so-transfer-fields");
-    const ccFields = document.getElementById("so-cc-fields");
-    const sourceSelect = document.getElementById("so-source-acc");
-    const targetCcSelect = document.getElementById("so-target-cc");
-    const msgEl = document.getElementById("standing-order-message");
-
-    if (!form) return;
-
-    typeSelect.addEventListener("change", () => {
-        if (typeSelect.value === "Transfer") {
-            txFields.classList.remove("hidden");
-            ccFields.classList.add("hidden");
-        } else {
-            txFields.classList.add("hidden");
-            ccFields.classList.remove("hidden");
-        }
-    });
-
-    window.populateStandingOrderSelects = async () => {
-        try {
-            const accRes = await fetch(`${API_URL}/banking/accounts`, {
-                headers: { "Authorization": `Bearer ${currentToken}` }
-            });
-            if (accRes.ok) {
-                const accounts = await accRes.json();
-                sourceSelect.innerHTML = "";
-                accounts.filter(a => a.currency === "TRY").forEach(acc => {
-                    const opt = document.createElement("option");
-                    opt.value = acc.accountNumber;
-                    opt.textContent = `${acc.accountNumber} (${acc.balance.toFixed(2)} TRY)`;
-                    sourceSelect.appendChild(opt);
-                });
-            }
-
-            const ccRes = await fetch(`${API_URL}/banking/credit-cards`, {
-                headers: { "Authorization": `Bearer ${currentToken}` }
-            });
-            if (ccRes.ok) {
-                const cards = await ccRes.json();
-                targetCcSelect.innerHTML = "";
-                cards.forEach(card => {
-                    const opt = document.createElement("option");
-                    opt.value = card.id;
-                    opt.textContent = `SmartCredit (**** ${card.cardNumber.slice(-4)})`;
-                    targetCcSelect.appendChild(opt);
-                });
-            }
-        } catch(e){}
-    };
-
-    window.loadStandingOrders = async () => {
-        const listEl = document.getElementById("standing-orders-list");
-        if (!listEl) return;
-        listEl.innerHTML = '<div class="loading-spinner">Yükleniyor...</div>';
-
-        try {
-            const res = await fetch(`${API_URL}/banking/standing-orders`, {
-                headers: { "Authorization": `Bearer ${currentToken}` }
-            });
-            if (!res.ok) return;
-
-            standingOrders = await res.json();
-            listEl.innerHTML = "";
-
-            if (standingOrders.length === 0) {
-                listEl.innerHTML = `<div class="text-muted text-center" style="padding: 2rem 0;">${currentLanguage === "tr" ? "Tanımlı talimatınız bulunmuyor." : "No standing orders defined."}</div>`;
-                return;
-            }
-
-            standingOrders.forEach(order => {
-                const el = document.createElement("div");
-                el.className = "account-card glassmorphism";
-                el.style.display = "flex";
-                el.style.flexDirection = "column";
-                el.style.gap = "0.5rem";
-
-                let orderDesc = "";
-                if (order.type === "CreditCardAutoPay") {
-                    orderDesc = currentLanguage === "tr" ? 
-                        `Kredi Kartı Son Ödeme Günü Otomatik Borç Kapama` : 
-                        `Credit Card Auto Statement Settlement on Due Date`;
-                } else {
-                    const freqStr = order.frequency === "Daily" ? (currentLanguage === "tr" ? "Günlük" : "Daily") :
-                                    order.frequency === "Weekly" ? (currentLanguage === "tr" ? "Haftalık" : "Weekly") :
-                                    (currentLanguage === "tr" ? "Aylık" : "Monthly");
-                    orderDesc = currentLanguage === "tr" ? 
-                        `${freqStr} Düzenli Transfer (${order.amount.toFixed(2)} TRY -> ${esc(order.destinationAccountNumber)})` :
-                        `${freqStr} Scheduled Transfer (${order.amount.toFixed(2)} TRY -> ${esc(order.destinationAccountNumber)})`;
-                }
-
-                el.innerHTML = `
-                    <div style="font-weight: bold; color: var(--accent-color); font-size: 0.85rem;">
-                        ${order.type === "CreditCardAutoPay" ? "💳 Otomatik Ekstre Ödeme" : "📅 Düzenli Para Transferi"}
-                    </div>
-                    <div style="font-size: 0.8rem; line-height: 1.3;">${orderDesc}</div>
-                    <div style="font-size: 0.7rem; color: var(--text-muted);">
-                        Kaynak: ${esc(order.sourceAccountNumber)}
-                    </div>
-                    <button class="btn btn-danger btn-xs btn-so-delete" data-soid="${esc(order.id)}" style="align-self: flex-end; margin-top: 0.25rem; font-size: 0.7rem; padding: 0.2rem 0.5rem;">İptal Et</button>
-                `;
-
-                el.querySelector(".btn-so-delete").addEventListener("click", async () => {
-                    const confirmMsg = currentLanguage === "tr" ? "Bu talimatı iptal etmek istiyor musunuz?" : "Do you want to cancel this instruction?";
-                    if (!confirm(confirmMsg)) return;
-
-                    try {
-                        const deleteRes = await fetch(`${API_URL}/banking/standing-orders/${order.id}`, {
-                            method: "DELETE",
-                            headers: { "Authorization": `Bearer ${currentToken}` }
-                        });
-                        if (deleteRes.ok) {
-                            loadStandingOrders();
-                        } else {
-                            alert("İptal edilemedi.");
-                        }
-                    } catch(err) {
-                        alert("Bağlantı hatası.");
-                    }
-                });
-
-                listEl.appendChild(el);
-            });
-        } catch (e) {}
-    };
-
-    populateStandingOrderSelects();
-
-    form.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        msgEl.className = "alert hidden";
-
-        const sourceAccountId = sourceSelect.value;
-        const type = typeSelect.value;
-        
-        let destinationAccountNumber = null;
-        let amount = null;
-        let frequency = null;
-        let creditCardId = null;
-
-        if (!sourceAccountId) {
-            msgEl.textContent = "Lütfen kaynak hesabı seçin.";
-            msgEl.className = "alert alert-danger";
-            return;
-        }
-
-        if (type === "Transfer") {
-            destinationAccountNumber = document.getElementById("so-dest-acc").value.trim();
-            amount = parseFloat(document.getElementById("so-amount").value);
-            frequency = document.getElementById("so-frequency").value;
-
-            if (!destinationAccountNumber) {
-                msgEl.textContent = "Lütfen alıcı hesap numarasını girin.";
-                msgEl.className = "alert alert-danger";
-                return;
-            }
-            if (isNaN(amount) || amount <= 0) {
-                msgEl.textContent = "Lütfen geçerli bir tutar girin.";
-                msgEl.className = "alert alert-danger";
-                return;
-            }
-        } else {
-            creditCardId = targetCcSelect.value;
-            frequency = "Monthly";
-            if (!creditCardId) {
-                msgEl.textContent = "Lütfen bir kredi kartı seçin.";
-                msgEl.className = "alert alert-danger";
-                return;
-            }
-        }
-
-        try {
-            const response = await fetch(`${API_URL}/banking/standing-orders`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${currentToken}`
-                },
-                body: JSON.stringify({ sourceAccountNumber: sourceAccountId, orderType: type, destinationAccountNumber, amount, frequency, creditCardId })
-            });
-
-            if (!response.ok) {
-                const data = await response.json();
-                msgEl.textContent = getLocalizedText(data.errorKey, data.message || "Talimat oluşturulamadı.");
-                msgEl.className = "alert alert-danger";
-                return;
-            }
-
-            msgEl.textContent = currentLanguage === "tr" ? "Talimat başarıyla tanımlandı!" : "Instruction registered successfully!";
-            msgEl.className = "alert alert-success";
-
-            document.getElementById("so-dest-acc").value = "";
-            document.getElementById("so-amount").value = "";
-
-            loadStandingOrders();
-        } catch(err) {
-            msgEl.textContent = "Bağlantı hatası.";
-            msgEl.className = "alert alert-danger";
-        }
-    });
-}
-
-let html5QrcodeScanner = null;
-
-function initQrSimulators() {
-    return;
-    const btnQrActions = document.getElementById("btn-qr-actions");
-    const scannerModal = document.getElementById("qr-scanner-modal");
-    const btnCloseScanner = document.getElementById("btn-close-scanner");
-    const btnScanPos = document.getElementById("btn-scan-pos");
-    const btnScanTransfer = document.getElementById("btn-scan-transfer");
-    
-    const scannerResult = document.getElementById("scanner-result-panel");
-    const scanTitle = document.getElementById("lbl-scan-result-title");
-    const scanMerchant = document.getElementById("scan-pos-merchant");
-    const scanAmount = document.getElementById("scan-pos-amount");
-    const scanSource = document.getElementById("scan-payment-source");
-    const confirmPaymentBtn = document.getElementById("btn-confirm-qr-payment");
-    const qrPayMsg = document.getElementById("qr-payment-message");
-
-    const btnCloseQrCode = document.getElementById("btn-close-qr-code");
-    const qrModal = document.getElementById("qr-code-modal");
-
-    let scanType = "pos";
-    let scrolledIban = "";
-
-    const handleQrScannedValue = (text) => {
-        text = (text || "").trim();
-        
-        // Try to parse Turkish BKM QR format first
-        const parsedBkm = parseTurkishQrFormat(text);
-        if (parsedBkm) {
-            if (parsedBkm.amount > 0) {
-                // POS payment with amount
-                scanType = "pos";
-                scanTitle.textContent = currentLanguage === "tr" ? "Taranan Bilgi: QR Ödeme" : "Scanned Data: QR Payment";
-                scanMerchant.parentElement.style.display = "flex";
-                scanMerchant.textContent = parsedBkm.recipient || "QR Ödeme";
-                scanAmount.textContent = `${parsedBkm.amount.toFixed(2)} TRY`;
-                scannerResult.classList.remove("hidden");
-                
-                window.scannedPosAmount = parsedBkm.amount;
-                window.scannedPosMerchant = parsedBkm.recipient || "QR Ödeme";
-                window.scannedPosIban = parsedBkm.iban;
-            } else {
-                // Transfer without amount (just IBAN/recipient)
-                scanType = "transfer";
-                scrolledIban = parsedBkm.iban;
-                scanTitle.textContent = currentLanguage === "tr" ? "Taranan Bilgi: Kişiye Para Transferi" : "Scanned Data: P2P Fund Transfer";
-                scanMerchant.parentElement.style.display = "none";
-                scanAmount.textContent = currentLanguage === "tr" ? 
-                    `Alıcı: ${parsedBkm.recipient || parsedBkm.iban} (Transfer formuna aktarılacak)` : 
-                    `Recipient: ${parsedBkm.recipient || parsedBkm.iban} (Redirecting to form)`;
-                scannerResult.classList.remove("hidden");
-            }
-        } else if (text.startsWith("TR") || text.startsWith("ACC-") || text.length > 15) {
-            scanType = "transfer";
-            scrolledIban = text;
-            scanTitle.textContent = currentLanguage === "tr" ? "Taranan Bilgi: Kişiye Para Transferi" : "Scanned Data: P2P Fund Transfer";
-            scanMerchant.parentElement.style.display = "none";
-            scanAmount.textContent = currentLanguage === "tr" ? `Alıcı Hesap: ${text} (Transfer formuna aktarılacak)` : `Recipient: ${text} (Redirecting to form)`;
-            scannerResult.classList.remove("hidden");
-        } else {
-            scanType = "pos";
-            let merchant = "SmartPOS Merchant";
-            let amt = 150.00;
-            
-            if (text.includes("merchant=") && text.includes("amount=")) {
-                const urlParams = new URLSearchParams(text.replace("POS_PAYMENT:", ""));
-                merchant = urlParams.get("merchant") || merchant;
-                amt = parseFloat(urlParams.get("amount")) || amt;
-            } else if (!isNaN(parseFloat(text))) {
-                amt = parseFloat(text);
-            }
-            
-            scanTitle.textContent = currentLanguage === "tr" ? "Taranan Bilgi: POS İşyeri Ödemesi" : "Scanned Data: POS Merchant Charge";
-            scanMerchant.parentElement.style.display = "flex";
-            scanMerchant.textContent = merchant;
-            scanAmount.textContent = `${amt.toFixed(2)} TRY`;
-            scannerResult.classList.remove("hidden");
-            
-            window.scannedPosAmount = amt;
-            window.scannedPosMerchant = merchant;
-        }
-        
-        if (typeof confetti === "function") confetti();
-    };
-
-    // Parse Turkish BKM QR format
-    function parseTurkishQrFormat(text) {
-        try {
-            // Try to find IBAN (starts with TR followed by 24-26 digits)
-            const ibanMatch = text.match(/TR\d{24,26}/);
-            const iban = ibanMatch ? ibanMatch[0] : null;
-            
-            // Try to extract amount (look for numeric patterns that could be amounts)
-            // Turkish QR often has amount in format like 00000150.00 (150.00 TL)
-            let amount = 0;
-            
-            // Pattern 1: Look for amount BEFORE IBAN (common in BKM format)
-            // Often appears as 0000000001500 (15.00 TL) before the IBAN
-            if (iban) {
-                const ibanIndex = text.indexOf(iban);
-                const beforeIban = text.substring(0, ibanIndex);
-                
-                // First, try to find exact 1500 pattern (15 TL in kuruş)
-                const exact1500Match = beforeIban.match(/1500/);
-                if (exact1500Match) {
-                    amount = 15.00;
-                }
-                
-                // If not found, look for 13 digit numbers that start with zeros (kuruş format in BKM)
-                if (amount === 0) {
-                    const kuruşBeforeIbanMatches = beforeIban.match(/(0\d{12})/g);
-                    if (kuruşBeforeIbanMatches) {
-                        // Find the match that gives the most reasonable amount (prefer smaller amounts)
-                        let bestAmount = 0;
-                        for (const match of kuruşBeforeIbanMatches) {
-                            const kuruşValue = parseInt(match, 10);
-                            const tlValue = kuruşValue / 100;
-                            // Prefer amounts that are reasonable (0.01 to 10,000 TL)
-                            if (tlValue >= 0.01 && tlValue <= 10000) {
-                                // Always prefer the smallest reasonable amount
-                                if (bestAmount === 0 || tlValue < bestAmount) {
-                                    bestAmount = tlValue;
-                                }
-                            }
-                        }
-                        amount = bestAmount;
-                    }
-                }
-            }
-            
-            // Pattern 2: Look for amount in the specific position in BKM QR format
-            // After IBAN, there's often a 12-13 digit number representing kuruş
-            if (amount === 0 && iban) {
-                const ibanIndex = text.indexOf(iban);
-                const afterIban = text.substring(ibanIndex + iban.length);
-                // Look for 12-13 digit number after IBAN (kuruş format)
-                const kuruşAfterIban = afterIban.match(/^(\d{12,13})/);
-                if (kuruşAfterIban) {
-                    const kuruşValue = parseInt(kuruşAfterIban[1], 10);
-                    const tlValue = kuruşValue / 100;
-                    if (tlValue >= 0.01 && tlValue <= 1000000) {
-                        amount = tlValue;
-                    }
-                }
-            }
-            
-            // Pattern 3: Decimal format like 15.00 or 15,00
-            if (amount === 0) {
-                const decimalMatch = text.match(/(\d{1,10})[.,](\d{2})/);
-                if (decimalMatch) {
-                    const wholePart = parseInt(decimalMatch[1], 10);
-                    const decimalPart = parseInt(decimalMatch[2], 10);
-                    amount = wholePart + (decimalPart / 100);
-                }
-            }
-            
-            // Pattern 4: Look for 4-6 digit numbers that could be kuruş values (e.g., 1500 = 15.00 TL)
-            // But filter out obviously large numbers that are likely account numbers
-            if (amount === 0) {
-                const kuruşMatch = text.match(/(\d{4,6})/g);
-                if (kuruşMatch) {
-                    for (const match of kuruşMatch) {
-                        const kuruşValue = parseInt(match, 10);
-                        const tlValue = kuruşValue / 100;
-                        // Only accept if it's a reasonable amount (0.01 to 1,000 TL)
-                        // This filters out large numbers like 750210 (7502.10 TL)
-                        if (tlValue >= 0.01 && tlValue <= 1000) {
-                            amount = tlValue;
-                            break;
-                        }
-                    }
-                }
-            }
-            
-            // Pattern 5: Simple whole number (e.g., 15)
-            if (amount === 0) {
-                const wholeMatch = text.match(/\b(\d{1,6})\b/);
-                if (wholeMatch) {
-                    const potentialAmount = parseInt(wholeMatch[1], 10);
-                    if (potentialAmount >= 1 && potentialAmount <= 100000) {
-                        amount = potentialAmount;
-                    }
-                }
-            }
-            
-            // Try to extract recipient name (Turkish characters)
-            // Look for name-like patterns after numbers
-            let recipient = null;
-            
-            // Extract text that looks like a name (contains letters, possibly Turkish chars)
-            // Usually appears after IBAN or amount
-            const nameMatch = text.match(/([A-Za-zÇĞİÖŞÜçğıöşü\s]{3,50})/);
-            if (nameMatch) {
-                recipient = nameMatch[1].trim();
-                // Filter out common non-name words
-                if (recipient.length < 3 || recipient.match(/^\d+$/)) {
-                    recipient = null;
-                }
-            }
-            
-            // If we found at least an IBAN, return the parsed data
-            if (iban) {
-                return { iban, amount, recipient };
-            }
-            
-            return null;
-        } catch (e) {
-            console.error("Error parsing Turkish QR format:", e);
-            return null;
-        }
-    }
-
-    const stopScanner = () => {
-        if (html5QrcodeScanner) {
-            try {
-                if (html5QrcodeScanner.isScanning) {
-                    html5QrcodeScanner.stop().catch(e => {});
-                }
-            } catch(e) {}
-        }
-        scannerModal.classList.add("hidden");
-    };
-
-    if (btnQrActions && scannerModal) {
-        btnQrActions.addEventListener("click", () => {
-            fetch(`${API_URL}/banking/accounts`, {
-                headers: { "Authorization": `Bearer ${currentToken}` }
-            }).then(r => r.json()).then(accounts => {
-                scanSource.innerHTML = "";
-                accounts.filter(a => a.currency === "TRY").forEach(acc => {
-                    const opt = document.createElement("option");
-                    opt.value = acc.accountNumber;
-                    opt.textContent = `${acc.accountNumber} (${acc.balance.toFixed(2)} TRY)`;
-                    scanSource.appendChild(opt);
-                });
-            });
-
-            scannerResult.classList.add("hidden");
-            qrPayMsg.className = "alert hidden";
-            scannerModal.classList.remove("hidden");
-
-            // Start webcam scanner
-            if (typeof Html5Qrcode === "function") {
-                if (html5QrcodeScanner) {
-                    try { html5QrcodeScanner.clear(); } catch(e) {}
-                }
-                
-                html5QrcodeScanner = new Html5Qrcode("qr-reader");
-                
-                const qrSuccessCallback = (decodedText) => {
-                    html5QrcodeScanner.stop().then(() => {
-                        handleQrScannedValue(decodedText);
-                    }).catch(() => {
-                        handleQrScannedValue(decodedText);
-                    });
-                };
-                
-                const config = { fps: 10, qrbox: { width: 220, height: 220 } };
-                
-                html5QrcodeScanner.start({ facingMode: "environment" }, config, qrSuccessCallback)
-                    .catch(err => {
-                        console.warn("Webcam not started (headless or no permission):", err);
-                    });
-            }
-        });
-    }
-
-    if (btnCloseScanner) {
-        btnCloseScanner.addEventListener("click", stopScanner);
-    }
-
-    if (btnCloseQrCode) {
-        btnCloseQrCode.addEventListener("click", () => {
-            qrModal.classList.add("hidden");
-        });
-    }
-
-    if (btnScanPos) {
-        btnScanPos.addEventListener("click", () => {
-            handleQrScannedValue("POS_PAYMENT:merchant=Starbucks Coffee&amount=145.00");
-        });
-    }
-
-    if (btnScanTransfer) {
-        btnScanTransfer.addEventListener("click", () => {
-            handleQrScannedValue("TR987654321012345678901234");
-        });
-    }
-
-    if (confirmPaymentBtn) {
-        confirmPaymentBtn.addEventListener("click", async () => {
-            qrPayMsg.className = "alert hidden";
-            const sourceAccNo = scanSource.value;
-
-            if (!sourceAccNo) {
-                qrPayMsg.textContent = "Ödeme hesabı bulunamadı.";
-                qrPayMsg.className = "alert alert-danger";
-                return;
-            }
-
-            if (scanType === "pos") {
-                confirmPaymentBtn.disabled = true;
-                const amt = window.scannedPosAmount || 145.00;
-                const merch = window.scannedPosMerchant || "Starbucks Coffee";
-                try {
-                    const response = await fetch(`${API_URL}/banking/transfer`, {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json",
-                            "Authorization": `Bearer ${currentToken}`
-                        },
-                        body: JSON.stringify({
-                            sourceAccountNumber: sourceAccNo,
-                            destinationAccountNumber: "TR000000000000000000000000",
-                            amount: amt,
-                            description: `POS QR Ödemesi: ${merch}`,
-                            category: "Market"
-                        })
-                    });
-
-                    if (response.ok) {
-                        qrPayMsg.textContent = currentLanguage === "tr" ? "POS Ödemesi Başarıyla Tamamlandı!" : "POS Charge Approved!";
-                        qrPayMsg.className = "alert alert-success";
-                        loadAccounts();
-                        setTimeout(() => {
-                            stopScanner();
-                        }, 1500);
-                    } else {
-                        qrPayMsg.textContent = "Ödeme reddedildi (Bakiye yetersiz).";
-                        qrPayMsg.className = "alert alert-danger";
-                    }
-                } catch(err) {
-                    qrPayMsg.textContent = "İşlem başarısız.";
-                } finally {
-                    confirmPaymentBtn.disabled = false;
-                }
-            } else {
-                document.getElementById("transfer-dest").value = scrolledIban;
-                document.getElementById("transfer-source").value = sourceAccNo;
-                document.getElementById("btn-tab-accounts").click();
-                stopScanner();
-                document.getElementById("transfer-amount").focus();
-            }
-        });
-    }
-
-    window.showAccountQrCode = (accountNumber) => {
-        const qrModal = document.getElementById("qr-code-modal");
-        const qrImg = document.getElementById("qr-code-image");
-        const qrAccNo = document.getElementById("qr-account-number");
-
-        if (!qrModal || !qrImg || !qrAccNo) return;
-
-        qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(accountNumber)}`;
-        qrAccNo.textContent = accountNumber;
-        qrModal.classList.remove("hidden");
-    };
 }
 
 function showTransactionSlip(tx) {
-    const modal = document.getElementById("slip-modal");
+    const modal = byId("slip-modal");
     if (!modal) return;
+    const acc = findAccount(currentTransactions.accountId);
 
-    document.getElementById("slip-date").textContent = new Date(tx.createdAt).toLocaleString(currentLanguage === "tr" ? "tr-TR" : "en-US");
-    document.getElementById("slip-ref-no").textContent = `TX-${tx.id.toString().padStart(8, '0')}`;
-    document.getElementById("slip-type").textContent = getLocalizedText(tx.type, tx.type);
-    
-    document.getElementById("slip-sender-name").textContent = tx.sourceAccountOwnerName || "SmartBank Müşterisi";
-    document.getElementById("slip-sender-acc").textContent = tx.sourceAccountNumber || "-";
-    
-    document.getElementById("slip-receiver-name").textContent = tx.destinationAccountOwnerName || "SmartBank Müşterisi";
-    document.getElementById("slip-receiver-acc").textContent = tx.destinationAccountNumber || "-";
-    
-    document.getElementById("slip-amount").textContent = `${tx.amount.toFixed(2)} ${tx.currency || 'TRY'}`;
-    document.getElementById("slip-desc").textContent = tx.description || "-";
+    byId("slip-date").textContent = formatDateTime(tx.createdAt);
+    byId("slip-ref-no").textContent = typeof tx.id === "number" ? `TX-${String(tx.id).padStart(8, "0")}` : `TX-${String(tx.id ?? "-").toUpperCase()}`;
+    byId("slip-type").textContent = hasKey(`txType.${tx.type}`) ? t(`txType.${tx.type}`) : String(tx.type ?? "-");
+    byId("slip-sender-name").textContent = tx.sourceAccountOwnerName || t("slip.customer");
+    byId("slip-sender-acc").textContent = tx.sourceAccountNumber || "-";
+    byId("slip-receiver-name").textContent = tx.destinationAccountOwnerName || t("slip.customer");
+    byId("slip-receiver-acc").textContent = tx.destinationAccountNumber || "-";
+    byId("slip-amount").textContent = formatMoney(tx.amount, tx.currency || (acc && acc.currency));
+    byId("slip-desc").textContent = tx.description || "-";
 
-    modal.classList.remove("hidden");
+    openModal(modal, { initialFocus: "#btn-close-slip" });
 }
 
-const closeSlipBtn = document.getElementById("btn-close-slip");
-if (closeSlipBtn) {
-    closeSlipBtn.addEventListener("click", () => {
-        document.getElementById("slip-modal").classList.add("hidden");
+function initHistoryAndSlip() {
+    byId("btn-tx-load-more").addEventListener("click", () => {
+        showAllTransactions = !showAllTransactions;
+        renderTransactions();
+    });
+    byId("btn-close-slip").addEventListener("click", () => closeModal(byId("slip-modal")));
+}
+
+/* ==========================================================================
+   Transfer form + one-time code modal (dashboard.html)
+   ========================================================================== */
+let currentOtpCallback = null;
+
+// Shows the one-time code dialog. confirmCallback(code) resolves to { success, message }.
+function showOTPModal(reasonMessage, confirmCallback) {
+    const modal = byId("otp-modal");
+    const inputEl = byId("otp-code-input");
+    if (!modal || !inputEl) return;
+
+    byId("otp-modal-desc").textContent = reasonMessage ? `${reasonMessage} ${t("otp.desc")}` : t("otp.desc");
+    inputEl.value = "";
+    hideMessage(byId("otp-error-msg"));
+    byId("otp-error-msg").classList.add("hidden");
+    byId("btn-submit-otp").disabled = false;
+
+    currentOtpCallback = confirmCallback;
+    openModal(modal, { initialFocus: inputEl, closeOnBackdrop: false, onClose: () => { currentOtpCallback = null; } });
+}
+
+function initOTPModalEvents() {
+    const modal = byId("otp-modal");
+    const inputEl = byId("otp-code-input");
+    const errorEl = byId("otp-error-msg");
+    const submitBtn = byId("btn-submit-otp");
+    if (!modal) return;
+
+    digitsOnly(inputEl);
+    byId("btn-close-otp").addEventListener("click", () => closeModal(modal));
+
+    const submitOtp = () => withBusy(submitBtn, async () => {
+        const code = inputEl.value.trim();
+        errorEl.classList.add("hidden");
+        if (!/^\d{6}$/.test(code)) {
+            errorEl.textContent = t("otp.invalid");
+            errorEl.className = "alert alert-danger";
+            inputEl.focus();
+            return;
+        }
+        const callback = currentOtpCallback;
+        if (!callback) return;
+
+        let result;
+        try { result = await callback(code); } catch (err) { result = { success: false, message: t("err.ConnectionError") }; }
+        if (result && result.success) {
+            closeModal(modal);
+        } else {
+            errorEl.textContent = (result && result.message) || t("err.Generic");
+            errorEl.className = "alert alert-danger";
+            inputEl.focus();
+        }
+    });
+
+    submitBtn.addEventListener("click", submitOtp);
+    inputEl.addEventListener("keydown", event => {
+        if (event.key === "Enter") { event.preventDefault(); submitOtp(); }
+    });
+}
+
+async function onTransferSucceeded(payload) {
+    const msgEl = byId("transfer-message");
+    showMessage(msgEl, t("transfer.success"), "success");
+
+    await saveContactAfterTransfer(payload.destinationAccountNumber);
+
+    byId("transfer-dest").value = "";
+    byId("transfer-amount").value = "";
+    byId("transfer-desc-input").value = "";
+    byId("transfer-saved-contacts").value = "";
+
+    await accountsStore.refresh(true);
+    if (activeAccountId) loadTransactions(activeAccountId);
+    celebrate();
+}
+
+async function handleTransferSubmit() {
+    const msgEl = byId("transfer-message");
+    hideMessage(msgEl);
+
+    const sourceAccountNumber = byId("transfer-source").value;
+    const destinationAccountNumber = byId("transfer-dest").value.trim();
+    const description = byId("transfer-desc-input").value.trim();
+    const category = byId("transfer-category-input").value;
+    const amount = parseAmount(byId("transfer-amount").value);
+
+    if (!sourceAccountNumber) { showMessage(msgEl, t("transfer.noSource"), "error"); byId("transfer-source").focus(); return; }
+    if (!destinationAccountNumber) { showMessage(msgEl, t("transfer.noDest"), "error"); byId("transfer-dest").focus(); return; }
+    if (!amount.ok) { showMessage(msgEl, errorText(amount.errorKey), "error"); byId("transfer-amount").focus(); return; }
+
+    const payload = { sourceAccountNumber, destinationAccountNumber, amount: amount.value, description, category };
+    const res = await api("/banking/transfer", { method: "POST", body: payload });
+    if (res.ok) { await onTransferSucceeded(payload); return; }
+
+    const key = res.data && res.data.errorKey;
+    if (key === "Requires2FA" || key === "SuspectedFraudDuplicate" || key === "SuspectedFraudHighValue") {
+        // The server asks for a one-time code ("message|OTP:code" in demo mode).
+        const { otp } = splitOtpMarker(res.data.message);
+        showOtpToast(otp);
+        showOTPModal(errorText(key), async (code) => {
+            const second = await api("/banking/transfer", { method: "POST", body: { ...payload, otpCode: code } });
+            if (!second.ok) return { success: false, message: messageFromResponse(second) };
+            await onTransferSucceeded(payload);
+            return { success: true };
+        });
+        return;
+    }
+
+    showMessage(msgEl, messageFromResponse(res), "error");
+}
+
+function initTransferForm() {
+    byId("transfer-form").addEventListener("submit", event => {
+        event.preventDefault();
+        withBusy(byId("btn-transfer-submit"), handleTransferSubmit);
+    });
+}
+
+/* ==========================================================================
+   Currency / precious metal exchange (dashboard.html)
+   ========================================================================== */
+let activeMarketRates = [];
+
+function updateExchangeRateDisplay() {
+    const rateEl = byId("exchange-current-rate");
+    const totalEl = byId("exchange-total-cost");
+    if (!rateEl || !totalEl) return;
+
+    const asset = byId("exchange-asset").value;
+    const action = byId("exchange-action").value;
+    const info = activeMarketRates.find(rate => rate.code === asset);
+    if (!info) {
+        rateEl.textContent = "-";
+        totalEl.textContent = formatMoney(0, "TRY");
+        return;
+    }
+
+    const rate = action === "buy" ? info.sell : info.buy;
+    rateEl.textContent = `${formatNumber(rate, 2, 4)} TRY`;
+    const amount = Number(byId("exchange-amount").value) || 0;
+    totalEl.textContent = formatMoney(amount * rate, "TRY");
+}
+
+function fillExchangeSources() {
+    const select = byId("exchange-source");
+    if (!select) return;
+    const isBuy = byId("exchange-action").value === "buy";
+    const asset = byId("exchange-asset").value;
+    const wanted = isBuy ? "TRY" : asset;
+    const previous = select.value;
+
+    clearChildren(select);
+    const matching = (accountsStore.data || []).filter(acc => acc.currency === wanted);
+    if (!matching.length) {
+        select.append(h("option", { value: "", text: isBuy ? t("exchange.noTry") : t("exchange.noAsset", { asset }) }));
+    } else {
+        matching.forEach(acc => select.append(h("option", { value: acc.id, text: `${acc.accountNumber} (${formatMoney(acc.balance, acc.currency)})` })));
+        if (previous && Array.from(select.options).some(option => option.value === previous)) select.value = previous;
+    }
+    updateExchangeRateDisplay();
+}
+
+function initExchangeWidget() {
+    const form = byId("exchange-form");
+    if (!form) return;
+    const msgEl = byId("exchange-message");
+
+    byId("exchange-action").addEventListener("change", fillExchangeSources);
+    byId("exchange-asset").addEventListener("change", fillExchangeSources);
+    byId("exchange-amount").addEventListener("input", updateExchangeRateDisplay);
+    accountsStore.subscribe(fillExchangeSources);
+    onLanguageChange(fillExchangeSources);
+    fillExchangeSources();
+
+    form.addEventListener("submit", event => {
+        event.preventDefault();
+        withBusy(byId("btn-exchange-submit"), async () => {
+            hideMessage(msgEl);
+            const sourceAccountId = byId("exchange-source").value;
+            const asset = byId("exchange-asset").value;
+            const action = byId("exchange-action").value;
+            const amount = parseAmount(byId("exchange-amount").value);
+
+            if (!sourceAccountId) { showMessage(msgEl, t("exchange.noAccount"), "error"); byId("exchange-source").focus(); return; }
+            if (!amount.ok) { showMessage(msgEl, errorText(amount.errorKey), "error"); byId("exchange-amount").focus(); return; }
+
+            const res = await api("/banking/exchange", { method: "POST", body: { sourceAccountId, asset, action, amount: amount.value } });
+            if (!res.ok) { showMessage(msgEl, messageFromResponse(res), "error"); return; }
+
+            showMessage(msgEl, t("exchange.success"), "success");
+            byId("exchange-amount").value = "";
+            await accountsStore.refresh(true);
+            if (activeAccountId) loadTransactions(activeAccountId);
+        });
+    });
+}
+
+/* ==========================================================================
+   Saved contacts (dashboard.html)
+   ========================================================================== */
+function renderContactSelect() {
+    const select = byId("transfer-saved-contacts");
+    if (!select) return;
+    clearChildren(select);
+    select.append(h("option", { value: "", text: t("transfer.savedContactsPlaceholder") }));
+    savedContacts.forEach(contact => {
+        select.append(h("option", { value: contact.accountNumber, text: `${contact.alias} (${contact.accountNumber})` }));
+    });
+}
+
+async function loadSavedContacts() {
+    const res = await api("/banking/contacts");
+    if (res.ok && Array.isArray(res.data)) {
+        savedContacts = res.data;
+        renderContactSelect();
+    }
+    return res.ok;
+}
+
+async function saveContactAfterTransfer(destinationAccountNumber) {
+    const checkEl = byId("save-contact-check");
+    const aliasInput = byId("save-contact-alias");
+    if (!checkEl || !checkEl.checked) return;
+
+    const alias = aliasInput.value.trim() || `${t("contacts.defaultAlias")} ${destinationAccountNumber.slice(-4)}`;
+    const res = await api("/banking/contacts", { method: "POST", body: { alias, accountNumber: destinationAccountNumber } });
+    if (res.ok) {
+        checkEl.checked = false;
+        aliasInput.value = "";
+        aliasInput.classList.add("hidden");
+        await loadSavedContacts();
+    } else {
+        notify(`${t("contacts.saveFailed")} ${messageFromResponse(res)}`, "error");
+    }
+}
+
+function openManageContacts() {
+    const dialog = createDialog({ title: t("contacts.manageTitle"), description: t("contacts.manageDesc") });
+    const listBox = h("div", { class: "contacts-list" });
+    dialog.body.append(listBox);
+    dialog.footer.append(h("button", { type: "button", class: "btn btn-secondary btn-block", text: t("common.close"), onclick: () => dialog.close() }));
+
+    const render = () => {
+        clearChildren(listBox);
+        if (!savedContacts.length) {
+            listBox.append(h("div", { class: "text-muted text-center py-4", text: t("contacts.none") }));
+            return;
+        }
+        savedContacts.forEach(contact => {
+            const editButton = h("button", { type: "button", class: "btn btn-secondary btn-xs", "aria-label": t("contacts.editLabel", { name: contact.alias }), title: t("contacts.editLabel", { name: contact.alias }) }, "✏️");
+            const deleteButton = h("button", { type: "button", class: "btn btn-danger btn-xs", "aria-label": t("contacts.deleteLabel", { name: contact.alias }), title: t("contacts.deleteLabel", { name: contact.alias }) }, "🗑️");
+
+            editButton.addEventListener("click", async () => {
+                const alias = await uiPrompt({
+                    title: t("contacts.editTitle"), message: t("contacts.editMessage", { name: contact.alias }),
+                    label: t("contacts.aliasLabel"), value: contact.alias, maxlength: 50,
+                    validate: value => (value ? null : t("contacts.aliasEmpty")),
+                    submit: async (value) => {
+                        const res = await api("/banking/contacts", { method: "POST", body: { alias: value, accountNumber: contact.accountNumber } });
+                        return res.ok ? { ok: true } : { ok: false, message: messageFromResponse(res) };
+                    }
+                });
+                if (alias !== null) { await loadSavedContacts(); render(); }
+            });
+
+            deleteButton.addEventListener("click", async () => {
+                if (!(await uiConfirm(t("contacts.deleteConfirm"), { danger: true, confirmText: t("common.delete") }))) return;
+                const res = await withBusy(deleteButton, () => api(`/banking/contacts/${encodeURIComponent(contact.id)}`, { method: "DELETE" }));
+                if (res && res.ok) { await loadSavedContacts(); render(); }
+                else if (res) notify(messageFromResponse(res), "error");
+            });
+
+            listBox.append(h("div", { class: "contact-row" },
+                h("div", { class: "contact-info" },
+                    h("span", { class: "contact-alias", text: contact.alias }),
+                    h("span", { class: "contact-number", text: contact.accountNumber })),
+                h("div", { class: "contact-actions" }, editButton, deleteButton)));
+        });
+    };
+
+    render();
+    dialog.open({ initialFocus: dialog.footer.querySelector("button") });
+}
+
+function initSavedContacts() {
+    const selectEl = byId("transfer-saved-contacts");
+    if (!selectEl) return;
+    const checkEl = byId("save-contact-check");
+    const aliasInput = byId("save-contact-alias");
+
+    checkEl.addEventListener("change", () => {
+        aliasInput.classList.toggle("hidden", !checkEl.checked);
+        if (!checkEl.checked) aliasInput.value = "";
+        else aliasInput.focus();
+    });
+    selectEl.addEventListener("change", () => { if (selectEl.value) byId("transfer-dest").value = selectEl.value; });
+    byId("btn-manage-contacts").addEventListener("click", openManageContacts);
+    onLanguageChange(renderContactSelect);
+    loadSavedContacts();
+}
+
+
+/* ==========================================================================
+   Credit cards, statements and the card panel (dashboard.html)
+   ========================================================================== */
+let currentStatement = null;   // the newest statement of the selected card (null while loading or when there is none)
+
+function maskedCardNumber(card) {
+    return `**** **** **** ${String(card.cardNumber || "").slice(-4) || "0000"}`;
+}
+
+function updateCardPreview(card) {
+    const numberEl = byId("preview-card-number");
+    if (!numberEl) return;
+    numberEl.textContent = card ? maskedCardNumber(card) : "**** **** **** ****";
+    byId("preview-card-expiry").textContent = `EXP ${(card && card.expiryDate) || "12/31"}`;
+    // The CVV is never stored: it only arrives in the response that issues the card.
+    byId("preview-card-cvv").textContent = (card && card.cardCvv) || "•••";
+    byId("preview-card-type-badge").textContent = "CREDIT CARD";
+    setCardTheme((card && card.cardTheme) || "theme-neon-blue");
+}
+
+function setCardTheme(theme) {
+    const safeTheme = ["theme-neon-blue", "theme-sunset", "theme-metallic-dark", "theme-glass"].includes(theme) ? theme : "theme-neon-blue";
+    byId("debit-card-preview").className = `debit-card card-front ${safeTheme}`;
+    byId("debit-card-preview-back").className = `debit-card card-back ${safeTheme}`;
+    document.querySelectorAll(".theme-btn").forEach(btn => {
+        const on = btn.dataset.theme === safeTheme;
+        btn.classList.toggle("active", on);
+        btn.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+}
+
+function renderCreditCards(cards) {
+    const listEl = byId("credit-cards-list");
+    if (!listEl) return;
+    const list = Array.isArray(cards) ? cards : [];
+    const placeholder = byId("cc-no-selected");
+    const details = byId("cc-details-content");
+    clearChildren(listEl);
+    clearChildren(placeholder);
+
+    if (!list.length) {
+        activeCreditCardId = null;
+        currentStatement = null;
+        listEl.append(h("div", { class: "text-muted", text: t("cards.none") }));
+        details.classList.add("hidden");
+        placeholder.classList.remove("hidden");
+        placeholder.append(h("div", { class: "cc-empty" },
+            h("span", { class: "cc-empty-icon", "aria-hidden": "true" }, "💳"),
+            h("h4", { text: t("cards.emptyTitle") }),
+            h("p", { class: "text-muted", text: t("cards.emptyDesc") }),
+            h("button", { type: "button", class: "btn btn-primary btn-sm", text: t("cards.applyNow"), onclick: () => byId("btn-apply-creditcard").click() })));
+        updateCardPreview(null);
+        return;
+    }
+
+    placeholder.textContent = t("cards.selectPrompt");
+    if (!list.some(card => card.id === activeCreditCardId)) activeCreditCardId = list[0].id;
+
+    list.forEach(card => {
+        const isActive = card.id === activeCreditCardId;
+        listEl.append(h("div", { class: `account-card credit glassmorphism${isActive ? " active" : ""}`, dataset: { cardId: card.id } },
+            h("button", { type: "button", class: "card-hit", "aria-pressed": isActive ? "true" : "false",
+                "aria-label": `SmartCredit ${maskedCardNumber(card)}`, onclick: () => selectCreditCard(card.id) }),
+            h("div", { class: "account-header" }, h("span", { text: "SmartCredit" }), h("span", { class: "account-currency", text: "TRY" })),
+            h("div", { class: "account-balance", text: formatMoney(card.currentDebt, "TRY") }),
+            h("div", { class: "account-number", text: maskedCardNumber(card) }),
+            h("div", { class: "credit-limit-info" },
+                h("span", { text: `${t("cards.limitShort")}: ${formatMoney(card.cardLimit, "TRY")}` }),
+                h("span", { text: `${t("cards.availableShort")}: ${formatMoney(card.availableLimit, "TRY")}` })),
+            h("div", { class: "btn btn-secondary btn-xs btn-stmt-view", "aria-hidden": "true", text: t("cards.viewStatement") })));
+    });
+
+    renderCardDetails(list.find(card => card.id === activeCreditCardId));
+}
+
+function renderCardDetails(card) {
+    const details = byId("cc-details-content");
+    if (!card) { details.classList.add("hidden"); return; }
+    byId("cc-no-selected").classList.add("hidden");
+    details.classList.remove("hidden");
+    byId("cc-details-masked-no").textContent = maskedCardNumber(card);
+    byId("cc-details-limit").textContent = formatMoney(card.cardLimit, "TRY");
+    byId("cc-details-avail").textContent = formatMoney(card.availableLimit, "TRY");
+    byId("cc-details-debt").textContent = formatMoney(card.currentDebt, "TRY");
+    updateCardPreview(card);
+}
+
+function selectCreditCard(cardId) {
+    if (cardId === activeCreditCardId && currentStatement) return;
+    activeCreditCardId = cardId;
+    document.querySelectorAll("#credit-cards-list .account-card").forEach(el => {
+        const on = el.dataset.cardId === cardId;
+        el.classList.toggle("active", on);
+        const hit = el.querySelector(".card-hit");
+        if (hit) hit.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+    renderCardDetails((cardsStore.data || []).find(card => card.id === cardId));
+    hideMessage(byId("cc-pay-message"));
+    byId("cc-pay-amount").value = "";
+    loadStatement(cardId);
+}
+
+function setStatementPlaceholders() {
+    ["val-cc-stmt-period", "val-cc-stmt-due"].forEach(id => { byId(id).textContent = "-"; });
+    byId("val-cc-stmt-debt").textContent = "-";
+    byId("val-cc-stmt-min").textContent = "-";
+    byId("cc-stmt-status").classList.add("hidden");
+}
+
+function renderStatement() {
+    const stmt = currentStatement;
+    const tbody = byId("cc-stmt-transactions-body");
+    const statusEl = byId("cc-stmt-status");
+    clearChildren(tbody);
+
+    if (!stmt) {
+        setStatementPlaceholders();
+        tbody.append(infoRow(t("cards.noSpend"), 3));
+        return;
+    }
+
+    byId("val-cc-stmt-period").textContent = stmt.periodName || "-";
+    byId("val-cc-stmt-debt").textContent = formatMoney(stmt.periodDebt, "TRY");
+    byId("val-cc-stmt-min").textContent = formatMoney(stmt.minimumPayment, "TRY");
+    byId("val-cc-stmt-due").textContent = formatBusinessDate(stmt.dueDate);
+
+    const paidAmount = Number(stmt.paidAmount) || 0;
+    const remaining = Math.max(0, stmt.periodDebt - paidAmount);
+    const minRemaining = Math.max(0, stmt.minimumPayment - paidAmount);
+    statusEl.classList.remove("hidden");
+    if (stmt.isPaid || remaining <= 0) {
+        statusEl.className = "statement-payment-status paid";
+        statusEl.textContent = t("cards.statusPaid");
+    } else {
+        statusEl.className = "statement-payment-status unpaid";
+        statusEl.textContent = minRemaining <= 0
+            ? t("cards.statusMinPaid", { remaining: formatMoney(remaining, "TRY") })
+            : t("cards.statusUnpaid", { min: formatMoney(minRemaining, "TRY") });
+    }
+
+    const transactions = Array.isArray(stmt.transactions) ? stmt.transactions : [];
+    if (!transactions.length) {
+        tbody.append(infoRow(t("cards.noSpend"), 3));
+        return;
+    }
+    transactions.forEach(tx => {
+        tbody.append(h("tr", null,
+            h("td", { text: formatShortDateTime(tx.createdAt) }),
+            h("td", { text: tx.description || "-" }),
+            h("td", { class: "text-right tx-amount-negative", text: `-${formatMoney(tx.amount, "TRY")}` })));
+    });
+}
+
+async function loadStatement(cardId) {
+    currentStatement = null;
+    if (!cardId) return;
+    const tbody = byId("cc-stmt-transactions-body");
+    const seq = ++requestSeq.statements;
+    setStatementPlaceholders();
+    clearChildren(tbody);
+    tbody.append(infoRow(t("common.loading"), 3));
+
+    const res = await api(`/banking/credit-cards/${encodeURIComponent(cardId)}/statements`);
+    if (seq !== requestSeq.statements || cardId !== activeCreditCardId) return;
+
+    if (!res.ok || !Array.isArray(res.data)) {
+        clearChildren(tbody);
+        tbody.append(infoRow(messageFromResponse(res), 3, "text-danger"));
+        return;
+    }
+    // The server returns the statements newest first (ordered by cut-off date, descending).
+    currentStatement = res.data[0] || null;
+    renderStatement();
+}
+
+// One refresh for everything that changes after a card operation: the card list, its details and the statement.
+async function refreshCreditCardPanel() {
+    await cardsStore.refresh(true);
+    await loadStatement(activeCreditCardId);
+}
+
+function populatePaymentSources() {
+    const select = byId("cc-pay-source");
+    if (!select) return;
+    const previous = select.value;
+    clearChildren(select);
+    const tryAccounts = (accountsStore.data || []).filter(acc => acc.currency === "TRY");
+    if (!tryAccounts.length) {
+        select.append(h("option", { value: "", text: t("cards.noTryAccount") }));
+        return;
+    }
+    tryAccounts.forEach(acc => select.append(h("option", { value: acc.accountNumber, text: `${acc.accountNumber} (${formatMoney(acc.balance, "TRY")})` })));
+    if (previous && Array.from(select.options).some(option => option.value === previous)) select.value = previous;
+}
+
+function initCreditCardEvents() {
+    cardsStore.subscribe(renderCreditCards);
+    accountsStore.subscribe(populatePaymentSources);
+    onLanguageChange(() => {
+        if (cardsStore.data) renderCreditCards(cardsStore.data);
+        renderStatement();
+        populatePaymentSources();
+    });
+
+    const amountInput = byId("cc-pay-amount");
+    const presetAmount = (kind) => {
+        if (!currentStatement) { notify(t("cards.noStatement"), "info"); return; }
+        const paid = Number(currentStatement.paidAmount) || 0;
+        const base = kind === "min" ? currentStatement.minimumPayment : currentStatement.periodDebt;
+        amountInput.value = Math.max(0, base - paid).toFixed(2);
+        amountInput.focus();
+    };
+    byId("btn-cc-pay-min").addEventListener("click", () => presetAmount("min"));
+    byId("btn-cc-pay-full").addEventListener("click", () => presetAmount("full"));
+
+    // Pay the card debt
+    const payMsg = byId("cc-pay-message");
+    byId("cc-pay-debt-form").addEventListener("submit", event => {
+        event.preventDefault();
+        withBusy(byId("btn-cc-pay-submit"), async () => {
+            hideMessage(payMsg);
+            const sourceAccountNumber = byId("cc-pay-source").value;
+            const amount = parseAmount(amountInput.value);
+            if (!activeCreditCardId) return;
+            if (!sourceAccountNumber) { showMessage(payMsg, t("transfer.noSource"), "error"); return; }
+            if (!amount.ok) { showMessage(payMsg, errorText(amount.errorKey), "error"); amountInput.focus(); return; }
+
+            const res = await api(`/banking/credit-cards/${encodeURIComponent(activeCreditCardId)}/pay`, {
+                method: "POST", body: { sourceAccountNumber, amount: amount.value }
+            });
+            if (!res.ok) { showMessage(payMsg, messageFromResponse(res), "error"); return; }
+
+            showMessage(payMsg, t("cards.paySuccess"), "success");
+            amountInput.value = "";
+            await Promise.all([accountsStore.refresh(true), refreshCreditCardPanel()]);
+        });
+    });
+
+    // Simulate a purchase (the backend keeps the query-string contract for this endpoint)
+    const chargeForm = byId("cc-charge-form");
+    const chargeMsg = byId("cc-charge-message");
+    chargeForm.addEventListener("submit", event => {
+        event.preventDefault();
+        withBusy(byId("btn-cc-charge-submit"), async () => {
+            hideMessage(chargeMsg);
+            if (!activeCreditCardId) return;
+            const description = byId("cc-charge-desc").value.trim();
+            const amount = parseAmount(byId("cc-charge-amount").value);
+            if (!description) { showMessage(chargeMsg, t("cards.chargeNoMerchant"), "error"); byId("cc-charge-desc").focus(); return; }
+            if (!amount.ok) { showMessage(chargeMsg, errorText(amount.errorKey), "error"); byId("cc-charge-amount").focus(); return; }
+
+            const res = await api(`/banking/credit-cards/${encodeURIComponent(activeCreditCardId)}/charge?amount=${encodeURIComponent(String(amount.value))}&description=${encodeURIComponent(description)}`, { method: "POST" });
+            if (!res.ok) { showMessage(chargeMsg, messageFromResponse(res), "error"); return; }
+
+            showMessage(chargeMsg, t("cards.chargeSuccess"), "success");
+            chargeForm.reset();
+            await Promise.all([accountsStore.refresh(true), refreshCreditCardPanel()]);
+        });
+    });
+
+    // Advance the billing period (simulation)
+    byId("btn-cc-advance-period").addEventListener("click", async event => {
+        if (!activeCreditCardId) return;
+        const button = event.currentTarget;
+        if (!(await uiConfirm(t("cards.advanceConfirm"), { danger: true, confirmText: t("cards.advanceBtn") }))) return;
+        await withBusy(button, async () => {
+            const res = await api(`/banking/credit-cards/${encodeURIComponent(activeCreditCardId)}/advance-period`, { method: "POST" });
+            if (!res.ok) { notify(messageFromResponse(res), "error"); return; }
+            notify(t("cards.advanceDone"), "success");
+            await Promise.all([accountsStore.refresh(true), refreshCreditCardPanel()]);
+        });
+    });
+
+    // Apply for a new card
+    byId("btn-apply-creditcard").addEventListener("click", async event => {
+        const button = event.currentTarget;
+        if (!(await uiConfirm(t("cards.applyConfirm"), { confirmText: t("cards.apply") }))) return;
+        await withBusy(button, async () => {
+            const res = await api("/banking/credit-cards", { method: "POST" });
+            if (!res.ok) { notify(messageFromResponse(res), "error"); return; }
+            notify(t("cards.applyDone"), "success");
+            celebrate();
+            await refreshCreditCardPanel();
+        });
+    });
+}
+
+async function loadCreditCards() {
+    const listEl = byId("credit-cards-list");
+    if (listEl && !cardsStore.data) {
+        clearChildren(listEl);
+        listEl.append(h("div", { class: "loading-spinner", text: t("cards.loading") }));
+    }
+    const result = await cardsStore.refresh();
+    if (!result.ok && listEl) {
+        clearChildren(listEl);
+        listEl.append(
+            h("div", { class: "alert alert-danger", role: "alert", text: messageFromResponse(result.res) }),
+            h("button", { type: "button", class: "btn btn-secondary btn-sm", text: t("common.retry"), onclick: () => loadCreditCards() }));
+        return;
+    }
+    await loadStatement(activeCreditCardId);
+}
+
+/* ==========================================================================
+   Open a new account (dashboard.html)
+   ========================================================================== */
+// Tiered deposit rates for the 30-day time deposit. They are shown in the dialog and used by the calculator, which is an
+// estimate: the bank's actual rate is the one stored on the account.
+const DEPOSIT_TIERS = [
+    { upTo: 50000, rate: 48.00 },
+    { upTo: 250000, rate: 49.50 },
+    { upTo: 1000000, rate: 51.00 },
+    { upTo: Infinity, rate: 52.50 }
+];
+const DEPOSIT_WITHHOLDING_TAX = 0.075;
+const DEPOSIT_TERM_DAYS = 30;
+
+function renderDepositTiers() {
+    const body = byId("deposit-tiers-body");
+    if (!body) return;
+    clearChildren(body);
+    let from = 0;
+    DEPOSIT_TIERS.forEach(tier => {
+        const range = Number.isFinite(tier.upTo)
+            ? `${formatNumber(from, 0, 0)} - ${formatNumber(tier.upTo, 0, 0)} TRY`
+            : t("newacc.rangeOver", { from: formatNumber(from, 0, 0) });
+        body.append(h("tr", null,
+            h("td", { text: range }),
+            h("td", { class: "text-right value-positive", text: `%${formatNumber(tier.rate, 2)}` })));
+        from = tier.upTo;
+    });
+}
+
+function resetCreateAccountDialog() {
+    byId("vadeli-tiers-panel").classList.add("hidden");
+    byId("calc-result").classList.add("hidden");
+    byId("calc-principal").value = "";
+    const first = document.querySelector('input[name="new-acc-choice"]');
+    if (first) { first.checked = true; syncAccountTypeCards(); }
+}
+
+function syncAccountTypeCards() {
+    document.querySelectorAll(".acc-type-card").forEach(card => {
+        const radio = card.querySelector('input[type="radio"]');
+        card.classList.toggle("active", !!(radio && radio.checked));
+    });
+    const checked = document.querySelector('input[name="new-acc-choice"]:checked');
+    byId("vadeli-tiers-panel").classList.toggle("hidden", !(checked && checked.value === "TimeDeposit-TRY"));
+}
+
+function initCreateAccountEvent() {
+    const modal = byId("create-account-modal");
+    if (!modal) return;
+
+    renderDepositTiers();
+    onLanguageChange(renderDepositTiers);
+
+    byId("btn-create-account").addEventListener("click", () => {
+        resetCreateAccountDialog();
+        openModal(modal, { onClose: resetCreateAccountDialog });
+    });
+    byId("btn-close-create-acc").addEventListener("click", () => closeModal(modal));
+    document.querySelectorAll('input[name="new-acc-choice"]').forEach(radio => radio.addEventListener("change", syncAccountTypeCards));
+
+    byId("btn-calc-interest").addEventListener("click", () => {
+        const principal = parseAmount(byId("calc-principal").value);
+        if (!principal.ok) { notify(errorText(principal.errorKey), "error"); byId("calc-principal").focus(); return; }
+
+        const tier = DEPOSIT_TIERS.find(candidate => principal.value < candidate.upTo) || DEPOSIT_TIERS[DEPOSIT_TIERS.length - 1];
+        const gross = principal.value * (tier.rate / 100) * (DEPOSIT_TERM_DAYS / 365);
+        const net = gross - gross * DEPOSIT_WITHHOLDING_TAX;
+        byId("calc-rate").textContent = `%${formatNumber(tier.rate, 2)}`;
+        byId("calc-net-profit").textContent = formatMoney(net, "TRY");
+        byId("calc-result").classList.remove("hidden");
+    });
+
+    byId("btn-submit-create-acc").addEventListener("click", event => {
+        withBusy(event.currentTarget, async () => {
+            const checked = document.querySelector('input[name="new-acc-choice"]:checked');
+            if (!checked) return;
+            const [accountType, currency] = checked.value.split("-");
+
+            const res = await api(`/banking/accounts?currency=${encodeURIComponent(currency)}&accountType=${encodeURIComponent(accountType)}`, { method: "POST" });
+            if (!res.ok) { notify(messageFromResponse(res), "error"); return; }
+
+            closeModal(modal);
+            notify(t("newacc.created"), "success");
+            await accountsStore.refresh(true);
+        });
+    });
+}
+
+/* ==========================================================================
+   Standing orders (dashboard.html)
+   ========================================================================== */
+function fillStandingOrderSources() {
+    const sourceSelect = byId("so-source-acc");
+    const cardSelect = byId("so-target-cc");
+    if (!sourceSelect || !cardSelect) return;
+
+    const previousSource = sourceSelect.value;
+    clearChildren(sourceSelect);
+    (accountsStore.data || []).filter(acc => acc.currency === "TRY").forEach(acc => {
+        sourceSelect.append(h("option", { value: acc.accountNumber, text: `${acc.accountNumber} (${formatMoney(acc.balance, "TRY")})` }));
+    });
+    if (previousSource && Array.from(sourceSelect.options).some(option => option.value === previousSource)) sourceSelect.value = previousSource;
+
+    const previousCard = cardSelect.value;
+    clearChildren(cardSelect);
+    (cardsStore.data || []).forEach(card => {
+        cardSelect.append(h("option", { value: card.id, text: `SmartCredit (**** ${String(card.cardNumber || "").slice(-4)})` }));
+    });
+    if (previousCard && Array.from(cardSelect.options).some(option => option.value === previousCard)) cardSelect.value = previousCard;
+}
+
+function frequencyLabel(frequency) {
+    return t(frequency === "Daily" ? "orders.dailyAdj" : frequency === "Weekly" ? "orders.weeklyAdj" : "orders.monthlyAdj");
+}
+
+function renderStandingOrders() {
+    const listEl = byId("standing-orders-list");
+    if (!listEl) return;
+    clearChildren(listEl);
+
+    if (!standingOrders.length) {
+        listEl.append(h("div", { class: "text-muted text-center py-4", text: t("orders.none") }));
+        return;
+    }
+
+    standingOrders.forEach(order => {
+        const isCard = order.type === "CreditCardAutoPay";
+        const description = isCard
+            ? t("orders.descCard")
+            : t("orders.descTransfer", { freq: frequencyLabel(order.frequency), amount: formatMoney(order.amount, "TRY"), dest: order.destinationAccountNumber });
+        const cancelButton = h("button", { type: "button", class: "btn btn-danger btn-xs so-cancel", text: t("orders.cancel") });
+
+        cancelButton.addEventListener("click", async () => {
+            if (!(await uiConfirm(t("orders.cancelConfirm"), { danger: true, confirmText: t("orders.cancel") }))) return;
+            const res = await withBusy(cancelButton, () => api(`/banking/standing-orders/${encodeURIComponent(order.id)}`, { method: "DELETE" }));
+            if (!res) return;
+            if (res.ok) loadStandingOrders();
+            else notify(messageFromResponse(res), "error");
+        });
+
+        listEl.append(h("div", { class: "account-card glassmorphism so-item" },
+            h("div", { class: "so-item-title", text: isCard ? t("orders.titleCard") : t("orders.titleTransfer") }),
+            h("div", { class: "so-item-desc", text: description }),
+            h("div", { class: "so-item-source", text: t("orders.sourceLabel") + ": " + order.sourceAccountNumber }),
+            cancelButton));
+    });
+}
+
+async function loadStandingOrders() {
+    const listEl = byId("standing-orders-list");
+    if (!listEl) return;
+    const seq = ++requestSeq.orders;
+    clearChildren(listEl);
+    listEl.append(h("div", { class: "loading-spinner", text: t("orders.loading") }));
+
+    const res = await api("/banking/standing-orders");
+    if (seq !== requestSeq.orders) return;
+
+    if (!res.ok || !Array.isArray(res.data)) {
+        clearChildren(listEl);
+        listEl.append(
+            h("div", { class: "alert alert-danger", role: "alert", text: messageFromResponse(res) }),
+            h("button", { type: "button", class: "btn btn-secondary btn-sm", text: t("common.retry"), onclick: () => loadStandingOrders() }));
+        return;
+    }
+    standingOrders = res.data;
+    renderStandingOrders();
+}
+
+function initStandingOrders() {
+    const form = byId("standing-order-form");
+    if (!form) return;
+    const typeSelect = byId("so-type");
+    const msgEl = byId("standing-order-message");
+
+    accountsStore.subscribe(fillStandingOrderSources);
+    cardsStore.subscribe(fillStandingOrderSources);
+    onLanguageChange(() => { renderStandingOrders(); fillStandingOrderSources(); });
+    fillStandingOrderSources();
+
+    typeSelect.addEventListener("change", () => {
+        const isTransfer = typeSelect.value === "Transfer";
+        byId("so-transfer-fields").classList.toggle("hidden", !isTransfer);
+        byId("so-cc-fields").classList.toggle("hidden", isTransfer);
+    });
+
+    form.addEventListener("submit", event => {
+        event.preventDefault();
+        withBusy(byId("btn-submit-standing-order"), async () => {
+            hideMessage(msgEl);
+            const sourceAccountNumber = byId("so-source-acc").value;
+            const type = typeSelect.value;
+            let destinationAccountNumber = null;
+            let amount = null;
+            let frequency = null;
+            let creditCardId = null;
+
+            if (!sourceAccountNumber) { showMessage(msgEl, t("orders.noSource"), "error"); return; }
+
+            if (type === "Transfer") {
+                destinationAccountNumber = byId("so-dest-acc").value.trim();
+                frequency = byId("so-frequency").value;
+                const parsed = parseAmount(byId("so-amount").value);
+                if (!destinationAccountNumber) { showMessage(msgEl, t("transfer.noDest"), "error"); byId("so-dest-acc").focus(); return; }
+                if (!parsed.ok) { showMessage(msgEl, errorText(parsed.errorKey), "error"); byId("so-amount").focus(); return; }
+                amount = parsed.value;
+            } else {
+                creditCardId = byId("so-target-cc").value;
+                frequency = "Monthly";
+                if (!creditCardId) { showMessage(msgEl, t("orders.noCard"), "error"); return; }
+            }
+
+            const res = await api("/banking/standing-orders", {
+                method: "POST",
+                body: { sourceAccountNumber, orderType: type, destinationAccountNumber, amount, frequency, creditCardId }
+            });
+            if (!res.ok) { showMessage(msgEl, messageFromResponse(res), "error"); return; }
+
+            showMessage(msgEl, t("orders.created"), "success");
+            byId("so-dest-acc").value = "";
+            byId("so-amount").value = "";
+            loadStandingOrders();
+        });
+    });
+}
+
+/* ==========================================================================
+   2FA setting, sidebar quick action, tabs and the card customizer (dashboard.html)
+   ========================================================================== */
+let twoFactorEnabled = null; // unknown until the status request answers
+
+async function load2FAStatus() {
+    const toggle = byId("switch-2fa");
+    if (!toggle) return;
+    const res = await api("/auth/2fa-status");
+    if (res.ok && res.data && typeof res.data.enabled === "boolean") {
+        twoFactorEnabled = res.data.enabled;
+        toggle.checked = twoFactorEnabled;
+        toggle.disabled = false;
+    }
+}
+
+// Changing the setting needs the 6-digit PIN (the server checks it and answers InvalidCredentials when it is wrong).
+function init2FASettings() {
+    const toggle = byId("switch-2fa");
+    if (!toggle) return;
+    toggle.disabled = true; // until the current status is known
+
+    toggle.addEventListener("click", async event => {
+        event.preventDefault(); // the switch only moves once the server accepted the change
+        if (twoFactorEnabled === null) return;
+        const enable = !twoFactorEnabled;
+
+        const pin = await uiPrompt({
+            title: t("twofa.pinTitle"),
+            message: t(enable ? "twofa.pinEnable" : "twofa.pinDisable"),
+            label: t("twofa.pinLabel"),
+            type: "password", inputmode: "numeric", maxlength: 6, autocomplete: "current-password", pattern: "\\d*",
+            confirmText: t("common.confirm"),
+            validate: value => (/^\d{6}$/.test(value) ? null : t("twofa.pinInvalid")),
+            submit: async (value) => {
+                const res = await api("/auth/toggle-2fa", { method: "POST", body: { enable, password: value } });
+                return res.ok ? { ok: true } : { ok: false, message: messageFromResponse(res) };
+            }
+        });
+
+        if (pin !== null) {
+            twoFactorEnabled = enable;
+            toggle.checked = enable;
+            notify(t(enable ? "twofa.enabled" : "twofa.disabled"), "success");
+        }
+        toggle.focus();
     });
 }
 
 function initSidebar() {
-    const sidebarToggle = document.getElementById("sidebar-toggle");
-    const sidebar = document.getElementById("sidebar");
-    const sidebarClose = document.getElementById("sidebar-close");
-    const btnAdd1000Try = document.getElementById("btn-add-1000-try");
-    const addBalanceMessage = document.getElementById("add-balance-message");
+    const toggle = byId("sidebar-toggle");
+    const sidebar = byId("sidebar");
+    const closeButton = byId("sidebar-close");
+    if (!toggle || !sidebar) return;
 
-    if (sidebarToggle && sidebar) {
-        sidebarToggle.addEventListener("click", () => {
-            sidebar.classList.toggle("hidden");
-        });
+    const setOpen = (open, returnFocus) => {
+        sidebar.classList.toggle("hidden", !open);
+        toggle.setAttribute("aria-expanded", open ? "true" : "false");
+        if (open) closeButton.focus();
+        else if (returnFocus) toggle.focus();
+    };
+    toggle.addEventListener("click", () => setOpen(sidebar.classList.contains("hidden"), true));
+    closeButton.addEventListener("click", () => setOpen(false, true));
+    document.addEventListener("keydown", event => {
+        if (event.key === "Escape" && !sidebar.classList.contains("hidden") && !modalStack.length) setOpen(false, true);
+    });
+
+    // Demo helper: adds 1000 TRY to the first TRY demand account.
+    const addButton = byId("btn-add-1000-try");
+    const message = byId("add-balance-message");
+    addButton.addEventListener("click", () => withBusy(addButton, async () => {
+        hideMessage(message);
+        const accounts = await accountsStore.get();
+        const tryAccount = (accounts || []).find(acc => acc.currency === "TRY");
+        if (!tryAccount) { showMessage(message, t("sidebar.noTryAccount"), "error"); return; }
+
+        const res = await api("/banking/deposit", { method: "POST", body: { accountNumber: tryAccount.accountNumber, amount: 1000.00 } });
+        if (!res.ok) { showMessage(message, messageFromResponse(res), "error"); return; }
+
+        showMessage(message, t("sidebar.added"), "success");
+        await accountsStore.refresh(true);
+        if (activeAccountId) loadTransactions(activeAccountId);
+    }));
+}
+
+function initCardCustomizer() {
+    const preview = byId("debit-card-preview");
+    const wrapper = byId("debit-card-wrapper-hover");
+    const holder = byId("preview-card-holder");
+
+    if (holder && currentUser) {
+        const name = displayUpper(currentUser.fullName);
+        holder.textContent = name;
+        holder.style.fontSize = name.length > 20 ? "0.55rem" : name.length > 15 ? "0.62rem" : "0.75rem";
     }
 
-    if (sidebarClose && sidebar) {
-        sidebarClose.addEventListener("click", () => {
-            sidebar.classList.add("hidden");
+    document.querySelectorAll(".theme-btn").forEach(btn => {
+        btn.addEventListener("click", () => setCardTheme(btn.dataset.theme));
+    });
+
+    // The card flips on hover (CSS), on click and on Enter / Space.
+    const flip = () => {
+        const flipped = wrapper.classList.toggle("flipped");
+        wrapper.setAttribute("aria-pressed", flipped ? "true" : "false");
+    };
+    wrapper.addEventListener("click", flip);
+    wrapper.addEventListener("keydown", event => {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); flip(); }
+    });
+
+    if (preview && !prefersReducedMotion()) {
+        preview.addEventListener("mousemove", event => {
+            const rect = preview.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            const maxRotate = 15;
+            preview.style.transform = `rotateY(${(x / rect.width - 0.5) * maxRotate}deg) rotateX(${-(y / rect.height - 0.5) * maxRotate}deg)`;
+            preview.style.setProperty("--mouse-x", `${(x / rect.width) * 100}%`);
+            preview.style.setProperty("--mouse-y", `${(y / rect.height) * 100}%`);
         });
-    }
-
-    if (btnAdd1000Try && addBalanceMessage) {
-        btnAdd1000Try.addEventListener("click", async () => {
-            try {
-                // Get TRY accounts
-                const accountsResponse = await fetch(`${API_URL}/banking/accounts`, {
-                    headers: { "Authorization": `Bearer ${currentToken}` }
-                });
-                const accounts = await accountsResponse.json();
-                
-                // Find first TRY account
-                const tryAccount = accounts.find(a => a.currency === "TRY");
-                
-                if (!tryAccount) {
-                    addBalanceMessage.textContent = "Vadesiz TL hesabı bulunamadı.";
-                    addBalanceMessage.className = "alert alert-danger";
-                    addBalanceMessage.classList.remove("hidden");
-                    return;
-                }
-
-                // Add 1000 TRY to the account via transfer (from same account to itself with deposit)
-                const response = await fetch(`${API_URL}/banking/deposit`, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "Authorization": `Bearer ${currentToken}`
-                    },
-                    body: JSON.stringify({
-                        accountNumber: tryAccount.accountNumber,
-                        amount: 1000.00
-                    })
-                });
-
-                if (response.ok) {
-                    addBalanceMessage.textContent = "1000 TL başarıyla eklendi!";
-                    addBalanceMessage.className = "alert alert-success";
-                    addBalanceMessage.classList.remove("hidden");
-                    loadAccounts(); // Refresh account list
-                } else {
-                    addBalanceMessage.textContent = "İşlem başarısız oldu.";
-                    addBalanceMessage.className = "alert alert-danger";
-                    addBalanceMessage.classList.remove("hidden");
-                }
-            } catch (error) {
-                console.error("Error adding balance:", error);
-                addBalanceMessage.textContent = "Bir hata oluştu.";
-                addBalanceMessage.className = "alert alert-danger";
-                addBalanceMessage.classList.remove("hidden");
-            }
-        });
+        preview.addEventListener("mouseleave", () => { preview.style.transform = "rotateY(0deg) rotateX(0deg)"; });
     }
 }
 
-window.switchOperationsTab = (tab) => {
-    const transferTab = document.getElementById("tab-content-transfer");
-    const exchangeTab = document.getElementById("tab-content-exchange");
-    const transferBtn = document.getElementById("tab-btn-transfer");
-    const exchangeBtn = document.getElementById("tab-btn-exchange");
+function initDashboard() {
+    byId("user-display").textContent = currentUser.fullName || currentUser.username || "";
 
-    if (!transferTab || !exchangeTab || !transferBtn || !exchangeBtn) return;
+    // Stores first, so every widget that listens is registered before the first answer arrives.
+    accountsStore.subscribe(renderAccounts);
+    cardsStore.subscribe(renderCreditCards);
+    onLanguageChange(() => {
+        if (accountsStore.data) renderAccounts(accountsStore.data);
+        renderTransactions();
+    });
 
-    if (tab === 'transfer') {
-        transferTab.classList.remove("hidden");
-        exchangeTab.classList.add("hidden");
-        transferBtn.classList.add("active");
-        transferBtn.style.background = "rgba(255,255,255,0.08)";
-        transferBtn.style.color = "#fff";
-        exchangeBtn.classList.remove("active");
-        exchangeBtn.style.background = "transparent";
-        exchangeBtn.style.color = "var(--text-muted)";
-    } else {
-        transferTab.classList.add("hidden");
-        exchangeTab.classList.remove("hidden");
-        exchangeBtn.classList.add("active");
-        exchangeBtn.style.background = "rgba(255,255,255,0.08)";
-        exchangeBtn.style.color = "#fff";
-        transferBtn.classList.remove("active");
-        transferBtn.style.background = "transparent";
-        transferBtn.style.color = "var(--text-muted)";
+    initTabList(document.querySelector(".tabs-nav-bar"), tab => {
+        if (tab.dataset.tab === "tab-standing-orders") loadStandingOrders();
+    });
+    initTabList(document.querySelector(".operations-tabs"));
+
+    initHistoryAndSlip();
+    initTransferForm();
+    initOTPModalEvents();
+    initExchangeWidget();
+    initSavedContacts();
+    initCreditCardEvents();
+    initCreateAccountEvent();
+    initStandingOrders();
+    init2FASettings();
+    initCardCustomizer();
+    initSidebar();
+
+    loadAccounts();
+    loadCreditCards();
+    load2FAStatus();
+    startMarketRates();
+}
+
+
+/* ==========================================================================
+   SUPPORT AGENT PANEL (agent.html)
+   chat.js owns the SignalR connection; the functions below call into it (ensureConnected, joinAgentChatSession,
+   renderChatHistory, signalRConnection).
+   ========================================================================== */
+let selectedSessionId = null;   // the one conversation the agent is looking at (chat.js ignores messages for any other)
+let activeSessions = [];
+let copilotSuggestion = "";
+
+function renderActiveSessions() {
+    const listEl = byId("active-sessions-list");
+    if (!listEl) return;
+    clearChildren(listEl);
+
+    if (!activeSessions.length) {
+        listEl.append(h("div", { class: "text-muted text-center py-4", text: t("agent.noActive") }));
+        return;
     }
-};
+
+    activeSessions.forEach(session => {
+        const isActive = selectedSessionId === session.id;
+        const item = h("div", {
+            class: `session-item${isActive ? " active" : ""}`, role: "button", tabindex: "0",
+            "aria-pressed": isActive ? "true" : "false", dataset: { sessionId: session.id }
+        },
+            h("h5", { text: session.title }),
+            h("p", null, `${t("agent.userLabel")} `, h("strong", { text: session.username }), ` | ${formatTime(session.createdAt)}`));
+
+        const open = () => loadAgentChat(session.id, session.title);
+        item.addEventListener("click", open);
+        item.addEventListener("keydown", event => {
+            if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); }
+        });
+        listEl.append(item);
+    });
+}
+
+async function loadActiveSessions() {
+    const listEl = byId("active-sessions-list");
+    if (!listEl) return;
+    const seq = ++requestSeq.sessions;
+    if (!activeSessions.length) {
+        clearChildren(listEl);
+        listEl.append(h("div", { class: "loading-spinner", text: t("agent.loadingChats") }));
+    }
+
+    const res = await api("/chat/active-sessions");
+    if (seq !== requestSeq.sessions) return;
+
+    if (!res.ok || !Array.isArray(res.data)) {
+        clearChildren(listEl);
+        listEl.append(h("div", { class: "alert alert-danger", role: "alert", text: messageFromResponse(res) }));
+        return;
+    }
+    activeSessions = res.data;
+    renderActiveSessions();
+}
+
+// Back to the "select a session" state.
+function resetAgentChatView() {
+    selectedSessionId = null;
+    copilotSuggestion = "";
+    if (typeof clearChatLog === "function") clearChatLog();
+    byId("agent-chat-header").classList.add("hidden");
+    byId("agent-chat-form").classList.add("hidden");
+    byId("ai-copilot-container").classList.add("hidden");
+    const box = byId("agent-chat-messages");
+    clearChildren(box);
+    // data-i18n keeps these two lines in the right language when the user switches languages
+    box.append(h("div", { class: "agent-chat-placeholder", id: "agent-placeholder" },
+        h("span", { class: "chat-placeholder-icon", "aria-hidden": "true" }, "📥"),
+        h("h3", { "data-i18n": "agent.selectChat", text: t("agent.selectChat") }),
+        h("p", { class: "text-muted", "data-i18n": "agent.selectChatDesc", text: t("agent.selectChatDesc") })));
+    renderActiveSessions();
+}
+
+async function loadAgentChat(sessionId, title) {
+    selectedSessionId = sessionId;
+    const seq = ++requestSeq.agentChat;
+
+    byId("agent-chat-header").classList.remove("hidden");
+    byId("agent-chat-form").classList.remove("hidden");
+    byId("agent-chat-title").textContent = title;
+    byId("agent-chat-session-id").textContent = t("agent.sessionId", { id: sessionId });
+
+    document.querySelectorAll("#active-sessions-list .session-item").forEach(item => {
+        const on = item.dataset.sessionId === sessionId;
+        item.classList.toggle("active", on);
+        item.classList.remove("has-unread");
+        item.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+
+    const box = byId("agent-chat-messages");
+    clearChildren(box);
+    box.append(h("div", { class: "loading-spinner", text: t("agent.loadingConversation") }));
+
+    const res = await api(`/chat/messages/${encodeURIComponent(sessionId)}`);
+    if (seq !== requestSeq.agentChat || selectedSessionId !== sessionId) return; // the agent already opened another chat
+
+    if (!res.ok || !Array.isArray(res.data)) {
+        clearChildren(box);
+        box.append(h("div", { class: "alert alert-danger", role: "alert", text: messageFromResponse(res) }));
+        return;
+    }
+
+    renderChatHistory(res.data);
+    joinAgentChatSession(sessionId);
+    fetchCoPilotSuggestion(sessionId);
+}
+
+function initAgentEvents() {
+    byId("btn-refresh-sessions").addEventListener("click", event => withBusy(event.currentTarget, loadActiveSessions));
+
+    byId("btn-close-session").addEventListener("click", event => {
+        withBusy(event.currentTarget, async () => {
+            const sessionId = selectedSessionId;
+            if (!sessionId) return;
+
+            // Only report success when the server really closed it.
+            if (!(await ensureConnected())) { notify(t("agent.closeOffline"), "error"); return; }
+            try {
+                await signalRConnection.invoke("CloseSessionAsync", sessionId);
+            } catch (err) {
+                notify(t("agent.closeFailed"), "error");
+                return;
+            }
+            if (selectedSessionId === sessionId) resetAgentChatView();
+            await loadActiveSessions();
+        });
+    });
+
+    const form = byId("agent-chat-form");
+    form.addEventListener("submit", event => {
+        event.preventDefault();
+        withBusy(byId("agent-chat-send-btn"), async () => {
+            const input = byId("agent-chat-input");
+            const text = input.value.trim();
+            const sessionId = selectedSessionId;
+            if (!text || !sessionId) return;
+
+            if (!(await ensureConnected())) { notify(t("chat.offline"), "error"); return; }
+            try {
+                await signalRConnection.invoke("SendMessageAsync", sessionId, text);
+                input.value = "";
+                input.focus();
+            } catch (err) {
+                notify(t("chat.sendFailed"), "error");
+            }
+        });
+    });
+}
+
+async function loadAgentMetrics() {
+    const res = await api("/chat/agent-metrics");
+    if (!res.ok || !res.data) return;
+
+    // Real data only: a missing value is shown as an em dash.
+    const show = (id, value, formatter) => {
+        const el = byId(id);
+        if (!el) return;
+        el.textContent = value === null || value === undefined || value === "" ? "—" : (formatter ? formatter(value) : String(value));
+    };
+    show("val-metric-resolved", res.data.resolvedCount, v => formatNumber(v, 0, 0));
+    show("val-metric-time", res.data.avgResponseTime);
+    show("val-metric-csat", res.data.csatScore);
+}
+
+function initAgentStatusControl() {
+    const select = byId("agent-status-select");
+    const dot = byId("status-indicator-dot");
+    if (!select || !dot) return;
+
+    // The status is a local indicator: the API has no endpoint for it yet.
+    select.addEventListener("change", () => {
+        dot.className = `status-dot ${select.value === "Busy" ? "busy" : select.value === "Break" ? "break" : "online"}`;
+    });
+}
+
+async function fetchCoPilotSuggestion(sessionId) {
+    const container = byId("ai-copilot-container");
+    const textEl = byId("ai-suggestion-text");
+    if (!container || !textEl) return;
+
+    const seq = ++requestSeq.copilot;
+    copilotSuggestion = "";
+    container.classList.remove("hidden");
+    textEl.textContent = t("agent.copilotLoading");
+
+    const res = await api(`/chat/suggest-response/${encodeURIComponent(sessionId)}`);
+    if (seq !== requestSeq.copilot || selectedSessionId !== sessionId) return;
+
+    if (res.ok && res.data && res.data.suggestion) {
+        copilotSuggestion = String(res.data.suggestion);
+        textEl.textContent = copilotSuggestion;
+    } else {
+        textEl.textContent = res.networkError ? t("err.ConnectionError") : t("agent.copilotFailed");
+    }
+}
+
+function initCoPilotEvents() {
+    byId("btn-regenerate-suggestion").addEventListener("click", event => {
+        if (selectedSessionId) withBusy(event.currentTarget, () => fetchCoPilotSuggestion(selectedSessionId));
+    });
+    byId("btn-use-suggestion").addEventListener("click", () => {
+        if (!copilotSuggestion) return;
+        const input = byId("agent-chat-input");
+        input.value = copilotSuggestion;
+        input.focus();
+    });
+}
+
+function initTransferControlEvents() {
+    const button = byId("btn-transfer-chat");
+    const select = byId("select-transfer-dept");
+
+    button.addEventListener("click", () => withBusy(button, async () => {
+        const department = select.value;
+        const sessionId = selectedSessionId;
+        if (!department || !sessionId) return;
+
+        const res = await api(`/chat/transfer-session/${encodeURIComponent(sessionId)}`, { method: "POST", body: { department } });
+        select.value = "";
+        if (!res.ok) { notify(messageFromResponse(res), "error"); return; }
+
+        const label = select.querySelector(`option[value="${CSS.escape(department)}"]`);
+        notify(t("agent.transferred", { dept: label ? label.textContent : department }), "success");
+        if (selectedSessionId === sessionId) resetAgentChatView();
+        loadActiveSessions();
+    }));
+}
+
+function initAgentPanel() {
+    byId("user-display").textContent = currentUser.fullName || currentUser.username || "";
+    onLanguageChange(() => {
+        renderActiveSessions();
+        if (selectedSessionId) {
+            const session = activeSessions.find(item => item.id === selectedSessionId);
+            if (session) byId("agent-chat-session-id").textContent = t("agent.sessionId", { id: session.id });
+        }
+    });
+
+    initAgentEvents();
+    initCoPilotEvents();
+    initTransferControlEvents();
+    initAgentStatusControl();
+    loadActiveSessions();
+    loadAgentMetrics();
+}
+
+/* ==========================================================================
+   Live market rates (index.html login page and the exchange widget on the dashboard)
+   Polling uses a chained timeout: paused while the tab is hidden, backs off while the API is unreachable,
+   and the list is only redrawn when the numbers changed.
+   ========================================================================== */
+const market = { timer: null, loading: false, failures: 0, signature: "", previous: {} };
+const MARKET_POLL_MS = 5000;
+
+function rateDigits(code) {
+    return code === "USD" || code === "EUR" ? 4 : 2;
+}
+
+function renderMarketRates(rates) {
+    const listEl = byId("market-rates-list");
+    if (!listEl) return;
+    clearChildren(listEl);
+
+    rates.forEach(rate => {
+        const key = rate.code;
+        const previous = market.previous[key];
+        market.previous[key] = rate.sell;
+
+        let direction = "";
+        let symbol = "•";
+        let flash = "";
+        if (previous !== undefined && rate.sell !== previous) {
+            direction = rate.sell > previous ? "up" : "down";
+            flash = rate.sell > previous ? "flash-green" : "flash-red";
+        } else if (rate.change > 0) {
+            direction = "up";
+        } else if (rate.change < 0) {
+            direction = "down";
+        }
+        if (direction === "up") symbol = "▲";
+        else if (direction === "down") symbol = "▼";
+
+        const icon = rate.code === "USD" ? "💵" : rate.code === "EUR" ? "💶" : rate.code === "XAU" ? "🪙" : "🥈";
+        const displayName = (currentLanguage === "tr" ? rate.name : rate.nameEn) || rate.name || rate.code;
+        const digits = rateDigits(rate.code);
+
+        listEl.append(h("div", { class: "rate-row" },
+            h("div", { class: "rate-info" },
+                h("div", { class: `rate-symbol-badge ${cssToken(rate.code)}`, "aria-hidden": "true", text: icon }),
+                h("div", { class: "rate-name-wrapper" },
+                    h("span", { class: "rate-code", text: rate.code }),
+                    h("span", { class: "rate-name", text: displayName }))),
+            h("div", { class: "rate-prices" },
+                h("div", { class: "price-box" },
+                    h("span", { class: "price-label", text: t("market.buy") }),
+                    h("span", { class: `price-val ${flash}`.trim(), text: formatNumber(rate.buy, digits, digits) })),
+                h("div", { class: "price-box" },
+                    h("span", { class: "price-label", text: t("market.sell") }),
+                    h("span", { class: `price-val ${flash}`.trim(), text: formatNumber(rate.sell, digits, digits) }))),
+            h("div", { class: "rate-trend" },
+                h("span", { class: `trend-badge ${direction}`.trim(), text: `${symbol} ${formatNumber(Math.abs(rate.change), 2, 2)}%` }))));
+    });
+}
+
+function setMarketOffline(offline) {
+    const retry = byId("btn-market-retry");
+    const updated = byId("txt-rates-updated");
+    if (retry) retry.classList.toggle("hidden", !offline);
+    if (offline && updated) updated.textContent = t("market.offline");
+
+    const listEl = byId("market-rates-list");
+    if (offline && listEl && !listEl.querySelector(".rate-row")) {
+        clearChildren(listEl);
+        listEl.append(h("div", { class: "text-muted text-center py-4", text: t("market.unavailable") }));
+    }
+}
+
+function applyMarketRates(rates) {
+    activeMarketRates = rates;
+    updateExchangeRateDisplay();
+
+    const updated = byId("txt-rates-updated");
+    if (updated) updated.textContent = `${t("market.updated")} ${new Date().toLocaleTimeString(locale())}`;
+
+    const signature = `${currentLanguage}|${JSON.stringify(rates.map(rate => [rate.code, rate.buy, rate.sell, rate.change]))}`;
+    if (signature !== market.signature && byId("market-rates-list")) {
+        market.signature = signature;
+        renderMarketRates(rates);
+    }
+}
+
+function scheduleMarketPoll(delay) {
+    clearTimeout(market.timer);
+    market.timer = setTimeout(pollMarketRates, delay);
+}
+
+async function pollMarketRates() {
+    market.timer = null;
+    if (document.hidden || market.loading) return; // the visibilitychange handler restarts polling
+    market.loading = true;
+
+    const res = await api("/market/rates", { auth: false, timeoutMs: 10000 });
+    market.loading = false;
+
+    if (res.ok && Array.isArray(res.data)) {
+        market.failures = 0;
+        setMarketOffline(false);
+        applyMarketRates(res.data);
+        scheduleMarketPoll(MARKET_POLL_MS);
+    } else {
+        market.failures += 1;
+        setMarketOffline(true);
+        scheduleMarketPoll(Math.min(MARKET_POLL_MS * 2 ** market.failures, 60000));
+    }
+}
+
+function startMarketRates() {
+    document.addEventListener("visibilitychange", () => {
+        if (document.hidden) {
+            clearTimeout(market.timer);
+            market.timer = null;
+        } else if (!market.timer && !market.loading) {
+            pollMarketRates();
+        }
+    });
+    const retry = byId("btn-market-retry");
+    if (retry) retry.addEventListener("click", () => { market.failures = 0; pollMarketRates(); });
+    onLanguageChange(() => { if (activeMarketRates.length) applyMarketRates(activeMarketRates); });
+    pollMarketRates();
+}
+
+/* ==========================================================================
+   Start-up: language toggle, sign-out button and the route guards of each page
+   ========================================================================== */
+document.addEventListener("DOMContentLoaded", () => {
+    translatePage();
+
+    const langBtn = byId("lang-toggle");
+    if (langBtn) langBtn.addEventListener("click", () => setLanguage(currentLanguage === "en" ? "tr" : "en"));
+    const logoutBtn = byId("btn-logout");
+    if (logoutBtn) logoutBtn.addEventListener("click", () => logout());
+
+    if (PAGE === "dashboard") {
+        if (!currentToken || !currentUser) { logout({ remote: false }); return; }
+        if (currentUser.role === "Agent") { window.location.replace("agent.html"); return; }
+        initDashboard();
+    } else if (PAGE === "agent") {
+        if (!currentToken || !currentUser) { logout({ remote: false }); return; }
+        if (currentUser.role !== "Agent") {
+            // Not a support agent: nothing here would load anyway (the API refuses), so do not show the page.
+            window.location.replace("dashboard.html");
+            return;
+        }
+        initAgentPanel();
+    } else if (PAGE === "login") {
+        if (currentToken && currentUser) { redirectByUserRole(); return; }
+        initAuthEvents();
+        startMarketRates();
+    }
+});
