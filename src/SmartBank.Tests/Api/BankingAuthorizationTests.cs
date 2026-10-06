@@ -102,8 +102,9 @@ namespace SmartBank.Tests.Api
                 description = "steal"
             });
 
-            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-            Assert.Contains("UnauthorizedAccountAccess", await response.Content.ReadAsStringAsync());
+            // "Not yours" answers exactly like "does not exist": the call cannot be used to find out which account numbers exist.
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            Assert.Contains("SourceAccountNotFound", await response.Content.ReadAsStringAsync());
             Assert.Equal(victimBefore, await BalanceOfAsync(victimAccount));
             Assert.Equal(attackerBefore, await BalanceOfAsync(attackerAccount));
         }

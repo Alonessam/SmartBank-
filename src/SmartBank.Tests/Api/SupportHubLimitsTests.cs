@@ -64,7 +64,7 @@ namespace SmartBank.Tests.Api
         {
             using var scope = _factory.Services.CreateScope();
             var chat = scope.ServiceProvider.GetRequiredService<IChatService>();
-            return (await chat.GetSessionMessagesAsync(sessionId, null)).Data!;
+            return (await chat.GetSessionMessagesForAgentAsync(sessionId)).Data!;
         }
 
         [Fact]
