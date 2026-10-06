@@ -2,16 +2,27 @@ using FluentValidation;
 using SmartBank.Core.Common;
 using SmartBank.Core.DTOs;
 using System.Linq;
+using System.Text.RegularExpressions;
 
 namespace SmartBank.Core.Validators
 {
     public class RegisterDtoValidator : AbstractValidator<RegisterDto>
     {
+        // First + " " + last name is stored in a 100-character column, so each part is capped at 50.
+        public const int MaxUsernameLength = 50;
+        public const int MaxNameLength = 50;
+        public const int MaxEmailLength = 100;
+        public const int MaxFullNameLength = 100;
+
+        private static readonly Regex FirstNamePattern = new(@"^[a-zA-ZçğıöşüÇĞİÖŞÜ\s]+$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+        private static readonly Regex LastNamePattern = new(@"^[a-zA-ZçğıöşüÇĞİÖŞÜ]+$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
         public RegisterDtoValidator()
         {
             RuleFor(x => x.Username)
                 .NotEmpty().WithMessage("Username is required.")
-                .MinimumLength(3).WithMessage("Username must be at least 3 characters long.");
+                .MinimumLength(3).WithMessage("Username must be at least 3 characters long.")
+                .MaximumLength(MaxUsernameLength).WithMessage("Username cannot exceed 50 characters.");
 
             RuleFor(x => x.Tckn)
                 .Cascade(CascadeMode.Stop)
@@ -26,13 +37,28 @@ namespace SmartBank.Core.Validators
                 .Must(x => x.All(char.IsDigit)).WithMessage("Password must contain only digits.");
 
             RuleFor(x => x.FirstName)
-                .NotEmpty().WithMessage("First Name is required.");
+                .Cascade(CascadeMode.Stop)
+                .NotEmpty().WithMessage("First Name is required.")
+                .MaximumLength(MaxNameLength).WithMessage("First name cannot exceed 50 characters.")
+                .Must(x => FirstNamePattern.IsMatch(x)).WithMessage("First name can only contain letters.");
 
             RuleFor(x => x.LastName)
-                .NotEmpty().WithMessage("Last Name is required.");
+                .Cascade(CascadeMode.Stop)
+                .NotEmpty().WithMessage("Last Name is required.")
+                .MaximumLength(MaxNameLength).WithMessage("Last name cannot exceed 50 characters.")
+                .Must(x => LastNamePattern.IsMatch(x)).WithMessage("Last name can only contain letters (no spaces).");
+
+            // "First Last" is stored in a 100-character column: 50 + a space + 50 would be one too many.
+            RuleFor(x => x)
+                .Must(x => (x.FirstName?.Length ?? 0) + 1 + (x.LastName?.Length ?? 0) <= MaxFullNameLength)
+                .When(x => x.FirstName?.Length <= MaxNameLength && x.LastName?.Length <= MaxNameLength)
+                .WithName("FullName")
+                .WithMessage("First and last name together cannot exceed 99 characters.");
 
             RuleFor(x => x.Email)
+                .Cascade(CascadeMode.Stop)
                 .NotEmpty().WithMessage("Email is required.")
+                .MaximumLength(MaxEmailLength).WithMessage("Email cannot exceed 100 characters.")
                 .EmailAddress().WithMessage("A valid email address is required.");
         }
     }

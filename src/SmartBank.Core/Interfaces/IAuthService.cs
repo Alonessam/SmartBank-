@@ -15,7 +15,11 @@ namespace SmartBank.Core.Interfaces
         /// <summary>Step 2 of a password reset: needs the e-mailed code.</summary>
         Task<ServiceResult<bool>> ResetPasswordAsync(ResetPasswordDto resetPasswordDto, string? ipAddress = null);
 
-        Task<ServiceResult<bool>> Toggle2FaAsync(Guid userId, bool enable);
+        /// <summary>
+        /// Turns two-factor sign-in on or off. Needs the user's current PIN (error key PinRequired when it is missing,
+        /// InvalidCredentials when it is wrong - a wrong PIN counts toward the lockout like a failed login).
+        /// </summary>
+        Task<ServiceResult<bool>> Toggle2FaAsync(Guid userId, bool enable, string? password, string? ipAddress = null);
         Task<ServiceResult<bool>> Get2FaStatusAsync(Guid userId);
         Task<ServiceResult<AuthResponseDto>> Verify2FaAsync(Verify2FaDto verify2FaDto, string? ipAddress = null);
 

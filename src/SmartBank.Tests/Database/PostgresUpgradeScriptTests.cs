@@ -131,9 +131,9 @@ namespace SmartBank.Tests.Database
             // A row written before the upgrade keeps its meaning: the stored UTC clock time is now a UTC instant.
             await ExecuteAsync(legacyConnection, @"
                 INSERT INTO ""Users"" (""Id"", ""Username"", ""Tckn"", ""PasswordHash"", ""FirstName"", ""LastName"", ""FullName"", ""Email"",
-                                     ""TwoFactorEnabled"", ""FailedLoginCount"", ""OtpFailedCount"", ""Role"", ""CreatedAt"")
+                                     ""TwoFactorEnabled"", ""FailedLoginCount"", ""OtpFailedCount"", ""Role"", ""Version"", ""CreatedAt"")
                 VALUES ('00000000-0000-0000-0000-000000000001', 'legacy', '11111111111', 'x', 'L', 'U', 'L U', 'l@u.test',
-                        false, 0, 0, 0, '2026-10-06 10:27:18');");
+                        false, 0, 0, 0, 0, '2026-10-06 10:27:18');");
 
             await ExecuteAsync(legacyConnection, script);
             var expected = await ColumnsAsync(modelConnection, AllTables);
@@ -159,6 +159,113 @@ namespace SmartBank.Tests.Database
             // Same indexes as the model (the unique one on the hash is what makes the lookup safe), and the cascade works.
             const string indexSql = "SELECT indexname || ' ' || indexdef FROM pg_indexes WHERE tablename = 'RefreshTokens' ORDER BY indexname";
             Assert.Equal(await ListAsync(modelConnection, indexSql), await ListAsync(legacyConnection, indexSql));
+        }
+
+        [PostgresFact]
+        public async Task The_v1_3_script_adds_the_user_version_and_the_indexes_merges_duplicates_and_can_be_run_twice()
+        {
+            await using var modelDb = await TestDatabase.CreateAsync(TestProvider.PostgreSql);
+            await using var legacyDb = await TestDatabase.CreateAsync(TestProvider.PostgreSql);
+
+            await using var modelConnection = new NpgsqlConnection(modelDb.NewContext().Database.GetConnectionString());
+            await using var legacyConnection = new NpgsqlConnection(legacyDb.NewContext().Database.GetConnectionString());
+            await modelConnection.OpenAsync();
+            await legacyConnection.OpenAsync();
+
+            // The pre-v1.3 shape: no version on users, a plain index on credit cards and saved recipients, single-column foreign
+            // key indexes on transactions and chat messages, none of the new query indexes.
+            await ExecuteAsync(legacyConnection, @"
+                ALTER TABLE ""Users"" DROP COLUMN ""Version"";
+                DROP INDEX ""IX_CreditCards_UserId"";
+                CREATE INDEX ""IX_CreditCards_UserId"" ON ""CreditCards"" (""UserId"");
+                DROP INDEX ""IX_SavedContacts_UserId_AccountNumber"";
+                DROP INDEX ""IX_Transactions_SourceAccountId_CreatedAt"";
+                DROP INDEX ""IX_Transactions_DestinationAccountId_CreatedAt"";
+                CREATE INDEX ""IX_Transactions_SourceAccountId"" ON ""Transactions"" (""SourceAccountId"");
+                CREATE INDEX ""IX_Transactions_DestinationAccountId"" ON ""Transactions"" (""DestinationAccountId"");
+                DROP INDEX ""IX_AuditLogs_UserId_CreatedAt"";
+                DROP INDEX ""IX_StandingOrders_IsActive_NextExecutionDate"";
+                DROP INDEX ""IX_ChatMessages_SessionId_CreatedAt"";
+                CREATE INDEX ""IX_ChatMessages_SessionId"" ON ""ChatMessages"" (""SessionId"");
+                CREATE INDEX ""IX_SavedContacts_UserId"" ON ""SavedContacts"" (""UserId"");");
+
+            Assert.NotEqual(await ColumnsAsync(modelConnection, AllTables), await ColumnsAsync(legacyConnection, AllTables));
+            Assert.NotEqual(await ListAsync(modelConnection, IndexSql), await ListAsync(legacyConnection, IndexSql));
+
+            // Data that existed before the upgrade: a customer with TWO credit cards (a race in v1.2), each with a statement,
+            // one standing order that points at the NEWER card, and the same recipient saved twice.
+            await ExecuteAsync(legacyConnection, @"
+                INSERT INTO ""Users"" (""Id"", ""Username"", ""Tckn"", ""PasswordHash"", ""FirstName"", ""LastName"", ""FullName"", ""Email"",
+                                     ""TwoFactorEnabled"", ""FailedLoginCount"", ""OtpFailedCount"", ""Role"", ""CreatedAt"")
+                VALUES ('00000000-0000-0000-0000-0000000000a1', 'dup', '11111111111', 'x', 'D', 'U', 'D U', 'd@u.test', false, 0, 0, 0, '2026-10-01 10:00:00+00');
+
+                INSERT INTO ""CreditCards"" (""Id"", ""UserId"", ""EncryptedCardNumber"", ""ExpiryDate"", ""CardLimit"", ""CurrentDebt"", ""CardTheme"", ""CreatedAt"", ""Version"")
+                VALUES ('00000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-0000000000a1', 'old', '10/31', 10000, 100.50, 't', '2026-10-01 10:00:00+00', 0),
+                       ('00000000-0000-0000-0000-0000000000c2', '00000000-0000-0000-0000-0000000000a1', 'new', '10/31', 10000, 49.50, 't', '2026-10-02 10:00:00+00', 0);
+
+                INSERT INTO ""CreditCardStatements"" (""Id"", ""CreditCardId"", ""PeriodName"", ""PeriodDebt"", ""MinimumPayment"", ""PaidAmount"", ""CutoffDate"", ""DueDate"", ""IsPaid"")
+                VALUES ('00000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-0000000000c1', 'Ekim 2026', 100.50, 30, 0, '2026-11-01 00:00:00+00', '2026-11-11 00:00:00+00', false),
+                       ('00000000-0000-0000-0000-0000000000d2', '00000000-0000-0000-0000-0000000000c2', 'Ekim 2026', 49.50, 15, 0, '2026-11-01 00:00:00+00', '2026-11-11 00:00:00+00', false);
+
+                INSERT INTO ""StandingOrders"" (""Id"", ""UserId"", ""SourceAccountNumber"", ""Frequency"", ""MaturityDate"", ""NextExecutionDate"", ""IsActive"", ""OrderType"", ""CreditCardId"", ""CreatedAt"")
+                VALUES ('00000000-0000-0000-0000-0000000000e1', '00000000-0000-0000-0000-0000000000a1', 'TR0000000000000001', 'Monthly',
+                        '2027-10-01 00:00:00+00', '2026-11-01 00:00:00+00', true, 'CreditCardAutoPay', '00000000-0000-0000-0000-0000000000c2', '2026-10-01 10:00:00+00');
+
+                INSERT INTO ""SavedContacts"" (""Id"", ""UserId"", ""AccountNumber"", ""Alias"", ""CreatedAt"")
+                VALUES ('00000000-0000-0000-0000-0000000000b1', '00000000-0000-0000-0000-0000000000a1', 'TR0000000000000002', 'first alias', '2026-10-01 10:00:00+00'),
+                       ('00000000-0000-0000-0000-0000000000b2', '00000000-0000-0000-0000-0000000000a1', 'TR0000000000000002', 'second alias', '2026-10-02 10:00:00+00'),
+                       ('00000000-0000-0000-0000-0000000000b3', '00000000-0000-0000-0000-0000000000a1', 'TR0000000000000003', 'other recipient', '2026-10-03 10:00:00+00');");
+
+            var script = await File.ReadAllTextAsync(RepositoryFile("docs/deploy/v1.3-postgres-upgrade.sql"));
+
+            await ExecuteAsync(legacyConnection, script);
+
+            var expectedColumns = await ColumnsAsync(modelConnection, AllTables);
+            Assert.Contains(expectedColumns, c => c.StartsWith("Users.Version "));
+            Assert.Equal(expectedColumns, await ColumnsAsync(legacyConnection, AllTables));
+            var expectedIndexes = await ListAsync(modelConnection, IndexSql);
+            Assert.Contains(expectedIndexes, i => i.Contains("IX_CreditCards_UserId") && i.Contains("UNIQUE"));
+            Assert.Equal(expectedIndexes, await ListAsync(legacyConnection, IndexSql));
+
+            // The newer card was folded into the older one: one card, both debts, both statements, the order points at it.
+            Assert.Equal("00000000-0000-0000-0000-0000000000c1", await ScalarAsync(legacyConnection, @"SELECT ""Id""::text FROM ""CreditCards"""));
+            Assert.Equal("150.00", await ScalarAsync(legacyConnection, @"SELECT ""CurrentDebt""::text FROM ""CreditCards"""));
+            Assert.Equal("2", await ScalarAsync(legacyConnection, @"SELECT count(*)::text FROM ""CreditCardStatements"" WHERE ""CreditCardId"" = '00000000-0000-0000-0000-0000000000c1'"));
+            Assert.Equal("00000000-0000-0000-0000-0000000000c1", await ScalarAsync(legacyConnection, @"SELECT ""CreditCardId""::text FROM ""StandingOrders"""));
+
+            // The recipient saved twice keeps its OLDEST entry; the other recipient is untouched.
+            Assert.Equal("2", await ScalarAsync(legacyConnection, @"SELECT count(*)::text FROM ""SavedContacts"""));
+            Assert.Equal("first alias", await ScalarAsync(legacyConnection, @"SELECT ""Alias"" FROM ""SavedContacts"" WHERE ""AccountNumber"" = 'TR0000000000000002'"));
+
+            // Running it again changes nothing.
+            const string dataSql = @"SELECT string_agg(x, '|' ORDER BY x) FROM (
+                SELECT 'card ' || ""Id""::text || ' ' || ""CurrentDebt""::text || ' v' || ""Version""::text AS x FROM ""CreditCards""
+                UNION ALL SELECT 'contact ' || ""Id""::text FROM ""SavedContacts""
+                UNION ALL SELECT 'order ' || ""CreditCardId""::text FROM ""StandingOrders"") t";
+            var dataAfterFirstRun = await ScalarAsync(legacyConnection, dataSql);
+
+            await ExecuteAsync(legacyConnection, script);
+
+            Assert.Equal(expectedColumns, await ColumnsAsync(legacyConnection, AllTables));
+            Assert.Equal(expectedIndexes, await ListAsync(legacyConnection, IndexSql));
+            Assert.Equal(dataAfterFirstRun, await ScalarAsync(legacyConnection, dataSql));
+
+            // The unique indexes really reject duplicates now.
+            await Assert.ThrowsAsync<PostgresException>(() => ExecuteAsync(legacyConnection, @"
+                INSERT INTO ""SavedContacts"" (""Id"", ""UserId"", ""AccountNumber"", ""Alias"", ""CreatedAt"")
+                VALUES ('00000000-0000-0000-0000-0000000000b9', '00000000-0000-0000-0000-0000000000a1', 'TR0000000000000002', 'again', now())"));
+        }
+
+        // Indexes of the tables the v1.3 script touches (names and definitions).
+        private const string IndexSql =
+            "SELECT indexname || ' ' || indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename IN " +
+            "('Accounts', 'AuditLogs', 'ChatMessages', 'ChatSessions', 'CreditCards', 'CreditCardStatements', 'CreditCardTransactions', " +
+            "'SavedContacts', 'StandingOrders', 'Transactions') ORDER BY indexname";
+
+        private static async Task<string?> ScalarAsync(NpgsqlConnection connection, string sql)
+        {
+            await using var command = new NpgsqlCommand(sql, connection);
+            return (await command.ExecuteScalarAsync())?.ToString();
         }
 
         // Every table the upgrade script touches. MarketRates is left out on purpose: the old hand-made table differs from the

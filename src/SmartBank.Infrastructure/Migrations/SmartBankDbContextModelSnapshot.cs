@@ -40,7 +40,8 @@ namespace SmartBank.Infrastructure.Migrations
 
                     b.Property<string>("AccountType")
                         .IsRequired()
-                        .HasColumnType("nvarchar(max)");
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
 
                     b.Property<decimal>("Balance")
                         .HasColumnType("decimal(18,2)");
@@ -65,7 +66,8 @@ namespace SmartBank.Infrastructure.Migrations
 
                     b.Property<string>("ExpiryDate")
                         .IsRequired()
-                        .HasColumnType("nvarchar(max)");
+                        .HasMaxLength(10)
+                        .HasColumnType("nvarchar(10)");
 
                     b.Property<decimal?>("InterestRate")
                         .HasColumnType("decimal(5,2)");
@@ -101,7 +103,8 @@ namespace SmartBank.Infrastructure.Migrations
 
                     b.Property<string>("Action")
                         .IsRequired()
-                        .HasColumnType("nvarchar(max)");
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
@@ -112,12 +115,15 @@ namespace SmartBank.Infrastructure.Migrations
 
                     b.Property<string>("IpAddress")
                         .IsRequired()
-                        .HasColumnType("nvarchar(max)");
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
 
                     b.Property<Guid>("UserId")
                         .HasColumnType("uniqueidentifier");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("UserId", "CreatedAt");
 
                     b.ToTable("AuditLogs");
                 });
@@ -145,7 +151,7 @@ namespace SmartBank.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("SessionId");
+                    b.HasIndex("SessionId", "CreatedAt");
 
                     b.ToTable("ChatMessages");
                 });
@@ -224,7 +230,8 @@ namespace SmartBank.Infrastructure.Migrations
                         .IsUnique()
                         .HasFilter("[CardNumberHash] IS NOT NULL");
 
-                    b.HasIndex("UserId");
+                    b.HasIndex("UserId")
+                        .IsUnique();
 
                     b.ToTable("CreditCards");
                 });
@@ -396,7 +403,8 @@ namespace SmartBank.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("UserId");
+                    b.HasIndex("UserId", "AccountNumber")
+                        .IsUnique();
 
                     b.ToTable("SavedContacts");
                 });
@@ -454,6 +462,8 @@ namespace SmartBank.Infrastructure.Migrations
 
                     b.HasIndex("UserId");
 
+                    b.HasIndex("IsActive", "NextExecutionDate");
+
                     b.ToTable("StandingOrders");
                 });
 
@@ -493,9 +503,9 @@ namespace SmartBank.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("DestinationAccountId");
+                    b.HasIndex("DestinationAccountId", "CreatedAt");
 
-                    b.HasIndex("SourceAccountId");
+                    b.HasIndex("SourceAccountId", "CreatedAt");
 
                     b.ToTable("Transactions");
                 });
@@ -519,7 +529,8 @@ namespace SmartBank.Infrastructure.Migrations
 
                     b.Property<string>("FirstName")
                         .IsRequired()
-                        .HasColumnType("nvarchar(max)");
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
 
                     b.Property<string>("FullName")
                         .IsRequired()
@@ -528,7 +539,8 @@ namespace SmartBank.Infrastructure.Migrations
 
                     b.Property<string>("LastName")
                         .IsRequired()
-                        .HasColumnType("nvarchar(max)");
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
 
                     b.Property<DateTime?>("LockoutEnd")
                         .HasColumnType("datetime2");
@@ -569,6 +581,10 @@ namespace SmartBank.Infrastructure.Migrations
                         .IsRequired()
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
 
                     b.HasKey("Id");
 

@@ -1,50 +1,48 @@
-﻿using System;
-using System.Security.Claims;
-using System.Threading.Tasks;
+using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
-using Microsoft.Extensions.DependencyInjection;
-using System.ComponentModel.DataAnnotations;
 using SmartBank.API.Security;
+using SmartBank.API.Services;
 using SmartBank.Core.Common;
+using SmartBank.Core.DTOs;
 using SmartBank.Core.Entities;
 using SmartBank.Core.Interfaces;
-using System.Linq;
-using System.Text.RegularExpressions;
-using SmartBank.Core.DTOs;
-using SmartBank.Infrastructure.Data;
-using SmartBank.Infrastructure.Services;
 
 namespace SmartBank.API.Hubs
 {
+    /// <summary>
+    /// The live support chat. Methods are called by the web app over SignalR; replies are pushed to the "session group" of a
+    /// conversation (its owner, support agents who joined it) and the "Agents" group gets new-conversation requests.
+    /// A call made after the access token's expiry is refused by <see cref="HubTokenExpiryFilter"/> ("Session expired").
+    /// </summary>
     [Authorize]
     public class SupportHub : Hub
     {
         private readonly IChatService _chatService;
-        private readonly IAIChatbotService _aiChatbotService;
-        private readonly IHubContext<SupportHub> _hubContext;
-        private readonly IServiceScopeFactory _serviceScopeFactory;
         private readonly IBankingService _bankingService;
+        private readonly IServiceScopeFactory _scopeFactory;
         private readonly ChatRateLimiter _limiter;
         private readonly ChatSettings _limits;
+        private readonly ILogger<SupportHub> _logger;
 
         public SupportHub(
             IChatService chatService,
-            IAIChatbotService aiChatbotService,
-            IHubContext<SupportHub> _hubContext,
-            IServiceScopeFactory serviceScopeFactory,
             IBankingService bankingService,
+            IServiceScopeFactory scopeFactory,
             ChatRateLimiter limiter,
-            ChatSettings limits)
+            ChatSettings limits,
+            ILogger<SupportHub> logger)
         {
+            _chatService = chatService;
+            _bankingService = bankingService;
+            _scopeFactory = scopeFactory;
             _limiter = limiter;
             _limits = limits;
-            _chatService = chatService;
-            _aiChatbotService = aiChatbotService;
-            this._hubContext = _hubContext;
-            _serviceScopeFactory = serviceScopeFactory;
-            _bankingService = bankingService;
+            _logger = logger;
         }
+
+        /// <summary>Does nothing. A client can call it to be sure everything it sent before has been handled (and pushed back).</summary>
+        public Task PingAsync() => Task.CompletedTask;
 
         public async Task StartSessionAsync(string title)
         {
@@ -85,19 +83,17 @@ namespace SmartBank.API.Hubs
                 await Clients.Caller.SendAsync("Error", "Access denied to this chat session.");
                 return;
             }
-            // Add connection to the session group
+
             await Groups.AddToGroupAsync(Context.ConnectionId, sessionId.ToString());
 
-            // If the connector is an agent, we can also register them to the group
-            // For now, we announce they joined the room
-            var username = Context.User?.FindFirst(ClaimTypes.Name)?.Value ?? "Support Agent";
+            // Everybody in the room is told who came in.
+            var username = Context.User?.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value ?? "Support Agent";
             await Clients.Group(sessionId.ToString()).SendAsync("UserJoined", new { username, sessionId });
         }
 
         public async Task SendMessageAsync(Guid sessionId, string content)
         {
             var userId = GetUserId();
-            var username = Context.User?.FindFirst(ClaimTypes.Name)?.Value ?? "Guest";
 
             // Every message costs a database write and, for a customer, an AI call, so size and rate are limited here
             // (ASP.NET's rate-limiting middleware does not see calls made over an open SignalR connection).
@@ -125,179 +121,29 @@ namespace SmartBank.API.Hubs
             // The sender is the session's owner ("User") or a support agent ("Agent"). Anyone else is refused: it used
             // to be that every non-owner was labelled "Agent", so any customer could write into someone else's chat
             // in the bank's voice.
-            var isOwner = userId.HasValue && (await _chatService.GetSessionMessagesAsync(sessionId, userId)).IsSuccess;
+            var isOwner = userId.HasValue && await _chatService.IsSessionOwnerAsync(sessionId, userId.Value);
             if (!isOwner && !IsAgent)
             {
                 await Clients.Caller.SendAsync("Error", "Access denied to this chat session.");
                 return;
             }
 
-            string senderRole = isOwner ? "User" : "Agent";
+            var senderRole = isOwner ? ChatSenders.User : ChatSenders.Agent;
             var result = await _chatService.AddMessageAsync(sessionId, senderRole, content);
 
-            if (result.IsSuccess && result.Data != null)
+            if (!result.IsSuccess || result.Data == null)
             {
-                var messageDto = result.Data;
-                // Broadcast message to everyone in the session group (User + Agent)
-                await Clients.Group(sessionId.ToString()).SendAsync("ReceiveMessage", messageDto);
-
-                // If the message was sent by the User, trigger the AI response in a background thread
-                if (senderRole == "User")
-                {
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            using (var scope = _serviceScopeFactory.CreateScope())
-                            {
-                                var scopedChatService = scope.ServiceProvider.GetRequiredService<IChatService>();
-                                var scopedAiService = scope.ServiceProvider.GetRequiredService<IAIChatbotService>();
-                                var dbContext = scope.ServiceProvider.GetRequiredService<SmartBankDbContext>();
-
-                                // Fetch the session from the DB to get the UserId
-                                var session = await dbContext.ChatSessions.FindAsync(sessionId);
-                                Guid? sessionUserId = session?.UserId;
-
-                                // Fetch message history for AI context
-                                var historyResult = await scopedChatService.GetSessionMessagesAsync(sessionId, null);
-                                if (historyResult.IsSuccess && historyResult.Data != null)
-                                {
-                                    var history = historyResult.Data;
-
-                                    // Notify group that AI is typing
-                                    await _hubContext.Clients.Group(sessionId.ToString()).SendAsync("AgentTyping", "AI");
-
-                                    var aiResponseText = "";
-                                    try
-                                    {
-                                        aiResponseText = await GenerateAIResponseWithFailoverAsync(scope.ServiceProvider, history);
-                                    }
-                                    finally
-                                    {
-                                        // Notify group that AI stopped typing
-                                        await _hubContext.Clients.Group(sessionId.ToString()).SendAsync("AgentStopTyping", "AI");
-                                    }
-
-                                    // Anything the model writes is untrusted text. Only the confirmation card built below from parsed
-                                    // fields is a real marker; every other bracketed marker the model might emit is made inert.
-                                    var serverBuiltCard = false;
-
-                                    // Parse AI Actions
-                                    bool isGetBalances = aiResponseText.Contains("ACTION:GET_BALANCES", StringComparison.OrdinalIgnoreCase);
-                                    bool isTransferAction = aiResponseText.Contains("ACTION:TRANSFER", StringComparison.OrdinalIgnoreCase);
-
-                                    if (isGetBalances && sessionUserId.HasValue)
-                                    {
-                                        var bankingService = scope.ServiceProvider.GetRequiredService<IBankingService>();
-                                        var accountsResult = await bankingService.GetAccountsAsync(sessionUserId.Value);
-
-                                        string balanceContext = "";
-                                        if (accountsResult.IsSuccess && accountsResult.Data != null && accountsResult.Data.Count > 0)
-                                        {
-                                            balanceContext = "SYSTEM UPDATE: User's accounts and balances: " +
-                                                             string.Join(", ", accountsResult.Data.Select(a => $"{a.AccountNumber} ({a.Currency}): {a.Balance}"));
-                                        }
-                                        else
-                                        {
-                                            balanceContext = "SYSTEM UPDATE: User has no active bank accounts.";
-                                        }
-
-                                        // Append system context to history and call AI again
-                                        history.Add(new ChatMessageDto
-                                        {
-                                            Sender = "AI",
-                                            Content = "[ACTION:GET_BALANCES]",
-                                            CreatedAt = DateTime.UtcNow
-                                        });
-                                        history.Add(new ChatMessageDto
-                                        {
-                                            Sender = "User",
-                                            Content = balanceContext,
-                                            CreatedAt = DateTime.UtcNow
-                                        });
-
-                                        aiResponseText = await GenerateAIResponseWithFailoverAsync(scope.ServiceProvider, history);
-
-                                        // In case the AI still stubborn or offline, check for raw action
-                                        if (aiResponseText.Contains("ACTION:GET_BALANCES", StringComparison.OrdinalIgnoreCase))
-                                        {
-                                            bool isTurkish = history.Any(h => h.Content.Contains("merhaba", StringComparison.OrdinalIgnoreCase) || h.Content.Contains("hesab", StringComparison.OrdinalIgnoreCase) || h.Content.Contains("bakiye", StringComparison.OrdinalIgnoreCase));
-                                            aiResponseText = isTurkish
-                                                ? "Hesap bakiyelerinizi kontrol ettim ancak şu anda bilgilerinize erişilemiyor."
-                                                : "I checked your account balances, but your information is currently unavailable.";
-                                        }
-                                    }
-                                    else if (isTransferAction && sessionUserId.HasValue)
-                                    {
-                                        var sourceMatch = Regex.Match(aiResponseText, @"source\s*:\s*([^,\]]*)", RegexOptions.IgnoreCase);
-                                        var destMatch = Regex.Match(aiResponseText, @"destination\s*:\s*([^,\]]*)", RegexOptions.IgnoreCase);
-                                        var amountMatch = Regex.Match(aiResponseText, @"amount\s*:\s*([^,\]]*)", RegexOptions.IgnoreCase);
-                                        var descMatch = Regex.Match(aiResponseText, @"description\s*:\s*([^,\]]*)", RegexOptions.IgnoreCase);
-
-                                        var source = sourceMatch.Success ? sourceMatch.Groups[1].Value.Trim() : "";
-                                        var destination = destMatch.Success ? destMatch.Groups[1].Value.Trim() : "";
-                                        var amountStr = amountMatch.Success ? amountMatch.Groups[1].Value.Trim() : "";
-                                        var description = descMatch.Success ? descMatch.Groups[1].Value.Trim() : "AI Support Transfer";
-
-                                        source = CleanValue(source);
-                                        destination = CleanValue(destination);
-                                        amountStr = CleanValue(amountStr);
-                                        description = CleanValue(description);
-
-                                        if (!string.IsNullOrEmpty(source) && !string.IsNullOrEmpty(destination) && decimal.TryParse(amountStr, out var amount) && amount > 0)
-                                        {
-                                            aiResponseText = $"[CONFIRM_TRANSFER: source={source}, destination={destination}, amount={amount}, description={description}]";
-                                            serverBuiltCard = true;
-                                        }
-                                        else
-                                        {
-                                            // Incomplete or invalid details. Re-prompt AI conversationally.
-                                            history.Add(new ChatMessageDto
-                                            {
-                                                Sender = "AI",
-                                                Content = aiResponseText,
-                                                CreatedAt = DateTime.UtcNow
-                                            });
-                                            history.Add(new ChatMessageDto
-                                            {
-                                                Sender = "User",
-                                                Content = "SYSTEM CORRECTION: The transfer details you provided are incomplete or invalid (e.g. source, destination, or amount is missing or invalid). Please conversationally ask the user to provide the missing details (Source Account, Destination Account, and Amount) so you can proceed. Do not return [ACTION:TRANSFER] until you have all 3 details clearly.",
-                                                CreatedAt = DateTime.UtcNow
-                                            });
-
-                                            aiResponseText = await GenerateAIResponseWithFailoverAsync(scope.ServiceProvider, history);
-
-                                            if (aiResponseText.Contains("ACTION:TRANSFER", StringComparison.OrdinalIgnoreCase))
-                                            {
-                                                bool isTurkish = history.Any(h => h.Content.Contains("merhaba", StringComparison.OrdinalIgnoreCase) || h.Content.Contains("para", StringComparison.OrdinalIgnoreCase) || h.Content.Contains("gönder", StringComparison.OrdinalIgnoreCase));
-                                                aiResponseText = isTurkish
-                                                    ? "Para transferini gerçekleştirebilmem için lütfen kaynak hesap, alıcı hesap numarası ve transfer miktarını belirtir misiniz?"
-                                                    : "To execute the transfer, please provide the source account, destination account, and amount.";
-                                            }
-                                        }
-                                    }
-
-                                    if (!serverBuiltCard) aiResponseText = ChatMarkers.Neutralize(aiResponseText);
-
-                                    var aiMsgResult = await scopedChatService.AddMessageAsync(sessionId, "AI", aiResponseText);
-                                    if (aiMsgResult.IsSuccess && aiMsgResult.Data != null)
-                                    {
-                                        // Use IHubContext to safely broadcast the AI reply back to the group
-                                        await _hubContext.Clients.Group(sessionId.ToString()).SendAsync("ReceiveMessage", aiMsgResult.Data);
-                                    }
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"[SupportHub AI Error] {ex}");
-                        }
-                    });
-                }
+                await Clients.Caller.SendAsync("Error", result.ErrorKey == "SessionClosed" ? "This chat session has been closed." : "Could not send message.");
+                return;
             }
-            else
+
+            // Broadcast the message to everyone in the session group (User + Agent)
+            await Clients.Group(sessionId.ToString()).SendAsync("ReceiveMessage", result.Data);
+
+            // A customer's message gets an AI reply, written in the background.
+            if (senderRole == ChatSenders.User)
             {
-                await Clients.Caller.SendAsync("Error", "Could not send message.");
+                RunInBackground("reply", responder => responder.RespondToUserMessageAsync(sessionId));
             }
         }
 
@@ -310,9 +156,8 @@ namespace SmartBank.API.Hubs
                 return;
             }
 
-            // Verify session access
-            var sessionCheck = await _chatService.GetSessionMessagesAsync(sessionId, userId);
-            if (!sessionCheck.IsSuccess)
+            // Only the owner of the conversation confirms a transfer in it (an agent cannot move a customer's money).
+            if (!await _chatService.IsSessionOwnerAsync(sessionId, userId.Value))
             {
                 await Clients.Caller.SendAsync("Error", "Access denied to this chat session.");
                 return;
@@ -328,7 +173,7 @@ namespace SmartBank.API.Hubs
             };
 
             // The REST endpoint validates the request model; a hub method gets no such check, so do the same here
-            // (amount range, description length) before the transfer service sees the values.
+            // (amount range and scale, description length) before the transfer service sees the values.
             var problems = new List<ValidationResult>();
             if (!Validator.TryValidateObject(request, new ValidationContext(request), problems, validateAllProperties: true))
             {
@@ -347,64 +192,52 @@ namespace SmartBank.API.Hubs
             if (transferResult.IsSuccess && transferResult.Data != null)
             {
                 var tx = transferResult.Data;
-                // Add a system success message to the chat
-                var msgText = $"[TRANSFER_SUCCESS: source={tx.SourceAccountNumber}, destination={tx.DestinationAccountNumber}, amount={tx.Amount}, description={tx.Description}]";
-                var addMsgResult = await _chatService.AddMessageAsync(sessionId, "System", msgText);
 
-                if (addMsgResult.IsSuccess && addMsgResult.Data != null)
+                // Only numbers and account numbers: no free text of the customer's in a message the server writes as "System".
+                var marker = $"[TRANSFER_SUCCESS: source={tx.SourceAccountNumber}, destination={tx.DestinationAccountNumber}, amount={Money.Format(tx.Amount)}]";
+                var stored = await _chatService.AddMessageAsync(sessionId, ChatSenders.System, marker);
+                if (stored.IsSuccess && stored.Data != null)
                 {
-                    await Clients.Group(sessionId.ToString()).SendAsync("ReceiveMessage", addMsgResult.Data);
+                    await Clients.Group(sessionId.ToString()).SendAsync("ReceiveMessage", stored.Data);
                 }
 
-                // Call AI to comment on the successful transfer and output it
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        using (var scope = _serviceScopeFactory.CreateScope())
-                        {
-                            var scopedChatService = scope.ServiceProvider.GetRequiredService<IChatService>();
-                            var scopedAiService = scope.ServiceProvider.GetRequiredService<IAIChatbotService>();
-
-                            var historyResult = await scopedChatService.GetSessionMessagesAsync(sessionId, null);
-                            if (historyResult.IsSuccess && historyResult.Data != null)
-                            {
-                                var history = historyResult.Data;
-                                history.Add(new ChatMessageDto
-                                {
-                                    Sender = "User",
-                                    Content = $"SYSTEM UPDATE: The transfer of {amount} TRY from {source} to {destination} succeeded. Please inform the user politely that the transfer has been completed successfully.",
-                                    CreatedAt = DateTime.UtcNow
-                                });
-
-                                var aiResponseText = ChatMarkers.Neutralize(await GenerateAIResponseWithFailoverAsync(scope.ServiceProvider, history));
-                                var aiMsgResult = await scopedChatService.AddMessageAsync(sessionId, "AI", aiResponseText);
-                                if (aiMsgResult.IsSuccess && aiMsgResult.Data != null)
-                                {
-                                    await _hubContext.Clients.Group(sessionId.ToString()).SendAsync("ReceiveMessage", aiMsgResult.Data);
-                                }
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"[SupportHub AI Transfer Success Comment Error] {ex}");
-                    }
-                });
+                var sourceNumber = tx.SourceAccountNumber ?? source!;
+                var destinationNumber = tx.DestinationAccountNumber ?? destination!;
+                RunInBackground("transfer comment", responder => responder.CommentOnTransferAsync(sessionId, tx.Amount, sourceNumber, destinationNumber));
+                return;
             }
-            else
+
+            await ReportTransferFailureAsync(sessionId, transferResult.ErrorKey ?? "TransferFailed", transferResult.Message ?? "Transfer failed.");
+        }
+
+        /// <summary>
+        /// Writes "transfer failed / code needed" into the conversation. In demo mode the message carries the one-time code
+        /// ("...|OTP:123456"); the stored copy, which agents and later readers see, never does. The code is pushed only to the
+        /// customer's own connection, as a copy that is not stored.
+        /// </summary>
+        private async Task ReportTransferFailureAsync(Guid sessionId, string errorKey, string message)
+        {
+            const string codeMarker = "|OTP:";
+            var hasCode = message.Contains(codeMarker, StringComparison.Ordinal);
+            var cleanMessage = hasCode ? message[..message.IndexOf(codeMarker, StringComparison.Ordinal)] : message;
+
+            var stored = await _chatService.AddMessageAsync(sessionId, ChatSenders.System, $"[TRANSFER_FAILED: errorKey={errorKey}, message={cleanMessage}]");
+            if (!stored.IsSuccess || stored.Data == null) return;
+
+            if (!hasCode)
             {
-                // Add a system failure message
-                var errorKey = transferResult.ErrorKey ?? "TransferFailed";
-                var errorMsg = transferResult.Message ?? "Transfer failed.";
-                var msgText = $"[TRANSFER_FAILED: errorKey={errorKey}, message={errorMsg}]";
-
-                var addMsgResult = await _chatService.AddMessageAsync(sessionId, "System", msgText);
-                if (addMsgResult.IsSuccess && addMsgResult.Data != null)
-                {
-                    await Clients.Group(sessionId.ToString()).SendAsync("ReceiveMessage", addMsgResult.Data);
-                }
+                await Clients.Group(sessionId.ToString()).SendAsync("ReceiveMessage", stored.Data);
+                return;
             }
+
+            await Clients.GroupExcept(sessionId.ToString(), Context.ConnectionId).SendAsync("ReceiveMessage", stored.Data);
+            await Clients.Caller.SendAsync("ReceiveMessage", new ChatMessageDto
+            {
+                Id = Guid.NewGuid(),
+                Sender = ChatSenders.System,
+                Content = $"[TRANSFER_FAILED: errorKey={errorKey}, message={message}]",
+                CreatedAt = stored.Data.CreatedAt
+            });
         }
 
         public async Task CloseSessionAsync(Guid sessionId)
@@ -414,6 +247,7 @@ namespace SmartBank.API.Hubs
                 await Clients.Caller.SendAsync("Error", "Access denied to this chat session.");
                 return;
             }
+
             var result = await _chatService.CloseSessionAsync(sessionId);
 
             if (result.IsSuccess)
@@ -426,91 +260,6 @@ namespace SmartBank.API.Hubs
             }
         }
 
-        private async Task<string> GenerateAIResponseWithFailoverAsync(IServiceProvider serviceProvider, List<ChatMessageDto> history)
-        {
-            var ollamaService = serviceProvider.GetRequiredService<OllamaService>();
-            var geminiService = serviceProvider.GetRequiredService<GeminiService>();
-            var ragService = serviceProvider.GetRequiredService<IRAGService>();
-
-            // 1. Run RAG FAQ Search if last message is from User
-            var lastUserMessage = history.LastOrDefault(m => m.Sender.Equals("User", StringComparison.OrdinalIgnoreCase))?.Content;
-            if (!string.IsNullOrWhiteSpace(lastUserMessage))
-            {
-                try
-                {
-                    var faqAnswer = await ragService.SearchFAQAsync(lastUserMessage);
-                    if (!string.IsNullOrWhiteSpace(faqAnswer))
-                    {
-                        history.Add(new ChatMessageDto
-                        {
-                            Sender = "System",
-                            Content = $"Relevant FAQ Context:\n{faqAnswer}",
-                            CreatedAt = DateTime.UtcNow
-                        });
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[SupportHub RAG Error] {ex.Message}");
-                }
-            }
-
-            // 2. Call Ollama with 5-second timeout, falling back to Gemini
-            try
-            {
-                if (await ollamaService.IsAvailableAsync())
-                {
-                    return await ollamaService.GetResponseAsync(history).WaitAsync(TimeSpan.FromSeconds(5));
-                }
-                else
-                {
-                    Console.WriteLine("[SupportHub Failover] Ollama is offline. Falling back to Gemini API immediately.");
-                    return await geminiService.GetResponseAsync(history);
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[SupportHub Failover] Ollama failed or timed out during generation. Trying Gemini API... Error: {ex.Message}");
-                try
-                {
-                    return await geminiService.GetResponseAsync(history);
-                }
-                catch (Exception geminiEx)
-                {
-                    Console.WriteLine($"[SupportHub Failover] Gemini API also failed. Error: {geminiEx.Message}");
-
-                    // Final localized fallback
-                    var text = (lastUserMessage ?? "").ToLowerInvariant();
-                    bool isTurkish = text.Contains("merhaba") ||
-                                     text.Contains("selam") ||
-                                     text.Contains("nasıl") ||
-                                     text.Contains("nasil") ||
-                                     text.Contains("yardım") ||
-                                     text.Contains("yardim") ||
-                                     text.Contains("kredi") ||
-                                     text.Contains("hesap") ||
-                                     text.Contains("hesab") ||
-                                     text.Contains("para") ||
-                                     text.Contains("cek") ||
-                                     text.Contains("çek") ||
-                                     text.Contains("kart") ||
-                                     text.Contains("bakiye") ||
-                                     text.Contains("gönder") ||
-                                     text.Contains("gonder") ||
-                                     text.Contains("işlem") ||
-                                     text.Contains("islem") ||
-                                     text.Contains("destek") ||
-                                     text.Contains("bağla") ||
-                                     text.Contains("bagla") ||
-                                     text.Contains("istiyorum");
-
-                    return isTurkish
-                        ? "Şu anda yapay zeka servisimiz çevrimdışı. Sizi en kısa sürede canlı destek temsilcimize bağlayacağız."
-                        : "Our AI support is currently offline. We will connect you to a live support representative shortly.";
-                }
-            }
-        }
-
         // Agents call this method to connect to the general agents feed
         public async Task RegisterAgentAsync()
         {
@@ -520,19 +269,32 @@ namespace SmartBank.API.Hubs
                 await Clients.Caller.SendAsync("Error", "Support agent role required.");
                 return;
             }
+
             await Groups.AddToGroupAsync(Context.ConnectionId, "Agents");
             await Clients.Caller.SendAsync("AgentRegistered");
         }
 
-        private static string CleanValue(string val)
+        /// <summary>
+        /// Runs AI work after the hub call has returned (the customer must not wait for the model). It gets its own scope,
+        /// because the hub's own services are gone once the call is over. A failure is logged, never thrown.
+        /// </summary>
+        private void RunInBackground(string what, Func<SupportAiResponder, Task> work)
         {
-            if (string.IsNullOrEmpty(val)) return "";
-            val = val.Trim();
-            // Remove any trailing commas, semicolons, or brackets
-            val = val.TrimEnd(',', ';', ']', '}');
-            // Remove any leading/trailing quotes or braces
-            val = val.Trim('"', '\'', '{', '}');
-            return val.Trim();
+            var scopeFactory = _scopeFactory;
+            var logger = _logger;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    using var scope = scopeFactory.CreateScope();
+                    await work(scope.ServiceProvider.GetRequiredService<SupportAiResponder>());
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "The AI {What} in the support chat failed.", what);
+                }
+            });
         }
 
         private bool IsAgent => Context.User?.IsInRole(RoleNames.Agent) == true;
@@ -546,14 +308,13 @@ namespace SmartBank.API.Hubs
             if (IsAgent) return true;
 
             var userId = GetUserId();
-            if (!userId.HasValue) return false;
-
-            return (await _chatService.GetSessionMessagesAsync(sessionId, userId)).IsSuccess;
+            return userId.HasValue && await _chatService.IsSessionOwnerAsync(sessionId, userId.Value);
         }
 
         private Guid? GetUserId()
-        {            var userIdStr = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            return Guid.TryParse(userIdStr, out var userId) ? userId : null;
+        {
+            var value = Context.User?.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+            return Guid.TryParse(value, out var userId) ? userId : null;
         }
     }
 }

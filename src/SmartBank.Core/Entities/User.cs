@@ -3,9 +3,13 @@ using System.Collections.Generic;
 
 namespace SmartBank.Core.Entities
 {
-    public class User
+    public class User : IConcurrencyVersioned
     {
         public Guid Id { get; set; } = Guid.NewGuid();
+
+        // Optimistic-concurrency token, see IConcurrencyVersioned. Without it two parallel requests could both consume the
+        // same one-time code, or each count a wrong guess against the same starting number and lose one of them.
+        public int Version { get; set; }
         public string Username { get; set; } = string.Empty;
         public string Tckn { get; set; } = string.Empty;
         public string PasswordHash { get; set; } = string.Empty;
