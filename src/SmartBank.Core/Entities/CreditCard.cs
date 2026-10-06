@@ -15,7 +15,7 @@ namespace SmartBank.Core.Entities
 
         // Keyed hash (HMAC-SHA256 hex) of the card number, used for duplicate detection. Null on legacy rows.
         public string? CardNumberHash { get; set; }
-        public string ExpiryDate { get; set; } = DateTime.UtcNow.AddYears(5).ToString("MM/yy");
+        public string ExpiryDate { get; set; } = SmartBank.Core.Common.CardFormat.ExpiryIn(DateTime.UtcNow, 5);
         public decimal CardLimit { get; set; }
         public decimal CurrentDebt { get; set; }
         public string CardTheme { get; set; } = "theme-metallic-dark";

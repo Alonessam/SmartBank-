@@ -10,23 +10,23 @@
 *.userosscache
 *.sln.docstates
 
-# Build results
-[Dd]ebug/
-[Dd]ebugPublic/
-[Rr]elease/
+# Build results (bin/ and obj/ already cover Debug/ and Release/ below them)
 x64/
 x86/
 [Aa]rm/
 [Aa]rm64/
 obj/
 bin/
+publish/
 [Tt]emp/
 
-# Logs and test output
+# Logs, test output and coverage
 [Ll]og/
 [Ll]ogs/
 *.log
 TestResults/
+coverage*/
+*.cobertura.xml
 
 # Visual Studio 2015/2017 cache directory
 .vs/
@@ -46,13 +46,9 @@ TestResults/
 appsettings.Local.json
 appsettings.Development.json
 
-# AI assistant logs and scratch files
-.gemini/
-brain/
-scratch/
-walkthrough.md
-implementation_plan.md
-task.md
+# Backups and repository bundles
+*.bak
+*.bundle
 
 # OS files
 Thumbs.db
@@ -63,6 +59,7 @@ Desktop.ini
 # Secrets (never commit)
 .env
 .env.*
+!.env.example
 *.pfx
 *.key
 secrets.json

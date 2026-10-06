@@ -19,7 +19,7 @@ namespace SmartBank.Core.Entities
         // Debit card number, encrypted with AES-GCM. The CVV is deliberately NOT stored: it is shown once at issuance.
         public string EncryptedCardNumber { get; set; } = string.Empty;
         public string CardTheme { get; set; } = "theme-neon-blue";
-        public string ExpiryDate { get; set; } = DateTime.UtcNow.AddYears(5).ToString("MM/yy");
+        public string ExpiryDate { get; set; } = SmartBank.Core.Common.CardFormat.ExpiryIn(DateTime.UtcNow, 5);
 
         // Account Type and Vadeli details
         public string AccountType { get; set; } = "DemandDeposit"; // DemandDeposit or TimeDeposit

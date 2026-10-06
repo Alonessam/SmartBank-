@@ -79,7 +79,7 @@ namespace SmartBank.Tests
 
             var result = validator.Validate(Dto("12345678901"));
             Assert.False(result.IsValid);
-            var message = Assert.Single(result.Errors.Where(e => e.PropertyName == "Tckn")).ErrorMessage;
+            var message = Assert.Single(result.Errors, e => e.PropertyName == "Tckn").ErrorMessage;
             Assert.Contains("check digits", message);
         }
 

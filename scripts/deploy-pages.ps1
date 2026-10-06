@@ -1,16 +1,25 @@
 # Publishes the static frontend (src/SmartBank.Web) as the GitHub Pages site, i.e. the gh-pages branch.
 #
-# Run it AFTER the matching API is live: the v1.1 frontend talks to the v1.1 API (role in the sign-in response, the
-# two-step password reset) and the old API does not know those endpoints.
+# Run it AFTER the matching API is live: the frontend talks to the API of the same release (sign-in response, refresh
+# tokens, endpoints) and an older API may not know them.
+#
+# Safety rules (override with -Force only when you know why):
+#   - the working tree must be clean (no uncommitted changes), because the site is built from src/SmartBank.Web as it is
+#     on disk and an uncommitted edit would be published without ever being in git;
+#   - the current branch must be main.
 #
 # Without -Push it only prepares the commit in a temporary worktree, prints what would change and cleans up, so it is
 # safe to try. With -Push it publishes to origin/gh-pages (which updates the live demo).
 #
+# -Version is the cache-buster appended to the script URLs (app.js, chat.js and styles.css ?v=...). It defaults to the latest git tag without the
+# leading "v" (so tag the release first), or 1.3.0 when the repository has no tag.
+#
 #   ./scripts/deploy-pages.ps1            # dry run
 #   ./scripts/deploy-pages.ps1 -Push      # publish
 param(
-    [string]$Version = "1.2.0",
-    [switch]$Push
+    [string]$Version,
+    [switch]$Push,
+    [switch]$Force
 )
 
 # Not "Stop": Windows PowerShell 5.1 turns git's normal progress messages on stderr into terminating errors.
@@ -24,7 +33,30 @@ function Invoke-Git {
 }
 
 $repo = (Invoke-Git rev-parse --show-toplevel | Select-Object -First 1).Trim()
-$source = Join-Path $repo "src\SmartBank.Web"
+$source = Join-Path (Join-Path $repo "src") "SmartBank.Web"
+
+# --- Safety checks -----------------------------------------------------------------------------------------------
+$branch = (Invoke-Git -C $repo rev-parse --abbrev-ref HEAD | Select-Object -First 1).Trim()
+$dirty = @(Invoke-Git -C $repo status --porcelain)
+
+if (-not $Force) {
+    if ($dirty.Count -gt 0) {
+        throw "The working tree has uncommitted changes. Commit or stash them first (or pass -Force):`n$($dirty -join "`n")"
+    }
+    if ($branch -ne "main") {
+        throw "You are on '$branch', not on main. Check out main first (or pass -Force)."
+    }
+}
+
+# --- Version -----------------------------------------------------------------------------------------------------
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $Version = "1.3.0"
+    & git -C $repo describe --tags --abbrev=0 2>$null | ForEach-Object {
+        if ($_ -match '^v?(\d+\.\d+\.\d+.*)$') { $Version = $Matches[1] }
+    }
+}
+Write-Host "Publishing version $Version from branch $branch."
+
 $worktree = Join-Path ([System.IO.Path]::GetTempPath()) ("smartbank-pages-" + [guid]::NewGuid().ToString("N"))
 
 Invoke-Git -C $repo fetch --quiet origin gh-pages | Out-Null
@@ -38,7 +70,7 @@ try {
     # Cache busters on the scripts, so browsers fetch the new JavaScript instead of a cached copy.
     foreach ($page in Get-ChildItem $worktree -Filter *.html) {
         $text = [System.IO.File]::ReadAllText($page.FullName)
-        $text = [regex]::Replace($text, '((?:app|chat)\.js)(\?v=[^"]*)?"', "`$1?v=$Version`"")
+        $text = [regex]::Replace($text, '((?:app|chat)\.js|styles\.css)(\?v=[^"]*)?"', "`$1?v=$Version`"")
         [System.IO.File]::WriteAllText($page.FullName, $text, (New-Object System.Text.UTF8Encoding($false)))
     }
 

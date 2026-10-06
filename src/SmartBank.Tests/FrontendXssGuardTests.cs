@@ -133,5 +133,151 @@ namespace SmartBank.Tests
             Assert.DoesNotMatch(new Regex(@"\son[a-z]+\s*=\s*[""']", RegexOptions.IgnoreCase), html);
             Assert.DoesNotContain("javascript:", html, StringComparison.OrdinalIgnoreCase);
         }
+
+        // ------------------------------------------------------------------------------------------------------------
+        // v1.3: third-party scripts, the CSP of each page and the remaining DOM sinks
+        // ------------------------------------------------------------------------------------------------------------
+        private static readonly string[] Pages = { "index.html", "dashboard.html", "agent.html" };
+
+        public static TheoryData<string> AllPages => new() { "index.html", "dashboard.html", "agent.html" };
+
+        private static string PolicyOf(string html)
+        {
+            var csp = Regex.Match(html, "<meta http-equiv=\"Content-Security-Policy\" content=\"(?<policy>[^\"]+)\"");
+            Assert.True(csp.Success, "The page has no Content-Security-Policy meta tag.");
+            return csp.Groups["policy"].Value;
+        }
+
+        private static string Directive(string policy, string name)
+        {
+            return Regex.Match(policy, name + "[^;]*").Value;
+        }
+
+        private static List<Match> ExternalScripts(string html)
+        {
+            return Regex.Matches(html, "<script\\b[^>]*\\bsrc=\"(?<src>https?://[^\"]+)\"[^>]*>", RegexOptions.IgnoreCase).ToList();
+        }
+
+        [Theory]
+        [MemberData(nameof(AllPages))]
+        public void Every_external_script_is_pinned_and_integrity_checked(string page)
+        {
+            foreach (var script in ExternalScripts(Read(page)))
+            {
+                var tag = script.Value;
+                var src = script.Groups["src"].Value;
+
+                Assert.Matches("integrity=\"sha384-[A-Za-z0-9+/=]{64}\"", tag);
+                Assert.Contains("crossorigin=\"anonymous\"", tag);
+                // A version in the path (".../8.0.0/..." or "...@1.6.0/...") and never a moving target.
+                Assert.Matches(@"[@/]\d+\.\d+\.\d+/", src);
+                Assert.DoesNotContain("@latest", src);
+            }
+        }
+
+        [Theory]
+        [MemberData(nameof(AllPages))]
+        public void The_csp_allows_exactly_the_scripts_the_page_loads(string page)
+        {
+            var html = Read(page);
+            var scriptSrc = Directive(PolicyOf(html), "script-src");
+            var sources = scriptSrc.Split(' ', StringSplitOptions.RemoveEmptyEntries).Skip(1).ToList();
+            var external = ExternalScripts(html).Select(m => m.Groups["src"].Value).ToList();
+
+            Assert.Contains("'self'", sources);
+            Assert.DoesNotContain("'unsafe-inline'", sources);
+            Assert.DoesNotContain("'unsafe-eval'", sources);
+
+            // Every external script is covered by a path-restricted source, and every host source is used by a script.
+            foreach (var src in external)
+            {
+                Assert.Contains(sources, source => source.EndsWith('/') && src.StartsWith(source, StringComparison.Ordinal));
+            }
+            foreach (var source in sources.Where(s => s.StartsWith("https://", StringComparison.Ordinal)))
+            {
+                Assert.True(source.EndsWith('/') && source.Count(c => c == '/') > 3, $"{page}: script source '{source}' must be restricted to a path.");
+                Assert.Contains(external, src => src.StartsWith(source, StringComparison.Ordinal));
+            }
+        }
+
+        [Fact]
+        public void The_login_page_loads_no_third_party_script()
+        {
+            var html = Read("index.html");
+
+            Assert.Empty(ExternalScripts(html));
+            Assert.Equal("script-src 'self'", Directive(PolicyOf(html), "script-src"));
+        }
+
+        [Theory]
+        [MemberData(nameof(AllPages))]
+        public void The_csp_has_no_wildcards_and_no_third_party_images(string page)
+        {
+            var policy = PolicyOf(Read(page));
+
+            Assert.DoesNotContain("*", policy);
+            Assert.DoesNotContain("qrserver", policy);
+            // No inline style attributes anywhere (the markup uses classes, scripts use the CSSOM), so inline styles stay blocked.
+            Assert.DoesNotContain("'unsafe-inline'", policy);
+            Assert.DoesNotMatch(new Regex(@"\sstyle=""", RegexOptions.IgnoreCase), Read(page));
+            Assert.Contains("default-src 'self'", policy);
+            Assert.Contains("base-uri 'self'", policy);
+            Assert.Contains("form-action 'self'", policy);
+            Assert.Equal("img-src 'self' data:", Directive(policy, "img-src"));
+            // The API is the only place the page may talk to (plus localhost for local development).
+            foreach (var source in Directive(policy, "connect-src").Split(' ', StringSplitOptions.RemoveEmptyEntries).Skip(1))
+            {
+                Assert.Contains(source, new[]
+                {
+                    "'self'", "http://localhost:5038", "ws://localhost:5038",
+                    "https://smartbank-fintech-api.onrender.com", "wss://smartbank-fintech-api.onrender.com"
+                });
+            }
+        }
+
+        [Fact]
+        public void The_scripts_build_the_dom_without_parsing_html()
+        {
+            // New code builds elements with h() / textContent; nothing may hand a string to the HTML parser.
+            foreach (var file in new[] { "app.js", "chat.js" })
+            {
+                var code = Read(file);
+
+                Assert.DoesNotMatch(@"\.innerHTML\s*=", code);
+                Assert.DoesNotContain("insertAdjacentHTML", code);
+                Assert.DoesNotContain("outerHTML", code);
+                Assert.DoesNotContain("document.write", code);
+                Assert.DoesNotContain("eval(", code);
+                Assert.DoesNotContain("new Function", code);
+                Assert.DoesNotMatch(@"set(Timeout|Interval)\(\s*[""'`]", code);
+            }
+        }
+
+        [Fact]
+        public void Browser_storage_is_only_touched_through_the_safe_helper()
+        {
+            var app = Read("app.js");
+            var chat = Read("chat.js");
+
+            // Direct localStorage / sessionStorage calls would throw when site data is blocked.
+            Assert.DoesNotMatch(@"(?<![\w.])(localStorage|sessionStorage)\.(get|set|remove)Item", app);
+            Assert.DoesNotMatch(@"(localStorage|sessionStorage)\.(get|set|remove)Item", chat);
+            // The national id is never kept in the browser.
+            Assert.DoesNotContain("tckn: data.tckn", app);
+        }
+
+        [Fact]
+        public void Signing_out_clears_every_key_stops_the_connection_and_leaves_without_history()
+        {
+            var app = Read("app.js");
+
+            Assert.Matches(@"\[""token"", ""user"", ""refreshToken"", ""tokenExpiresAt""\]", app);
+            Assert.Contains("safeSession.remove(\"activeChatSessionId\")", app);
+            Assert.Contains("stopSignalRConnection()", app);
+            Assert.Contains("window.location.replace(\"index.html\")", app);
+            Assert.DoesNotMatch(@"window\.location\.href\s*=", app);
+            Assert.Contains("window.addEventListener(\"storage\"", app);
+            Assert.Contains("window.addEventListener(\"pageshow\"", app);
+        }
     }
 }

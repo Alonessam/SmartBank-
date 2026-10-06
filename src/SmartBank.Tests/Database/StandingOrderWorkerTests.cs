@@ -70,7 +70,57 @@ namespace SmartBank.Tests.Database
             Assert.Equal(100m, destination.Balance);
             Assert.True(order.IsActive);
             Assert.True(order.NextExecutionDate > DateTime.UtcNow, "The order should have moved to its next period.");
-            Assert.Equal(2, await context.Transactions.CountAsync()); // one outgoing + one incoming record
+            Assert.Equal(1, await context.Transactions.CountAsync()); // ONE ledger row per movement, not an outgoing and an incoming one
+        }
+
+        [DatabaseTheory]
+        [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
+        public async Task Different_currencies_are_rejected_not_moved_one_to_one(TestProvider provider)
+        {
+            await using var db = await TestDatabase.CreateAsync(provider);
+            var orderId = await SeedAsync(db, sourceBalance: 1000m, (context, user, order) =>
+            {
+                context.ChangeTracker.Entries<Account>().Single(e => e.Entity.AccountNumber == Destination).Entity.Currency = "USD";
+            });
+
+            await NewWorker(db).RunOnceAsync(CancellationToken.None);
+
+            await using var verify = db.NewContext();
+            Assert.False((await verify.StandingOrders.AsNoTracking().SingleAsync(o => o.Id == orderId)).IsActive);
+            Assert.Equal(1000m, (await verify.Accounts.AsNoTracking().SingleAsync(a => a.AccountNumber == Source)).Balance);
+            Assert.Equal(0m, (await verify.Accounts.AsNoTracking().SingleAsync(a => a.AccountNumber == Destination)).Balance);
+            Assert.Equal(0, await verify.Transactions.CountAsync());
+            Assert.Contains(await verify.AuditLogs.AsNoTracking().ToListAsync(), a => a.Action == "StandingOrderDeactivated" && a.Details.Contains("different currencies"));
+        }
+
+        [DatabaseTheory]
+        [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
+        public async Task A_missing_destination_deactivates_the_order_without_taking_money(TestProvider provider)
+        {
+            await using var db = await TestDatabase.CreateAsync(provider);
+            var orderId = await SeedAsync(db, sourceBalance: 1000m, (context, user, order) => order.DestinationAccountNumber = "TR9999999999999999");
+
+            await NewWorker(db).RunOnceAsync(CancellationToken.None);
+
+            await using var verify = db.NewContext();
+            Assert.False((await verify.StandingOrders.AsNoTracking().SingleAsync(o => o.Id == orderId)).IsActive);
+            Assert.Equal(1000m, (await verify.Accounts.AsNoTracking().SingleAsync(a => a.AccountNumber == Source)).Balance);
+            Assert.Equal(0, await verify.Transactions.CountAsync());
+        }
+
+        [DatabaseTheory]
+        [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
+        public async Task An_order_past_its_maturity_date_is_switched_off_and_does_not_run(TestProvider provider)
+        {
+            await using var db = await TestDatabase.CreateAsync(provider);
+            var orderId = await SeedAsync(db, sourceBalance: 1000m, (context, user, order) => order.MaturityDate = DateTime.UtcNow.AddMinutes(-1));
+
+            await NewWorker(db).RunOnceAsync(CancellationToken.None);
+
+            await using var verify = db.NewContext();
+            Assert.False((await verify.StandingOrders.AsNoTracking().SingleAsync(o => o.Id == orderId)).IsActive);
+            Assert.Equal(1000m, (await verify.Accounts.AsNoTracking().SingleAsync(a => a.AccountNumber == Source)).Balance);
+            Assert.Contains(await verify.AuditLogs.AsNoTracking().ToListAsync(), a => a.Details.Contains("maturity"));
         }
 
         [DatabaseTheory]

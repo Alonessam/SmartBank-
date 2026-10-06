@@ -1,318 +1,213 @@
-using System;
-using System.Security.Claims;
-using System.Threading.Tasks;
+using System.ComponentModel.DataAnnotations;
+using FluentValidation;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
+using SmartBank.API.Security;
+using SmartBank.Core.Common;
 using SmartBank.Core.DTOs;
 using SmartBank.Core.Interfaces;
-using FluentValidation;
-using System.Linq;
+using SmartBank.Infrastructure.Services;
 
 namespace SmartBank.API.Controllers
 {
+    /// <summary>
+    /// The customer's accounts, cards, contacts, standing orders and money movements. Every action works on the signed-in
+    /// user's own data only: ids and account numbers of other customers answer "not found".
+    /// All errors have the body { isSuccess, errorKey, message } (see <see cref="SmartBankControllerBase.StatusFor"/> for the status codes).
+    /// </summary>
     [Authorize]
     [ApiController]
     [Route("api/[controller]")]
-    public class BankingController : ControllerBase
+    [EnableRateLimiting(RateLimitPolicies.Banking)]
+    [Produces("application/json")]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
+    public class BankingController : SmartBankControllerBase
     {
         private readonly IBankingService _bankingService;
         private readonly IValidator<TransferRequestDto> _transferValidator;
+        private readonly IConfiguration _configuration;
 
-        public BankingController(IBankingService bankingService, IValidator<TransferRequestDto> transferValidator)
+        public BankingController(IBankingService bankingService, IValidator<TransferRequestDto> transferValidator, IConfiguration configuration)
         {
             _bankingService = bankingService;
             _transferValidator = transferValidator;
+            _configuration = configuration;
         }
 
+        /// <summary>Is the credit-card charge / advance-period simulation switched on? (Demo:EnableSimulationEndpoints, default true.)</summary>
+        private bool SimulationEnabled => _configuration.GetValue("Demo:EnableSimulationEndpoints", true);
+
+        /// <summary>The caller's accounts, oldest first, with the (decrypted) debit card numbers.</summary>
         [HttpGet("accounts")]
-        public async Task<IActionResult> GetAccounts()
-        {
-            var userId = GetUserId();
-            if (userId == Guid.Empty)
-            {
-                return Unauthorized();
-            }
+        [ProducesResponseType(typeof(List<AccountDto>), StatusCodes.Status200OK)]
+        public async Task<IActionResult> GetAccounts(CancellationToken cancellationToken)
+            => ToActionResult(await _bankingService.GetAccountsAsync(GetUserId(), cancellationToken));
 
-            var result = await _bankingService.GetAccountsAsync(userId);
-            return Ok(result.Data);
-        }
-
+        /// <summary>The newest transactions of one of the caller's accounts, newest first. <paramref name="take"/> is 1..500 (default 200).</summary>
         [HttpGet("transactions/{accountId}")]
-        public async Task<IActionResult> GetTransactions(Guid accountId)
-        {
-            var userId = GetUserId();
-            if (userId == Guid.Empty)
-            {
-                return Unauthorized();
-            }
+        [ProducesResponseType(typeof(List<TransactionDto>), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<IActionResult> GetTransactions(Guid accountId, [FromQuery] int take = BankingService.DefaultTransactionsPerRequest, CancellationToken cancellationToken = default)
+            => ToActionResult(await _bankingService.GetTransactionsAsync(accountId, GetUserId(), take, cancellationToken));
 
-            var result = await _bankingService.GetTransactionsAsync(accountId, userId);
-
-            if (!result.IsSuccess)
-            {
-                return BadRequest(new { result.IsSuccess, result.ErrorKey, result.Message });
-            }
-
-            return Ok(result.Data);
-        }
-
+        /// <summary>
+        /// Transfers money between two accounts of the same currency. A transfer that needs a one-time code answers 400 with
+        /// errorKey Requires2FA, SuspectedFraudDuplicate or SuspectedFraudHighValue; the same request with the code in
+        /// <c>otpCode</c> completes it.
+        /// </summary>
         [HttpPost("transfer")]
+        [EnableRateLimiting(RateLimitPolicies.Transfer)]
+        [ProducesResponseType(typeof(TransactionDto), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
         public async Task<IActionResult> Transfer([FromBody] TransferRequestDto transferRequest)
         {
-            var validationResult = await _transferValidator.ValidateAsync(transferRequest);
-            if (!validationResult.IsValid)
+            var validation = await _transferValidator.ValidateAsync(transferRequest);
+            if (!validation.IsValid)
             {
-                return BadRequest(new { 
-                    IsSuccess = false, 
-                    ErrorKey = "ValidationError", 
-                    Message = string.Join(" ", validationResult.Errors.Select(e => e.ErrorMessage)) 
-                });
+                return ErrorResult("ValidationError", string.Join(" ", validation.Errors.Select(e => e.ErrorMessage)));
             }
 
-            var userId = GetUserId();
-            if (userId == Guid.Empty)
-            {
-                return Unauthorized();
-            }
-
-            var result = await _bankingService.TransferMoneyAsync(userId, transferRequest);
-
-            if (!result.IsSuccess)
-            {
-                return BadRequest(new { result.IsSuccess, result.ErrorKey, result.Message });
-            }
-
-            return Ok(result.Data);
+            return ToActionResult(await _bankingService.TransferMoneyAsync(GetUserId(), transferRequest));
         }
 
+        /// <summary>Opens an account in TRY, USD, EUR, XAU or XAG (demand or time deposit). At most 10 per customer.</summary>
         [HttpPost("accounts")]
-        public async Task<IActionResult> CreateAccount([FromQuery] string currency = "TRY", [FromQuery] string accountType = "DemandDeposit")
-        {
-            var userId = GetUserId();
-            if (userId == Guid.Empty) return Unauthorized();
+        [ProducesResponseType(typeof(AccountDto), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        public async Task<IActionResult> CreateAccount(
+            [FromQuery, StringLength(10)] string currency = Currencies.Try,
+            [FromQuery, StringLength(30)] string accountType = AccountTypes.DemandDeposit)
+            => ToActionResult(await _bankingService.CreateAccountAsync(GetUserId(), currency, accountType));
 
-            var result = await _bankingService.CreateAccountAsync(userId, currency, accountType);
-            if (!result.IsSuccess)
-            {
-                return BadRequest(new { result.IsSuccess, result.ErrorKey, result.Message });
-            }
-            return Ok(result.Data);
-        }
+        /// <summary>Closes an account. A balance must be moved to <paramref name="targetAccountId"/> (converted at live rates if the currency differs).</summary>
+        [HttpDelete("accounts/{accountId}")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<IActionResult> DeleteAccount(Guid accountId, [FromQuery] Guid? targetAccountId = null)
+            => ToActionResult(await _bankingService.DeleteAccountAsync(GetUserId(), accountId, targetAccountId), data => new { success = data });
 
+        /// <summary>The caller's credit card (at most one).</summary>
         [HttpGet("credit-cards")]
-        public async Task<IActionResult> GetCreditCards()
-        {
-            var userId = GetUserId();
-            if (userId == Guid.Empty) return Unauthorized();
+        [ProducesResponseType(typeof(List<CreditCardDto>), StatusCodes.Status200OK)]
+        public async Task<IActionResult> GetCreditCards(CancellationToken cancellationToken)
+            => ToActionResult(await _bankingService.GetCreditCardsAsync(GetUserId(), cancellationToken));
 
-            var result = await _bankingService.GetCreditCardsAsync(userId);
-            return Ok(result.Data);
-        }
-
+        /// <summary>Issues the caller's credit card (the CVV is shown once, in this answer).</summary>
         [HttpPost("credit-cards")]
+        [ProducesResponseType(typeof(CreditCardDto), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
         public async Task<IActionResult> CreateCreditCard()
-        {
-            var userId = GetUserId();
-            if (userId == Guid.Empty) return Unauthorized();
+            => ToActionResult(await _bankingService.CreateCreditCardAsync(GetUserId()));
 
-            var result = await _bankingService.CreateCreditCardAsync(userId);
-            if (!result.IsSuccess)
-            {
-                return BadRequest(new { result.IsSuccess, result.ErrorKey, result.Message });
-            }
-            return Ok(result.Data);
-        }
-
+        /// <summary>The newest 24 statements of a card with their transactions.</summary>
         [HttpGet("credit-cards/{cardId}/statements")]
-        public async Task<IActionResult> GetStatements(Guid cardId)
-        {
-            var userId = GetUserId();
-            if (userId == Guid.Empty) return Unauthorized();
+        [ProducesResponseType(typeof(List<CreditCardStatementDto>), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<IActionResult> GetStatements(Guid cardId, CancellationToken cancellationToken)
+            => ToActionResult(await _bankingService.GetStatementsAsync(cardId, GetUserId(), cancellationToken));
 
-            var result = await _bankingService.GetStatementsAsync(cardId, userId);
-            if (!result.IsSuccess)
-            {
-                return BadRequest(new { result.IsSuccess, result.ErrorKey, result.Message });
-            }
-            return Ok(result.Data);
-        }
-
+        /// <summary>Pays card debt from a TRY account. The amount cannot be more than the current debt (errorKey PaymentExceedsDebt).</summary>
         [HttpPost("credit-cards/{cardId}/pay")]
+        [EnableRateLimiting(RateLimitPolicies.Transfer)]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
         public async Task<IActionResult> PayCreditCardDebt(Guid cardId, [FromBody] PayCreditCardDebtDto payRequest)
-        {
-            if (!ModelState.IsValid) return BadRequest(ModelState);
+            => ToActionResult(await _bankingService.PayCreditCardDebtAsync(GetUserId(), cardId, payRequest), data => new { success = data });
 
-            var userId = GetUserId();
-            if (userId == Guid.Empty) return Unauthorized();
-
-            var result = await _bankingService.PayCreditCardDebtAsync(userId, cardId, payRequest);
-            if (!result.IsSuccess)
-            {
-                return BadRequest(new { result.IsSuccess, result.ErrorKey, result.Message });
-            }
-            return Ok(new { success = result.Data });
-        }
-
+        /// <summary>
+        /// Simulation: a shop charges the card. Switched off (404) when Demo:EnableSimulationEndpoints is false.
+        /// </summary>
         [HttpPost("credit-cards/{cardId}/charge")]
-        public async Task<IActionResult> ChargeCreditCard(Guid cardId, [FromQuery] decimal amount, [FromQuery] string description = "")
+        [ProducesResponseType(typeof(CreditCardDto), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<IActionResult> ChargeCreditCard(
+            Guid cardId,
+            [FromQuery, Range(0.01, 10000000.00), MoneyScale] decimal amount,
+            [FromQuery, StringLength(200)] string description = "")
         {
-            var userId = GetUserId();
-            if (userId == Guid.Empty) return Unauthorized();
+            if (!SimulationEnabled) return NotFound();
 
-            var result = await _bankingService.ChargeCreditCardAsync(userId, cardId, amount, description);
-            if (!result.IsSuccess)
-            {
-                return BadRequest(new { result.IsSuccess, result.ErrorKey, result.Message });
-            }
-            return Ok(result.Data);
+            return ToActionResult(await _bankingService.ChargeCreditCardAsync(GetUserId(), cardId, amount, description));
         }
 
+        /// <summary>
+        /// Simulation: closes the current statement and opens the next one (interest on what is unpaid) without waiting a month.
+        /// Switched off (404) when Demo:EnableSimulationEndpoints is false.
+        /// </summary>
         [HttpPost("credit-cards/{cardId}/advance-period")]
+        [ProducesResponseType(typeof(CreditCardStatementDto), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
         public async Task<IActionResult> AdvancePeriod(Guid cardId)
         {
-            var userId = GetUserId();
-            if (userId == Guid.Empty) return Unauthorized();
+            if (!SimulationEnabled) return NotFound();
 
-            var result = await _bankingService.AdvanceStatementPeriodAsync(userId, cardId);
-            if (!result.IsSuccess)
-            {
-                return BadRequest(new { result.IsSuccess, result.ErrorKey, result.Message });
-            }
-            return Ok(result.Data);
+            return ToActionResult(await _bankingService.AdvanceStatementPeriodAsync(GetUserId(), cardId));
         }
 
-        [HttpDelete("accounts/{accountId}")]
-        public async Task<IActionResult> DeleteAccount(Guid accountId, [FromQuery] Guid? targetAccountId = null)
-        {
-            var userId = GetUserId();
-            if (userId == Guid.Empty) return Unauthorized();
-
-            var result = await _bankingService.DeleteAccountAsync(userId, accountId, targetAccountId);
-            if (!result.IsSuccess)
-            {
-                return BadRequest(new { result.IsSuccess, result.ErrorKey, result.Message });
-            }
-            return Ok(new { success = result.Data });
-        }
-
+        /// <summary>The caller's saved recipients (at most 100).</summary>
         [HttpGet("contacts")]
-        public async Task<IActionResult> GetSavedContacts()
-        {
-            var userId = GetUserId();
-            if (userId == Guid.Empty) return Unauthorized();
+        [ProducesResponseType(typeof(List<SavedContactDto>), StatusCodes.Status200OK)]
+        public async Task<IActionResult> GetSavedContacts(CancellationToken cancellationToken)
+            => ToActionResult(await _bankingService.GetSavedContactsAsync(GetUserId(), cancellationToken));
 
-            var result = await _bankingService.GetSavedContactsAsync(userId);
-            if (!result.IsSuccess)
-            {
-                return BadRequest(new { result.IsSuccess, result.ErrorKey, result.Message });
-            }
-            return Ok(result.Data);
-        }
-
+        /// <summary>Saves a recipient, or renames it when the account number is already saved.</summary>
         [HttpPost("contacts")]
+        [ProducesResponseType(typeof(SavedContactDto), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
         public async Task<IActionResult> SaveContact([FromBody] CreateSavedContactDto contactDto)
-        {
-            var userId = GetUserId();
-            if (userId == Guid.Empty) return Unauthorized();
-
-            var result = await _bankingService.SaveContactAsync(userId, contactDto);
-            if (!result.IsSuccess)
-            {
-                return BadRequest(new { result.IsSuccess, result.ErrorKey, result.Message });
-            }
-            return Ok(result.Data);
-        }
+            => ToActionResult(await _bankingService.SaveContactAsync(GetUserId(), contactDto));
 
         [HttpDelete("contacts/{contactId}")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
         public async Task<IActionResult> DeleteContact(Guid contactId)
-        {
-            var userId = GetUserId();
-            if (userId == Guid.Empty) return Unauthorized();
+            => ToActionResult(await _bankingService.DeleteContactAsync(GetUserId(), contactId), data => new { success = data });
 
-            var result = await _bankingService.DeleteContactAsync(userId, contactId);
-            if (!result.IsSuccess)
-            {
-                return BadRequest(new { result.IsSuccess, result.ErrorKey, result.Message });
-            }
-            return Ok(new { success = result.Data });
-        }
-
+        /// <summary>The caller's standing orders, newest first.</summary>
         [HttpGet("standing-orders")]
-        public async Task<IActionResult> GetStandingOrders()
-        {
-            var userId = GetUserId();
-            if (userId == Guid.Empty) return Unauthorized();
+        [ProducesResponseType(typeof(List<StandingOrderDto>), StatusCodes.Status200OK)]
+        public async Task<IActionResult> GetStandingOrders(CancellationToken cancellationToken)
+            => ToActionResult(await _bankingService.GetStandingOrdersAsync(GetUserId(), cancellationToken));
 
-            var result = await _bankingService.GetStandingOrdersAsync(userId);
-            if (!result.IsSuccess)
-            {
-                return BadRequest(new { result.IsSuccess, result.ErrorKey, result.Message });
-            }
-            return Ok(result.Data);
-        }
-
+        /// <summary>
+        /// Creates a standing order: a Transfer between two accounts of the same currency (amount up to 1,000,000), or a
+        /// CreditCardAutoPay of the caller's card from a TRY account. At most 20 active orders.
+        /// </summary>
         [HttpPost("standing-orders")]
+        [ProducesResponseType(typeof(StandingOrderDto), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
         public async Task<IActionResult> CreateStandingOrder([FromBody] CreateStandingOrderDto orderDto)
-        {
-            var userId = GetUserId();
-            if (userId == Guid.Empty) return Unauthorized();
-
-            var result = await _bankingService.CreateStandingOrderAsync(userId, orderDto);
-            if (!result.IsSuccess)
-            {
-                return BadRequest(new { result.IsSuccess, result.ErrorKey, result.Message });
-            }
-            return Ok(result.Data);
-        }
+            => ToActionResult(await _bankingService.CreateStandingOrderAsync(GetUserId(), orderDto));
 
         [HttpDelete("standing-orders/{orderId}")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
         public async Task<IActionResult> DeleteStandingOrder(Guid orderId)
-        {
-            var userId = GetUserId();
-            if (userId == Guid.Empty) return Unauthorized();
+            => ToActionResult(await _bankingService.DeleteStandingOrderAsync(GetUserId(), orderId), data => new { success = data });
 
-            var result = await _bankingService.DeleteStandingOrderAsync(userId, orderId);
-            if (!result.IsSuccess)
-            {
-                return BadRequest(new { result.IsSuccess, result.ErrorKey, result.Message });
-            }
-            return Ok(new { success = result.Data });
-        }
-
+        /// <summary>Buys or sells USD, EUR, XAU or XAG against TRY at the live rate. Refused (RateUnavailable) while only stand-in prices exist.</summary>
         [HttpPost("exchange")]
+        [EnableRateLimiting(RateLimitPolicies.Transfer)]
+        [ProducesResponseType(typeof(TransactionDto), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
         public async Task<IActionResult> ExchangeMoney([FromBody] ExchangeDto exchangeDto)
-        {
-            var userId = GetUserId();
-            if (userId == Guid.Empty) return Unauthorized();
+            => ToActionResult(await _bankingService.ExchangeMoneyAsync(GetUserId(), exchangeDto));
 
-            var result = await _bankingService.ExchangeMoneyAsync(userId, exchangeDto);
-            if (!result.IsSuccess)
-            {
-                return BadRequest(new { result.IsSuccess, result.ErrorKey, result.Message });
-            }
-            return Ok(result.Data);
-        }
-
+        /// <summary>Demo faucet: adds money to the caller's own account (up to 10,000,000 per call).</summary>
         [HttpPost("deposit")]
+        [EnableRateLimiting(RateLimitPolicies.Transfer)]
+        [ProducesResponseType(typeof(TransactionDto), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
         public async Task<IActionResult> DepositMoney([FromBody] DepositRequestDto depositRequest)
-        {
-            if (!ModelState.IsValid) return BadRequest(ModelState);
-
-            var userId = GetUserId();
-            if (userId == Guid.Empty) return Unauthorized();
-
-            var result = await _bankingService.DepositMoneyAsync(userId, depositRequest.AccountNumber, depositRequest.Amount);
-            if (!result.IsSuccess)
-            {
-                return BadRequest(new { result.IsSuccess, result.ErrorKey, result.Message });
-            }
-            return Ok(result.Data);
-        }
-
-        private Guid GetUserId()
-        {
-            var userIdStr = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            return Guid.TryParse(userIdStr, out var userId) ? userId : Guid.Empty;
-        }
+            => ToActionResult(await _bankingService.DepositMoneyAsync(GetUserId(), depositRequest.AccountNumber, depositRequest.Amount));
     }
+
 }
