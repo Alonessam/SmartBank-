@@ -105,26 +105,67 @@ namespace SmartBank.Tests.Database
             await modelConnection.OpenAsync();
             await legacyConnection.OpenAsync();
 
-            // Pre-v1.2 shape: no refresh-token table, and the hand-made ChatSessions table without "IsActive".
-            await ExecuteAsync(legacyConnection, @"DROP TABLE ""RefreshTokens""; ALTER TABLE ""ChatSessions"" DROP COLUMN ""IsActive"";");
+            // Pre-v1.2 shape of the hand-made production tables: no refresh-token table, ChatSessions without "IsActive",
+            // a NOT NULL auto-pay amount, and every time column "without time zone" (one of them with a default).
+            await ExecuteAsync(legacyConnection, @"
+                DROP TABLE ""RefreshTokens"";
+                ALTER TABLE ""ChatSessions"" DROP COLUMN ""IsActive"";
+                UPDATE ""StandingOrders"" SET ""Amount"" = 0 WHERE ""Amount"" IS NULL;
+                ALTER TABLE ""StandingOrders"" ALTER COLUMN ""Amount"" SET NOT NULL;
+                DO $$
+                DECLARE col record;
+                BEGIN
+                    FOR col IN SELECT table_name, column_name FROM information_schema.columns
+                               WHERE table_schema = 'public' AND data_type = 'timestamp with time zone'
+                                 AND NOT (table_name = 'Users' AND column_name = 'LockoutEnd')
+                    LOOP
+                        EXECUTE format('ALTER TABLE %I ALTER COLUMN %I TYPE timestamp without time zone', col.table_name, col.column_name);
+                    END LOOP;
+                END $$;
+                ALTER TABLE ""Users"" ALTER COLUMN ""CreatedAt"" SET DEFAULT timezone('utc', now());");
             Assert.Empty(await ColumnsAsync(legacyConnection, "'RefreshTokens'"));
+            Assert.NotEqual(await ColumnsAsync(modelConnection, AllTables), await ColumnsAsync(legacyConnection, AllTables));
 
             var script = await File.ReadAllTextAsync(RepositoryFile("docs/deploy/v1.2-postgres-upgrade.sql"));
 
-            const string tables = "'RefreshTokens', 'ChatSessions'";
+            // A row written before the upgrade keeps its meaning: the stored UTC clock time is now a UTC instant.
+            await ExecuteAsync(legacyConnection, @"
+                INSERT INTO ""Users"" (""Id"", ""Username"", ""Tckn"", ""PasswordHash"", ""FirstName"", ""LastName"", ""FullName"", ""Email"",
+                                     ""TwoFactorEnabled"", ""FailedLoginCount"", ""OtpFailedCount"", ""Role"", ""CreatedAt"")
+                VALUES ('00000000-0000-0000-0000-000000000001', 'legacy', '11111111111', 'x', 'L', 'U', 'L U', 'l@u.test',
+                        false, 0, 0, 0, '2026-10-06 10:27:18');");
+
             await ExecuteAsync(legacyConnection, script);
-            var expected = await ColumnsAsync(modelConnection, tables);
+            var expected = await ColumnsAsync(modelConnection, AllTables);
             Assert.NotEmpty(expected);
             Assert.Contains(expected, c => c.StartsWith("ChatSessions.IsActive "));
-            Assert.Equal(expected, await ColumnsAsync(legacyConnection, tables));
+            Assert.Contains(expected, c => c.StartsWith("StandingOrders.Amount ") && c.Contains("null=YES"));
+            Assert.Equal(expected, await ColumnsAsync(legacyConnection, AllTables));
 
-            await ExecuteAsync(legacyConnection, script); // idempotent
-            Assert.Equal(expected, await ColumnsAsync(legacyConnection, tables));
+            await using (var instant = new NpgsqlCommand(
+                @"SELECT to_char(""CreatedAt"" AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') FROM ""Users"" WHERE ""Username"" = 'legacy'", legacyConnection))
+            {
+                Assert.Equal("2026-10-06 10:27:18", await instant.ExecuteScalarAsync());
+            }
+
+            await ExecuteAsync(legacyConnection, script); // idempotent: a second run must not shift the times again
+            Assert.Equal(expected, await ColumnsAsync(legacyConnection, AllTables));
+            await using (var again = new NpgsqlCommand(
+                @"SELECT to_char(""CreatedAt"" AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') FROM ""Users"" WHERE ""Username"" = 'legacy'", legacyConnection))
+            {
+                Assert.Equal("2026-10-06 10:27:18", await again.ExecuteScalarAsync());
+            }
 
             // Same indexes as the model (the unique one on the hash is what makes the lookup safe), and the cascade works.
             const string indexSql = "SELECT indexname || ' ' || indexdef FROM pg_indexes WHERE tablename = 'RefreshTokens' ORDER BY indexname";
             Assert.Equal(await ListAsync(modelConnection, indexSql), await ListAsync(legacyConnection, indexSql));
         }
+
+        // Every table the upgrade script touches. MarketRates is left out on purpose: the old hand-made table differs from the
+        // model in other ways (see docs/DEFENSE.md, T14) and nothing reads it except a "is it empty" check.
+        private const string AllTables =
+            "'Accounts', 'AuditLogs', 'ChatMessages', 'ChatSessions', 'CreditCards', 'CreditCardStatements', 'CreditCardTransactions', " +
+            "'RefreshTokens', 'SavedContacts', 'StandingOrders', 'Transactions', 'Users'";
 
         private static async Task<List<string>> ListAsync(NpgsqlConnection connection, string sql)
         {
