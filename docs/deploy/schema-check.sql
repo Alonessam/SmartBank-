@@ -15,3 +15,12 @@ select string_agg(table_name || '.' || column_name || ' ' || data_type || ' ' ||
                   order by table_name, column_name)
 from information_schema.columns
 where table_schema = 'public';
+
+-- Second query: the foreign keys of the production database. The EF model defines some; a hand-written schema may have more
+-- (for example from AuditLogs.UserId to Users), and a constraint the code does not expect can make a write fail in production
+-- while every test, built from the model, passes. Compare this list with the "HasOne ... HasForeignKey" lines in
+-- src/SmartBank.Infrastructure/Data/SmartBankDbContext.cs.
+select conrelid::regclass as table_name, conname as constraint_name, pg_get_constraintdef(oid) as definition
+from pg_constraint
+where contype = 'f' and connamespace = 'public'::regnamespace
+order by 1, 2;
