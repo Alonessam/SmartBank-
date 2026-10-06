@@ -12,6 +12,7 @@ namespace SmartBank.Core.Interfaces
         /// </summary>
         bool ExposeCodeInResponse { get; }
 
-        void Send(User user, string code, OtpPurpose purpose);
+        /// <param name="detail">What the code approves, in words ("2500.00 to TR..."), so the user can see it in the mail. Optional.</param>
+        void Send(User user, string code, OtpPurpose purpose, string? detail = null);
     }
 }

@@ -8,6 +8,13 @@ namespace SmartBank.Core.Common
     /// </summary>
     public static class TcKimlikNo
     {
+        /// <summary>"123****01": enough to recognise the number, not enough to use it. For audit text and logs.</summary>
+        public static string Mask(string? value)
+        {
+            if (string.IsNullOrEmpty(value)) return "***";
+            return value.Length <= 5 ? new string('*', value.Length) : value[..3] + "****" + value[^2..];
+        }
+
         public static bool IsValid(string? value)
         {
             if (value is null || value.Length != 11) return false;
