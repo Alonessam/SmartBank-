@@ -2,7 +2,21 @@
 
 ## [1.2.0] - unreleased
 
+### Upgrade checklist (v1.2)
+
+1. **Run the database script first:** [`docs/deploy/v1.2-postgres-upgrade.sql`](docs/deploy/v1.2-postgres-upgrade.sql) in the Supabase SQL
+   editor. It creates the `RefreshTokens` table. The new API reads that table at every sign-in, so deploying the API before
+   the script makes sign-in fail with a 500.
+2. Set `Brevo__ApiKey` and `Brevo__SenderEmail` on Render (see Added below), then merge to `main` (Render redeploys).
+3. Publish the frontend with `scripts/deploy-pages.ps1 -Push`. Everybody has to sign in once more.
+
 ### Security
+
+- **Access tokens now last 15 minutes instead of 7 days, and sessions can be ended.** A single-use refresh token (stored only as
+  a SHA-256 hash, rotated on every use) renews the access token. Logging out, resetting the password or locking the account
+  revokes the sessions, and presenting an already-used refresh token revokes the whole session family. New endpoints:
+  `POST /api/auth/refresh` and `POST /api/auth/logout`. The web app refreshes silently and signs the user out when the refresh
+  token is refused. Config: `JwtSettings__AccessTokenMinutes`, `JwtSettings__RefreshTokenDays`. Details: `docs/DEFENSE.md` (T12).
 
 - **Fixed a stored cross-site-scripting hole in the web app.** Text from other users (transfer descriptions, contact aliases,
   chat messages, support titles, statement rows) was inserted into the page as HTML, so a transfer description such as
@@ -15,6 +29,10 @@
 - **One-time codes can be e-mailed through Brevo's HTTPS API** (`Brevo__ApiKey`, `Brevo__SenderEmail`, `Brevo__SenderName`).
   The old SMTP path only worked where outgoing SMTP ports are open; Render's free tier blocks them, so password reset and 2FA
   e-mails never arrived in production. SMTP is still used when no Brevo key is set. Details: `docs/DEFENSE.md` (T11).
+### Fixed
+
+- **Registering with an e-mail address that is already taken returned a 500** ("Registration failed" in the UI) because only the
+  database unique index caught it. It is now a clean 400 `EmailAlreadyExists` with a localized message (case-insensitive).
 
 ## [1.1.0] - unreleased
 

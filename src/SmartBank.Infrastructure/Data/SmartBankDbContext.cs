@@ -46,6 +46,7 @@ namespace SmartBank.Infrastructure.Data
         public DbSet<SavedContact> SavedContacts { get; set; }
         public DbSet<StandingOrder> StandingOrders { get; set; }
         public DbSet<AuditLog> AuditLogs { get; set; }
+        public DbSet<RefreshToken> RefreshTokens { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -66,6 +67,24 @@ namespace SmartBank.Infrastructure.Data
                 entity.HasIndex(u => u.Username).IsUnique();
                 entity.HasIndex(u => u.Tckn).IsUnique();
                 entity.HasIndex(u => u.Email).IsUnique();
+            });
+
+            // Refresh tokens: only a hash is stored; the unique index is the lookup path.
+            modelBuilder.Entity<RefreshToken>(entity =>
+            {
+                entity.HasKey(t => t.Id);
+                entity.Property(t => t.TokenHash).IsRequired().HasMaxLength(64);
+                entity.Property(t => t.CreatedByIp).HasMaxLength(64);
+                entity.Property(t => t.Version).IsConcurrencyToken();
+
+                entity.HasIndex(t => t.TokenHash).IsUnique();
+                entity.HasIndex(t => t.UserId);
+                entity.HasIndex(t => t.FamilyId);
+
+                entity.HasOne<User>()
+                      .WithMany()
+                      .HasForeignKey(t => t.UserId)
+                      .OnDelete(DeleteBehavior.Cascade);
             });
 
             // Account Configuration

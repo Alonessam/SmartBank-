@@ -120,6 +120,7 @@ Things to know about the demo: the API runs on a free tier, so the **first reque
 | Card data | AES-256-GCM with a random nonce per value (tampering is detected). Card duplicates are found through a keyed HMAC. The CVV is **never stored**; it is shown once when a card is issued. |
 | Guessing a PIN or a one-time code | 5 wrong PINs lock the account for 15 minutes; a one-time code dies after 5 wrong guesses, expires after 5 minutes, is single-use and bound to its purpose (and, for transfers, to the exact amount and recipient). Per-IP rate limit on the auth endpoints. Unknown T.C. numbers and wrong PINs get identical answers. |
 | Account takeover | Password reset needs a code e-mailed to the owner; the 2FA code is not returned by the API (unless the demo flag is on). |
+| A stolen token | Access tokens live 15 minutes. The refresh token is single-use (rotated on every refresh, stored only as a hash); presenting a used one again revokes the whole session. Logout, password reset and lockout revoke sessions. |
 | Who may do what | Roles live in the database and in the token. Customers reach only their own accounts, cards and chats; support-agent endpoints and hub methods need the `Agent` role, which only an administrator can grant. Verified with cross-customer (IDOR) integration tests. |
 | Browser access | CORS accepts only the origins listed in configuration. |
 | Concurrent requests | Optimistic concurrency with retry on every money movement. |
@@ -130,7 +131,7 @@ Things to know about the demo: the API runs on a free tier, so the **first reque
 Be honest about what this is: a portfolio project with a simulated bank. In particular:
 
 * **The `deposit` endpoint is a demo faucet.** Any signed-in user can add money to their own account (up to 10,000,000 TRY). A real system has nothing like it.
-* **Tokens last 7 days and cannot be revoked.** A role change, a lockout or a password reset does not invalidate tokens that were already issued. Tokens are kept in `localStorage`, so a cross-site-scripting bug would expose them. Since v1.2 every value that comes from another user is HTML-escaped before it reaches the page and the pages carry a Content-Security-Policy without inline scripts, but a `<meta>` CSP cannot set `frame-ancestors` and any future XSS bug would still be able to read the token.
+* **Access tokens cannot be revoked, only outlived.** Since v1.2 they last 15 minutes and are renewed by a single-use refresh token, which *is* revoked on logout, password reset and lockout; a role change (done by hand in SQL) only takes effect at the next refresh. Both tokens are kept in `localStorage`, so a cross-site-scripting bug would expose them. Since v1.2 every value that comes from another user is HTML-escaped before it reaches the page and the pages carry a Content-Security-Policy without inline scripts, but a `<meta>` CSP cannot set `frame-ancestors` and any future XSS bug would still be able to read the token.
 * **The rate limiter is per instance.** Behind several instances the limit is not shared (that would need a shared store or a gateway).
 * **One-time codes are stored in plain text** in the database for their five-minute life (hashing them is the production choice).
 * **Cards are simulated:** numbers carry no check digit, the credit card number is returned in full by the API (the UI masks it), and nothing here is PCI-certified.
@@ -166,6 +167,7 @@ This generates random values for `JwtSettings:Key` and `Encryption:Key`. To add 
 | Variable | Description |
 |---|---|
 | `JwtSettings__Key` | JWT signing key, at least 32 bytes (e.g. 48 random bytes, base64) |
+| `JwtSettings__AccessTokenMinutes`, `JwtSettings__RefreshTokenDays` | Optional. Access token lifetime (default 15, 1-1440) and refresh token lifetime (default 7, 1-90). Out-of-range values stop the API from starting |
 | `Encryption__Key` | AES-256 key, base64 of exactly 32 random bytes |
 | `ConnectionStrings__DefaultConnection` | Database connection string |
 | `GeminiSettings__ApiKey` | Optional, Gemini API key |
@@ -338,7 +340,7 @@ Demo hakkında bilmeniz gerekenler: API ücretsiz katmanda çalışıyor, bu yü
 Bunun ne olduğu konusunda dürüst olalım: simüle edilmiş bir bankaya sahip bir portfolyo projesi. Özellikle:
 
 * **`deposit` ucu bir demo musluğudur.** Giriş yapan herkes kendi hesabına para ekleyebilir (10.000.000 TL'ye kadar). Gerçek bir sistemde buna benzer bir şey olmaz.
-* **Token'lar 7 gün geçerlidir ve iptal edilemez.** Rol değişikliği, kilitlenme veya şifre sıfırlama zaten verilmiş token'ları geçersiz kılmaz. Token'lar `localStorage`'da tutulur, bu yüzden bir siteler arası betik (XSS) hatası bunları açığa çıkarır. v1.2'den beri başka bir kullanıcıdan gelen her değer sayfaya girmeden önce HTML'e kaçırılıyor ve sayfalar satır içi betiğe izin vermeyen bir Content-Security-Policy taşıyor; ancak `<meta>` ile verilen CSP `frame-ancestors` ayarlayamaz ve ileride çıkacak bir XSS hatası yine token'ı okuyabilir.
+* **Erişim token'ları iptal edilemez, yalnızca süresinin dolması beklenir.** v1.2'den beri 15 dakika geçerlidir ve tek kullanımlık bir yenileme (refresh) token'ıyla yenilenir; yenileme token'ı çıkışta, şifre sıfırlamada ve kilitlenmede iptal **edilir**. Rol değişikliği (SQL ile elle yapılır) bir sonraki yenilemede etkili olur. İki token da `localStorage`'da tutulur, bu yüzden bir siteler arası betik (XSS) hatası bunları açığa çıkarır. v1.2'den beri başka bir kullanıcıdan gelen her değer sayfaya girmeden önce HTML'e kaçırılıyor ve sayfalar satır içi betiğe izin vermeyen bir Content-Security-Policy taşıyor; ancak `<meta>` ile verilen CSP `frame-ancestors` ayarlayamaz ve ileride çıkacak bir XSS hatası yine token'ı okuyabilir.
 * **Hız sınırlayıcı örnek başınadır.** Birden fazla örnek arkasında sınır paylaşılmaz (bunun için ortak bir depo veya ağ geçidi gerekir).
 * **Tek kullanımlık kodlar** beş dakikalık ömürleri boyunca veritabanında düz metin saklanır (üretimde özetlenmesi tercih edilir).
 * **Kartlar simülasyondur:** numaralarda kontrol basamağı yok, kredi kartı numarası API'den tam döner (arayüz maskeler), hiçbir şey PCI sertifikalı değildir.
@@ -374,6 +376,7 @@ Bu betik `JwtSettings:Key` ve `Encryption:Key` için rastgele değerler üretir.
 | Değişken | Açıklama |
 |---|---|
 | `JwtSettings__Key` | JWT imza anahtarı, en az 32 bayt (örn. 48 rastgele bayt, base64) |
+| `JwtSettings__AccessTokenMinutes`, `JwtSettings__RefreshTokenDays` | İsteğe bağlı. Erişim token'ı ömrü (varsayılan 15, 1-1440) ve yenileme token'ı ömrü (varsayılan 7, 1-90). Aralık dışı değerler API'nin başlamasını engeller |
 | `Encryption__Key` | AES-256 anahtarı, tam 32 rastgele baytın base64 hâli |
 | `ConnectionStrings__DefaultConnection` | Veritabanı bağlantı dizesi |
 | `GeminiSettings__ApiKey` | İsteğe bağlı, Gemini API anahtarı |
