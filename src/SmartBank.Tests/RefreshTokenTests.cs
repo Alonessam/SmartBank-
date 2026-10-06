@@ -246,8 +246,10 @@ namespace SmartBank.Tests
         }
 
         [Fact]
-        public async Task Locking_the_account_signs_out_every_session_and_blocks_refreshing()
+        public async Task Wrong_pins_and_a_lockout_do_not_sign_anybody_out()
         {
+            // Anybody who knows a T.C. number can send wrong PINs. If that ended the owner's sessions, it would be a way to
+            // log a stranger out at will, so the lockout only stops PIN guessing.
             using var context = NewContext();
             await AddUserAsync(context);
             var service = NewService(context);
@@ -258,10 +260,13 @@ namespace SmartBank.Tests
                 await service.LoginAsync(new LoginDto { Tckn = Tckn, Password = "000000" });
             }
 
+            var locked = await context.Users.AsNoTracking().SingleAsync();
+            Assert.True(LoginLockout.IsLocked(locked, DateTime.UtcNow));
+
             var refreshed = await service.RefreshAsync(session.RefreshToken);
 
-            Assert.False(refreshed.IsSuccess);
-            Assert.All(await context.RefreshTokens.ToListAsync(), t => Assert.NotNull(t.RevokedAt));
+            Assert.True(refreshed.IsSuccess);
+            Assert.All(await context.RefreshTokens.Where(t => t.UsedAt == null).ToListAsync(), t => Assert.Null(t.RevokedAt));
         }
 
         [Fact]

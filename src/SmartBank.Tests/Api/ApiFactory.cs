@@ -12,6 +12,8 @@ using Microsoft.Extensions.Hosting;
 using SmartBank.Core.Entities;
 using SmartBank.Core.Interfaces;
 using SmartBank.Infrastructure.Data;
+using SmartBank.Infrastructure.Services;
+using SmartBank.Tests.Support;
 
 namespace SmartBank.Tests.Api
 {
@@ -20,10 +22,19 @@ namespace SmartBank.Tests.Api
     /// memory against an in-memory database. Everything is exercised over HTTP/SignalR the way a client would,
     /// including registering users and logging in, so the tests check the pipeline and not just single classes.
     /// </summary>
-    public sealed class ApiFactory : WebApplicationFactory<Program>
+    public class ApiFactory : WebApplicationFactory<Program>
     {
         private readonly string _databaseName = Guid.NewGuid().ToString();
         private int _counter;
+
+        /// <summary>Settings a test class can add or override (for example a very low rate limit). Applied last.</summary>
+        protected virtual IReadOnlyDictionary<string, string> ExtraSettings { get; } = new Dictionary<string, string>();
+
+        /// <summary>The AI "model" of this application instance: the test decides what it says and sees what it was asked.</summary>
+        public FakeAiChatbot Ai => Services.GetRequiredService<FakeAiChatbot>();
+
+        /// <summary>The market prices of this application instance.</summary>
+        public FakeMarketRates Rates => Services.GetRequiredService<FakeMarketRates>();
 
         public sealed record TestUser(Guid Id, string Username, string Tckn, string Token, string Role);
 
@@ -39,7 +50,15 @@ namespace SmartBank.Tests.Api
             builder.UseSetting("JwtSettings:Key", "integration-test-signing-key-0123456789-abcdef");
             builder.UseSetting("Encryption:Key", Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)));
             builder.UseSetting("RateLimiting:Auth:PermitLimit", "100000");
+            builder.UseSetting("RateLimiting:Refresh:PermitLimit", "100000");
+            builder.UseSetting("RateLimiting:Banking:PermitLimit", "100000");
+            builder.UseSetting("RateLimiting:Transfer:PermitLimit", "100000");
+            builder.UseSetting("RateLimiting:Market:PermitLimit", "100000");
             builder.UseSetting("ConnectionStrings:DefaultConnection", "Server=unused;Database=unused");
+            foreach (var (key, value) in ExtraSettings)
+            {
+                builder.UseSetting(key, value);
+            }
 
             builder.ConfigureServices(services =>
             {
@@ -52,6 +71,18 @@ namespace SmartBank.Tests.Api
 
                 // The standing-order worker has its own tests and would only add noise here.
                 services.RemoveAll<IHostedService>();
+
+                // Nothing in these tests may reach the network or a local Ollama: the AI, the FAQ search and the market prices are fakes.
+                services.RemoveAll<IAIChatbotService>();
+                services.RemoveAll<OllamaService>();
+                services.RemoveAll<GeminiService>();
+                services.RemoveAll<IRAGService>();
+                services.RemoveAll<IMarketRateService>();
+                services.AddSingleton<FakeAiChatbot>();
+                services.AddSingleton<IAIChatbotService>(sp => sp.GetRequiredService<FakeAiChatbot>());
+                services.AddSingleton<IRAGService, FakeRagService>();
+                services.AddSingleton<FakeMarketRates>();
+                services.AddSingleton<IMarketRateService>(sp => sp.GetRequiredService<FakeMarketRates>());
             });
         }
 

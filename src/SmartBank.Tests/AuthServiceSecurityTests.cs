@@ -97,9 +97,17 @@ namespace SmartBank.Tests
             }
 
             var withRightPin = await service.LoginAsync(Login(), ClientIp);
+            var wrongPin = await service.LoginAsync(Login(WrongPin(Pin)), ClientIp);
+            var unknown = await service.LoginAsync(Login(tckn: "99999999999"), ClientIp);
 
+            // A locked account answers exactly like a wrong PIN or an unknown T.C. number: nothing tells them apart.
             Assert.False(withRightPin.IsSuccess);
-            Assert.Equal("AccountLocked", withRightPin.ErrorKey);
+            Assert.Equal("InvalidCredentials", withRightPin.ErrorKey);
+            Assert.Equal(AuthService.InvalidCredentialsMessage, withRightPin.Message);
+            Assert.Equal(wrongPin.ErrorKey, withRightPin.ErrorKey);
+            Assert.Equal(wrongPin.Message, withRightPin.Message);
+            Assert.Equal(unknown.ErrorKey, withRightPin.ErrorKey);
+            Assert.Equal(unknown.Message, withRightPin.Message);
         }
 
         [Fact]
