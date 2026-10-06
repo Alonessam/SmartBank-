@@ -12,6 +12,7 @@ namespace SmartBank.Core.Validators
         public const int MaxUsernameLength = 50;
         public const int MaxNameLength = 50;
         public const int MaxEmailLength = 100;
+        public const int MaxFullNameLength = 100;
 
         private static readonly Regex FirstNamePattern = new(@"^[a-zA-ZçğıöşüÇĞİÖŞÜ\s]+$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
         private static readonly Regex LastNamePattern = new(@"^[a-zA-ZçğıöşüÇĞİÖŞÜ]+$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -46,6 +47,13 @@ namespace SmartBank.Core.Validators
                 .NotEmpty().WithMessage("Last Name is required.")
                 .MaximumLength(MaxNameLength).WithMessage("Last name cannot exceed 50 characters.")
                 .Must(x => LastNamePattern.IsMatch(x)).WithMessage("Last name can only contain letters (no spaces).");
+
+            // "First Last" is stored in a 100-character column: 50 + a space + 50 would be one too many.
+            RuleFor(x => x)
+                .Must(x => (x.FirstName?.Length ?? 0) + 1 + (x.LastName?.Length ?? 0) <= MaxFullNameLength)
+                .When(x => x.FirstName?.Length <= MaxNameLength && x.LastName?.Length <= MaxNameLength)
+                .WithName("FullName")
+                .WithMessage("First and last name together cannot exceed 99 characters.");
 
             RuleFor(x => x.Email)
                 .Cascade(CascadeMode.Stop)

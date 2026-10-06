@@ -52,6 +52,9 @@ namespace SmartBank.Core.Common
             amount = 0m;
             if (string.IsNullOrWhiteSpace(text)) return false;
 
+            // A minus sign before a digit makes the amount negative: it must never be read as a positive one.
+            if (Regex.IsMatch(text, @"-\s*\d")) return false;
+
             var s = Regex.Replace(text, @"[^\d.,]", string.Empty);
             if (s.Length == 0 || !char.IsDigit(s[0]) || !char.IsDigit(s[^1])) return false;
 

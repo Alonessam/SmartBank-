@@ -32,14 +32,16 @@ namespace SmartBank.Infrastructure.Services
         private readonly IAIChatbotService _gemini;
         private readonly IRAGService _rag;
         private readonly ILogger<FailoverChatbotService> _logger;
+        private readonly TimeSpan _generationTimeout;
 
         public FailoverChatbotService(OllamaService ollama, GeminiService gemini, IRAGService rag, ILogger<FailoverChatbotService>? logger = null)
             : this(ollama, (IAIChatbotService)gemini, rag, logger)
         {
         }
 
-        internal FailoverChatbotService(OllamaService ollama, IAIChatbotService gemini, IRAGService rag, ILogger<FailoverChatbotService>? logger = null)
+        internal FailoverChatbotService(OllamaService ollama, IAIChatbotService gemini, IRAGService rag, ILogger<FailoverChatbotService>? logger = null, TimeSpan? generationTimeout = null)
         {
+            _generationTimeout = generationTimeout ?? GenerationTimeout;
             _ollama = ollama;
             _gemini = gemini;
             _rag = rag;
@@ -99,7 +101,7 @@ namespace SmartBank.Infrastructure.Services
         private async Task<string?> TryAsync(IAIChatbotService model, List<ChatMessageDto> messages, string name, CancellationToken cancellationToken)
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            deadline.CancelAfter(GenerationTimeout);
+            deadline.CancelAfter(_generationTimeout);
 
             try
             {

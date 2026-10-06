@@ -82,8 +82,15 @@ namespace SmartBank.Tests.Api
             using var attackerClient = _factory.ClientFor(attacker);
             var response = await attackerClient.GetAsync($"/api/banking/transactions/{victimAccountId}");
 
-            Assert.NotEqual(HttpStatusCode.OK, response.StatusCode);
-            Assert.DoesNotContain("123.45", await response.Content.ReadAsStringAsync());
+            // The same answer as for an account that does not exist; the owner's own request (above) is the positive control.
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            var body = await response.Content.ReadAsStringAsync();
+            Assert.Contains("AccountNotFound", body);
+            Assert.DoesNotContain("123.45", body);
+
+            var missing = await attackerClient.GetAsync($"/api/banking/transactions/{Guid.NewGuid()}");
+            Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+            Assert.Equal(body, await missing.Content.ReadAsStringAsync());
         }
 
         [Fact]
@@ -107,6 +114,17 @@ namespace SmartBank.Tests.Api
             Assert.Contains("SourceAccountNotFound", await response.Content.ReadAsStringAsync());
             Assert.Equal(victimBefore, await BalanceOfAsync(victimAccount));
             Assert.Equal(attackerBefore, await BalanceOfAsync(attackerAccount));
+
+            // Positive control: the same request from the attacker's OWN account to the victim's account goes through.
+            var own = await client.PostAsJsonAsync("/api/banking/transfer", new
+            {
+                sourceAccountNumber = attackerAccount,
+                destinationAccountNumber = victimAccount,
+                amount = 100m,
+                description = "gift"
+            });
+            Assert.Equal(HttpStatusCode.OK, own.StatusCode);
+            Assert.Equal(victimBefore + 100m, await BalanceOfAsync(victimAccount));
         }
 
         [Fact]
@@ -118,8 +136,13 @@ namespace SmartBank.Tests.Api
             using var client = _factory.ClientFor(attacker);
             var response = await client.PostAsJsonAsync("/api/banking/deposit", new { accountNumber = victimAccount, amount = 500m });
 
-            Assert.NotEqual(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            Assert.Contains("AccountNotFound", await response.Content.ReadAsStringAsync());
             Assert.Equal(before, await BalanceOfAsync(victimAccount));
+
+            // Positive control: the same request for the caller's own account works.
+            var ownAccount = (await _factory.GetFirstAccountAsync(attacker)).AccountNumber;
+            Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/api/banking/deposit", new { accountNumber = ownAccount, amount = 5m })).StatusCode);
         }
 
         [Fact]
@@ -130,7 +153,8 @@ namespace SmartBank.Tests.Api
             using var client = _factory.ClientFor(attacker);
             var response = await client.DeleteAsync($"/api/banking/accounts/{victimAccountId}");
 
-            Assert.NotEqual(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            Assert.Contains("AccountNotFound", await response.Content.ReadAsStringAsync());
             using var scope = _factory.Services.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<SmartBankDbContext>();
             Assert.True(await db.Accounts.AnyAsync(a => a.AccountNumber == victimAccount), "The victim's account must still exist.");
@@ -146,18 +170,30 @@ namespace SmartBank.Tests.Api
             using var client = _factory.ClientFor(attacker);
 
             var statements = await client.GetAsync($"/api/banking/credit-cards/{victimCard}/statements");
-            Assert.NotEqual(HttpStatusCode.OK, statements.StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, statements.StatusCode);
+            Assert.Contains("CreditCardNotFound", await statements.Content.ReadAsStringAsync());
 
             var pay = await client.PostAsJsonAsync($"/api/banking/credit-cards/{victimCard}/pay", new { sourceAccountNumber = attackerAccount, amount = 10m });
-            Assert.NotEqual(HttpStatusCode.OK, pay.StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, pay.StatusCode);
+            Assert.Contains("CreditCardNotFound", await pay.Content.ReadAsStringAsync());
 
             var charge = await client.PostAsync($"/api/banking/credit-cards/{victimCard}/charge?amount=10&description=steal", null);
-            Assert.NotEqual(HttpStatusCode.OK, charge.StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, charge.StatusCode);
+            Assert.Contains("CreditCardNotFound", await charge.Content.ReadAsStringAsync());
 
             var advance = await client.PostAsync($"/api/banking/credit-cards/{victimCard}/advance-period", null);
-            Assert.NotEqual(HttpStatusCode.OK, advance.StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, advance.StatusCode);
+            Assert.Contains("CreditCardNotFound", await advance.Content.ReadAsStringAsync());
 
             Assert.Equal(attackerBefore, await BalanceOfAsync(attackerAccount));
+
+            // Positive controls: the owner reaches the same four endpoints with the same kind of request.
+            using var owner = _factory.ClientFor(victim);
+            var ownerAccount = (await _factory.GetFirstAccountAsync(victim)).AccountNumber;
+            Assert.Equal(HttpStatusCode.OK, (await owner.GetAsync($"/api/banking/credit-cards/{victimCard}/statements")).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await owner.PostAsJsonAsync($"/api/banking/credit-cards/{victimCard}/pay", new { sourceAccountNumber = ownerAccount, amount = 10m })).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await owner.PostAsync($"/api/banking/credit-cards/{victimCard}/charge?amount=10&description=ok", null)).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await owner.PostAsync($"/api/banking/credit-cards/{victimCard}/advance-period", null)).StatusCode);
         }
 
         [Fact]
@@ -170,8 +206,13 @@ namespace SmartBank.Tests.Api
             using var client = _factory.ClientFor(attacker);
             var response = await client.PostAsJsonAsync($"/api/banking/credit-cards/{attackerCard}/pay", new { sourceAccountNumber = victimAccount, amount = 10m });
 
-            Assert.NotEqual(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            Assert.Contains("SourceAccountNotFound", await response.Content.ReadAsStringAsync());
             Assert.Equal(before, await BalanceOfAsync(victimAccount));
+
+            // Positive control: from the attacker's own account the same payment works.
+            var ownAccount = (await _factory.GetFirstAccountAsync(attacker)).AccountNumber;
+            Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync($"/api/banking/credit-cards/{attackerCard}/pay", new { sourceAccountNumber = ownAccount, amount = 10m })).StatusCode);
         }
     }
 }
