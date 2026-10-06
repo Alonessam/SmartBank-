@@ -489,3 +489,31 @@ Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çe
 - `timestamp` ile `timestamptz` arasındaki fark nedir? Neden sonda `Z` olmayan bir zamanı tarayıcı yerel saat sanır?
 - Betiğin idempotent (tekrar çalıştırılabilir) olması neden önemli? Bu betikte "tekrar çalışınca saatleri kaydırma" riskini nasıl çözdün?
 - Üretimde migration'ı otomatik çalıştırmanın artı ve eksileri nelerdir?
+
+
+---
+
+## T15 — Küçük sertleştirmeler (v1.2): log gürültüsü, güvenlik başlıkları, T.C. kontrol basamakları
+
+Üç küçük iş, hepsi "sorun büyük değil ama bir mülakatçının ilk bakacağı yerler".
+
+### 1) Üretim logu SQL ile doluydu
+**Sorun.** Varsayılan log seviyesi `Information` olduğu için EF Core her SQL komutunu yazıyordu; kalıcı emir işçisi (standing-order worker) 30 saniyede bir sorgu çalıştırdığından Render logunun çoğu `Executed DbCommand` satırıydı. Gerçek hata satırlarını bulmak zorlaşıyor; üstelik SQL parametreleri logda dolaşıyor.
+**Ne yaptım.** `Microsoft.EntityFrameworkCore.Database.Command` için seviye `Warning`; bizim kendi `Information` mesajlarımız görünür kalıyor. Yerelde ayrıntı gerekirse `Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command=Information` ortam değişkeniyle açılır. Testi: `LoggingConfigurationTests`.
+
+### 2) API yanıtlarında güvenlik başlığı yoktu
+**Ne yaptım.** `SecurityHeadersMiddleware` her yanıta (hata yanıtları dahil, çünkü `OnStarting` kullanıyor) şunları ekler: `X-Content-Type-Options: nosniff` (tarayıcı JSON'u HTML sanmasın), `X-Frame-Options: DENY` ve `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` (API hiçbir zaman bir sayfa/çerçeve içeriği değil), `Referrer-Policy: no-referrer`, ve `/api` ile `/hubs` yanıtlarında `Cache-Control: no-store` (bakiye ve işlemler tarayıcı/ara önbellekte kalmasın). **HSTS**: yalnızca üretimde ve yalnızca HTTPS isteklerinde, 180 gün, `includeSubDomains` yok (onrender.com paylaşımlı).
+**Neden bu seçim.** Web arayüzünün kendi başlıkları (GitHub Pages özel başlık eklemeye izin vermez) CSP `<meta>` etiketiyle veriliyor (T10); bu middleware yalnızca API tarafını kapsar.
+**Sınırlamalar.** HSTS'in `preload` listesine eklenmedi (geri alınması zor bir taahhüt). HSTS, Render proxy'sinin `X-Forwarded-Proto` başlığını doğru taşımasına bağlı (Dockerfile'daki `ASPNETCORE_FORWARDEDHEADERS_ENABLED`); canlıda `curl -I` ile görülmeli. ASP.NET, `localhost` için HSTS göndermez, bu yüzden test başka bir ana makine adı kullanır.
+
+### 3) T.C. Kimlik Numarası kontrol basamakları
+**Sorun.** Kayıt, 11 hane olan her rakam dizisini kabul ediyordu (`99999999999` dahil): yazım hatası kayda girer, "şifremi unuttum" hiç gelmeyen e-postaya giderdi.
+**Ne yaptım.** Gerçek algoritma: ilk hane 0 olamaz; 10. hane `((d1+d3+d5+d7+d9)·7 − (d2+d4+d6+d8)) mod 10`, 11. hane ilk 10 hanenin toplamının `mod 10`'u. `TcKimlikNo.IsValid` (sunucu, FluentValidation kuralı) ve aynı kural tarayıcıda (kayıt formunda anında geri bildirim). Testler: bilinen geçerli/geçersiz örnekler ve **geçerli bir numaranın herhangi bir hanesi değiştirilince her seferinde reddedildiği** (110 tek-hane yazım hatası).
+**Önemli sınır (dürüst).** Bu **kimlik doğrulama değildir**: numaranın o kişiye ait olduğunu yalnızca resmi MERNİS servisi söyler. Rastgele 11 haneli dizilerin çoğunu eler (yaklaşık 100'de 1'i geçer) ve yazım hatalarını yakalar; birinin gerçek bir numarayı kullanmasını engellemez. Demo için örnek geçerli numaralar: `11111111110`, `10000000146` (kimseye ait değil). Eski `11111111111` gibi sahte numaralarla **yeni kayıt yapılamaz**; zaten kayıtlı hesaplar giriş yapmaya devam eder (kontrol yalnızca kayıtta).
+**Neden bu seçim.** Girişte aynı kuralı uygulamak, kuraldan önce açılmış hesapları kilitlerdi.
+
+**Mülakat soruları.**
+- Neden SQL loglarını kapattın? Bunun bir güvenlik yanı var mı? (Parametreler.)
+- `nosniff` neden gerekli? `frame-ancestors 'none'` ile `X-Frame-Options` arasındaki fark ne, neden ikisi de?
+- HSTS ne işe yarar, `preload` neden riskli?
+- T.C. kontrol basamağı kimliği doğrular mı? Ne yakalar, ne yakalamaz?

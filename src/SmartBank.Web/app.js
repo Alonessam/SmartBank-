@@ -477,6 +477,16 @@ function logout() {
     window.location.href = "index.html";
 }
 
+// T.C. Kimlik Numarası check digits (11 digits, first not 0; d10 and d11 follow from the others).
+function isValidTckn(value) {
+    if (!/^[1-9][0-9]{10}$/.test(String(value))) return false;
+    const d = String(value).split("").map(Number);
+    const odd = d[0] + d[2] + d[4] + d[6] + d[8];
+    const even = d[1] + d[3] + d[5] + d[7];
+    if (d[9] !== (((odd * 7 - even) % 10) + 10) % 10) return false;
+    return d[10] === (odd + even + d[9]) % 10;
+}
+
 // Initialize Language Switch Event
 document.addEventListener("DOMContentLoaded", () => {
     // The HTML has no inline event attributes (the CSP forbids them): the former onclick/onsubmit handlers are wired here.
@@ -744,6 +754,15 @@ function initAuthEvents() {
             }
             if (!lettersOnlyNoSpaceRegex.test(lastName)) {
                 errorDiv.textContent = currentLanguage === "tr" ? "Soyisim alanı sadece harf içerebilir (boşluksuz)." : "Last name can only contain letters (no spaces).";
+                errorDiv.classList.remove("hidden");
+                return;
+            }
+
+            // The same check-digit rule as the server (docs/DEFENSE.md, T15): catches a mistyped number before the request.
+            if (!isValidTckn(tckn)) {
+                errorDiv.textContent = currentLanguage === "tr"
+                    ? "T.C. Kimlik Numarası geçerli değil: kontrol basamakları uyuşmuyor. Lütfen numarayı kontrol edin."
+                    : "T.C. Kimlik Numarası is not valid: its check digits do not match. Please re-check the number.";
                 errorDiv.classList.remove("hidden");
                 return;
             }
