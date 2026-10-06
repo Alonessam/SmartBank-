@@ -1,9 +1,78 @@
 @SmartBank.API_HostAddress = http://localhost:5038
+# 11-digit T.C. Kimlik No with valid check digits (made up, belongs to nobody) and a 6-digit PIN.
+@tckn = 11111111110
+@pin = 123456
 
 ### Liveness: the process is up (answers Healthy, touches nothing)
 GET {{SmartBank.API_HostAddress}}/health
 
 ### Readiness: the database is reachable (answers Healthy or Unhealthy)
 GET {{SmartBank.API_HostAddress}}/health/ready
+
+### Market rates (anonymous)
+GET {{SmartBank.API_HostAddress}}/api/market/rates
+
+### Register a customer (always creates a Customer, never an Agent)
+POST {{SmartBank.API_HostAddress}}/api/auth/register
+Content-Type: application/json
+
+{
+  "username": "demo_user",
+  "tckn": "{{tckn}}",
+  "password": "{{pin}}",
+  "firstName": "Demo",
+  "lastName": "User",
+  "email": "demo@example.com"
+}
+
+### Sign in. The response carries "token" (access token, 15 minutes) and "refreshToken" (single use).
+# With 2FA on, the API answers that a code was e-mailed; with Demo__ExposeOtp=true (the local launch profiles) the
+# response also contains the code. Then call verify-2fa below.
+# @name login
+POST {{SmartBank.API_HostAddress}}/api/auth/login
+Content-Type: application/json
+
+{
+  "tckn": "{{tckn}}",
+  "password": "{{pin}}"
+}
+
+###
+@accessToken = {{login.response.body.token}}
+@refreshToken = {{login.response.body.refreshToken}}
+
+### Second step of a 2FA sign-in
+POST {{SmartBank.API_HostAddress}}/api/auth/verify-2fa
+Content-Type: application/json
+
+{
+  "tckn": "{{tckn}}",
+  "code": "000000"
+}
+
+### Exchange the refresh token for a new access token (the old refresh token stops working)
+# @name refresh
+POST {{SmartBank.API_HostAddress}}/api/auth/refresh
+Content-Type: application/json
+
+{
+  "refreshToken": "{{refreshToken}}"
+}
+
+### Your accounts
+GET {{SmartBank.API_HostAddress}}/api/banking/accounts
+Authorization: Bearer {{accessToken}}
+
+### Your credit cards
+GET {{SmartBank.API_HostAddress}}/api/banking/credit-cards
+Authorization: Bearer {{accessToken}}
+
+### Sign out (anonymous: the refresh token is the credential; revokes its family)
+POST {{SmartBank.API_HostAddress}}/api/auth/logout
+Content-Type: application/json
+
+{
+  "refreshToken": "{{refreshToken}}"
+}
 
 ###

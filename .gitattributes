@@ -1,0 +1,15 @@
+# Let git decide text vs binary and normalise line endings for new and changed files.
+# (Existing files are not renormalised by this file; the repository index already stores LF.)
+* text=auto
+
+# Scripts that must keep a specific line ending on every platform.
+*.sh  text eol=lf
+*.bat text eol=crlf
+*.ps1 text
+
+# Binary assets.
+*.png  binary
+*.jpg  binary
+*.gif  binary
+*.ico  binary
+*.woff2 binary

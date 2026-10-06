@@ -1,0 +1,44 @@
+# Local PostgreSQL (the production database engine) for development and for the real-database tests.
+#
+#   docker compose up -d db          # just the database, on localhost:5432
+#   docker compose exec -T db psql -U postgres -d smartbank < docs/deploy/00-baseline-postgres.sql   # create the tables (once)
+#   docker compose --profile api up  # database + the API image built from this Dockerfile, on http://localhost:8080
+#
+# These credentials are for a throw-away local container only. Never reuse them anywhere else.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: smartbank
+    ports:
+      - "5432:5432"
+    volumes:
+      - smartbank-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  api:
+    profiles: ["api"]
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__DefaultConnection: "Host=db;Port=5432;Database=smartbank;Username=postgres;Password=postgres"
+      # Throw-away local keys (do not reuse). JwtSettings__Key needs >= 32 bytes, Encryption__Key is base64 of exactly 32 bytes.
+      JwtSettings__Key: "local-compose-only-jwt-key-change-me-0123456789"
+      Encryption__Key: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+      Demo__ExposeOtp: "true"
+      Cors__AllowedOrigins__0: "http://localhost:5500"
+      Cors__AllowedOrigins__1: "http://127.0.0.1:5500"
+
+volumes:
+  smartbank-pgdata:
