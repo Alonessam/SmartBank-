@@ -7,17 +7,86 @@ with the sections Added, Changed, Fixed and Security in each release. "T10", "T1
 ## [1.3.0] - unreleased
 
 A repository-wide audit pass: money-correctness fixes, security hardening, frontend fixes and a more reproducible,
-better-guarded repository. The detailed commit history is the reference for individual items.
+better-guarded repository. It was found by reading the code and the running app, and every fix has a test (the suite grew from
+about 330 to about 990 tests, including real-database tests on PostgreSQL and SQL Server).
 
 ### Upgrade notes (v1.3)
 
+Do these in this order. The first two matter: the new API needs the new columns, and the new web app needs the new API.
+
 1. **Run the database script first:** `docs/deploy/v1.3-postgres-upgrade.sql` in the Supabase SQL editor (after the v1.1 and
-   v1.2 scripts), then deploy the API. See "Upgrading a PostgreSQL deployment" in the README.
-2. New optional settings (all have defaults, see the README table): `Demo__EnableSimulationEndpoints`,
+   v1.2 scripts; it is safe to run twice). It adds `Users.Version`, merges duplicate credit cards (debts are summed into the
+   oldest card) and duplicate saved recipients before it creates the unique indexes, and adds the query indexes. It does not
+   shrink any existing column.
+2. **Deploy the API, then publish the web app** (`scripts/deploy-pages.ps1 -Push` or `scripts/deploy-pages.sh --push`; tag the
+   release first, the script takes its cache-buster from the latest tag and refuses a dirty tree or a branch other than `main`).
+   Order matters because `POST /api/auth/toggle-2fa` now needs the PIN and the web app sends it.
+3. New optional settings, all with defaults (see the README table): `Demo__EnableSimulationEndpoints`,
    `RateLimiting__Banking__PermitLimit`, `RateLimiting__Transfer__PermitLimit`, `RateLimiting__Market__PermitLimit`.
-3. Publish the frontend with `scripts/deploy-pages.ps1 -Push` (or `scripts/deploy-pages.sh --push`). It now refuses to
-   run from a dirty working tree or from a branch other than `main`, and takes the cache-buster from the latest git tag, so tag
-   the release first.
+4. Existing sessions keep working. Locked accounts are no longer announced as such (see Security).
+
+### Security
+
+- **Lockout no longer logs the owner out, and no longer reveals which T.C. numbers exist.** Five wrong PINs still lock the
+  account for 15 minutes, but failed sign-ins do not revoke sessions any more (anyone who knew a T.C. number could keep signing its
+  owner out) and a locked account gets the same `InvalidCredentials` answer as a wrong PIN.
+- **One-time codes and counters are safe under concurrency.** `User` has a version token; a code cannot approve two transfers and
+  parallel wrong guesses cannot be lost. A public password-reset request no longer overwrites a pending login or transfer code.
+- **Turning two-factor authentication on or off needs the PIN** (`POST /api/auth/toggle-2fa` takes `{enable, password}`), counts
+  toward the lockout and is audited.
+- **Rate limits beyond the auth endpoints:** per-user policies for the banking endpoints (60/min) and for money-moving calls
+  (10/min), a per-IP policy for market rates; the demo-only credit-card helpers can be switched off with
+  `Demo__EnableSimulationEndpoints=false`.
+- **Hub:** invocations after the access token expired are refused (`Session expired`, the web app reconnects with a fresh token);
+  ConfirmTransferFromChat works only for the conversation's owner; a customer cannot read or write a session that has no owner.
+- **AI path:** stored system messages and free text never reach the model's system prompt; history is capped at 20 messages; at
+  most 4 generations run at once with a 20-second deadline that really cancels the call; the FAQ index is built once instead of on
+  every message; amounts from the model are parsed culture-independently; in demo mode a one-time code is no longer stored in
+  the chat. The Gemini key is sent in a header, not in the URL; no `Console.WriteLine` is left.
+- **Less personal data:** the `tckn` claim is gone from the token, the audit trail masks the T.C. number, `SaveToken` is off.
+- **Browser:** third-party scripts are pinned with Subresource Integrity (Chart.js, which nothing used, is gone), each page has a
+  CSP limited to what it loads (no `unsafe-inline` for styles either), the web app writes no HTML from data at all
+  (`innerHTML` is not used), storage access is guarded, and signing out clears every key in every tab.
+
+### Fixed
+
+- **Money correctness** (found by reading the code; none could be caught before because those paths had no tests):
+  - A standing order debited the source before it looked up the destination, so a missing destination destroyed the money; it
+    also moved money between currencies one to one. Orders are validated when created, re-validated by the worker, which now
+    checks first and debits afterwards, writes one ledger row per transfer, honours the maturity date, retries transient errors
+    and deactivates an order only for permanent ones (with an audit entry).
+  - Credit-card payments above the debt burned the excess (`PaymentExceedsDebt` now); payments are applied to the oldest open
+    statements.
+  - Exchange and the other money endpoints accepted more than two decimals, which the 2-decimal balance column then rounded
+    (free money by repeating tiny trades). Amounts must have at most two decimals (`InvalidAmountScale`) and a computed value
+    is rounded once, away from zero, and the same value goes into balances, ledger and response.
+  - Exchange accepted any currency code, created an empty account before it had a rate, and opened a second wallet for `usd`.
+    Currencies are an allow-list (USD, EUR, XAU, XAG; accounts also TRY), the rate is looked up first and case is normalised.
+  - Market rates silently turned into invented prices when the feed failed. Stand-in prices are flagged (`isFallback`), cached
+    for 30 seconds and refused for exchange and cross-currency account closing (`RateUnavailable`); implausible values are
+    rejected.
+  - Closing an account converted one to one when a rate was missing and would have failed on the foreign key. It is now one
+    database transaction (closing row, credit, detaching old rows, standing orders switched off, recipients removed, audit) and
+    never converts without a live rate.
+  - Fraud rule B averaged deposits as spending and loaded every amount into memory; it now averages outgoing transfers of the
+    last 90 days in SQL. Thresholds use the real currency.
+  - A second tab or a parallel request could create a second credit card or duplicate recipients; unique indexes and clean
+    errors now. Parallel registrations map to clear errors instead of a 500.
+- **Registration with a taken e-mail address** (v1.2) could throw on a real database because the duplicate check was not
+  translatable to SQL; caught by the new real-database tests. Names such as "O'Neil-Çelik" are accepted by the server like the web
+  form accepts them.
+- **Culture-dependent code** (the machine's Turkish culture had already caused one bug): card expiry `MM/yy` was stored as
+  "10.31", upper/lower-casing and decimal parsing now use the invariant culture; tests run under tr-TR and de-DE.
+- **Agent metrics were invented.** Average response time is now computed from real messages and the CSAT score is empty (there is
+  no data behind it).
+- **Web app:** double clicks could send a transfer, payment or deposit twice; money fields rejected decimals (`step`); a
+  transient refresh failure signed the user out; after a reload or reconnect the chat no longer received live replies; the agent
+  panel mixed messages of different sessions; replayed confirmation cards in the history were live; the agent page's role badge was
+  invisible; accounts and cards tabs overflowed sideways on phones; about 700 lines of dead code (QR simulator, charts, statement
+  modal) and the fake balance history are gone; thirty server error keys now have Turkish and English texts and a test fails when
+  a new key has none.
+- `deploy-pages.ps1` could publish uncommitted changes and a stale hard-coded version; it now checks both and also versions the
+  stylesheet.
 
 ### Added
 
@@ -38,30 +107,32 @@ better-guarded repository. The detailed commit history is the reference for indi
   (index), `README.tr.md` (the Turkish README, now a separate file), an English summary at the top of `docs/DEFENSE.md`,
   Bash equivalents of the helper scripts (`scripts/dev-secrets.sh`, `scripts/deploy-pages.sh`), authentication examples in
   `SmartBank.API.http`.
+- **API:** `GET /api/banking/transactions?take=` (default 200, at most 500), bounded lists elsewhere (statements 24, chat messages
+  500, active sessions 200), indexes for the common lookups, and one error contract: not found or not yours is 404, a
+  concurrency conflict 409, everything else 400, always `{isSuccess, errorKey, message}`.
 
 ### Changed
 
+- **Packages** are aligned to 10.0.12 (JwtBearer, EF Core, Hosting, OpenApi; the explicit `Microsoft.OpenApi` override is gone
+  because the new OpenApi package brings the fixed version) and the pinned `dotnet-ef` tool matches. No known vulnerable packages.
 - **README rewritten** for a quick read: pitch, live demo, try-the-demo steps, three-command quick start, what is new,
   prerequisites, and a complete environment-variable table. Corrected statements that did not match the code (card themes,
   the "Docker image never built" note, rates and time-deposit interest limitations, taken e-mail addresses being revealed).
 - **Dockerfile** has named stages and copies only what the API build needs; the build context excludes tests, docs and host
   build output.
+- A credit-card payment is recorded as a withdrawal (it used to be a transfer); the transfer success marker in the chat no longer
+  carries the free-text description; the closing row of an account stores the credited amount; the OTP e-mail footer says
+  "SmartBank (demo)" and a transfer code's e-mail names amount and recipient.
 - `.gitignore` no longer names AI-tool folders and no longer ignores every directory called `Release`; the licence holder is the
   repository owner.
 - `docs/DEFENSE.md` notes where a later release superseded a statement (the 7-day token, the Docker image that had not yet been
   built, test counts); the upgrade scripts' headers describe their contents and name the real EF migrations.
-- Money-correctness, security and frontend changes made in the v1.3 audit pass are described in the commit history of the
-  `v1.3/backend` and `v1.3/frontend` branches and summarised in the README sections "Security model" and "Known limitations".
 
-### Fixed
+### Known limitations (unchanged by this release)
 
-- `deploy-pages.ps1` could publish uncommitted changes and a stale hard-coded version; it now checks both.
-- The README listed card themes that do not exist and claimed the Docker image could not be built.
-
-### Security
-
-- Pages deployment, CI and the container build now run with explicit least-privilege settings, and a weekly scheduled audit
-  catches advisories that appear without a commit.
+Time-deposit interest is displayed, not accrued; there is no idempotency key on money-moving calls, so a client retry after a
+timeout can repeat a transfer; standing orders still skip the one-time-code step; the ledger keeps one amount per row rather than
+a full double-entry record. See the README's "Known limitations".
 
 ## [1.2.0] - 2026-10-06
 
