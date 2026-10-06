@@ -10,13 +10,14 @@ let signalRConnection = null;
 let activeChatSessionId = null;
 
 // Initialize SignalR Connection with Access Token
-async function startSignalRConnection(token) {
+async function startSignalRConnection() {
     if (signalRConnection) {
         await signalRConnection.stop();
     }
 
     signalRConnection = new signalR.HubConnectionBuilder()
-        .withUrl(`${HUBS_URL}/support?access_token=${token}`)
+        // The factory runs on every (re)connect, so a reconnect after the access token expired gets a fresh one.
+        .withUrl(`${HUBS_URL}/support`, { accessTokenFactory: () => ensureFreshAccessToken() })
         .withAutomaticReconnect()
         .build();
 
@@ -108,7 +109,7 @@ async function startSignalRConnection(token) {
 // Start customer support session from floating chat widget
 async function initiateCustomerSupportSession() {
     if (!signalRConnection || signalRConnection.state !== "Connected") {
-        await startSignalRConnection(currentToken);
+        await startSignalRConnection();
     }
 
     if (signalRConnection.state === "Connected") {
@@ -119,7 +120,7 @@ async function initiateCustomerSupportSession() {
 // Agent joins customer session group
 async function joinAgentChatSession(sessionId) {
     if (!signalRConnection || signalRConnection.state !== "Connected") {
-        await startSignalRConnection(currentToken);
+        await startSignalRConnection();
     }
 
     if (signalRConnection.state === "Connected") {
@@ -201,8 +202,8 @@ function appendMessage(msgDto) {
         }
 
         const descText = currentLanguage === "tr"
-            ? `Sohbet başarıyla <strong>${displayDept}</strong> birimine aktarıldı.`
-            : `Sohbet has been transferred to <strong>${displayDept}</strong> department.`;
+            ? `Sohbet başarıyla <strong>${esc(displayDept)}</strong> birimine aktarıldı.`
+            : `Sohbet has been transferred to <strong>${esc(displayDept)}</strong> department.`;
 
         card.innerHTML = `
             <div class="system-status-title">🔄 ${titleText}</div>
@@ -247,10 +248,10 @@ function appendMessage(msgDto) {
             <div class="transfer-confirm-title">
                 <i class="logo-icon font-semibold">🔄</i> ${titleText}
             </div>
-            <div class="transfer-confirm-item">${srcLabel}: <strong>${source}</strong></div>
-            <div class="transfer-confirm-item">${destLabel}: <strong>${destination}</strong></div>
-            <div class="transfer-confirm-item">${descLabel}: <strong>${description}</strong></div>
-            <div class="transfer-confirm-amount">${amount} TRY</div>
+            <div class="transfer-confirm-item">${srcLabel}: <strong>${esc(source)}</strong></div>
+            <div class="transfer-confirm-item">${destLabel}: <strong>${esc(destination)}</strong></div>
+            <div class="transfer-confirm-item">${descLabel}: <strong>${esc(description)}</strong></div>
+            <div class="transfer-confirm-amount">${esc(amount)} TRY</div>
             <div class="transfer-confirm-actions">
                 <button class="btn-confirm btn-confirm-yes" ${isAgentPanel ? "disabled" : ""}>${confirmBtnText}</button>
                 <button class="btn-confirm btn-confirm-no" ${isAgentPanel ? "disabled" : ""}>${cancelBtnText}</button>
@@ -299,8 +300,8 @@ function appendMessage(msgDto) {
         
         const titleText = currentLanguage === "tr" ? "İşlem Başarılı" : "Transfer Successful";
         const descText = currentLanguage === "tr" 
-            ? `${amount} TRY, ${destination} numaralı hesaba başarıyla gönderildi.` 
-            : `${amount} TRY has been successfully sent to ${destination}.`;
+            ? `${esc(amount)} TRY, ${esc(destination)} numaralı hesaba başarıyla gönderildi.` 
+            : `${esc(amount)} TRY has been successfully sent to ${esc(destination)}.`;
 
         card.innerHTML = `
             <div class="system-status-title">✅ ${titleText}</div>
@@ -397,7 +398,7 @@ function appendMessage(msgDto) {
 
         card.innerHTML = `
             <div class="system-status-title">❌ ${titleText}</div>
-            <div>${translatedMsg}</div>
+            <div>${esc(translatedMsg)}</div>
             <span class="message-timestamp">${time}</span>
         `;
 
@@ -412,7 +413,7 @@ function appendMessage(msgDto) {
     bubble.className = `message-bubble ${roleClass}`;
 
     bubble.innerHTML = `
-        ${msgDto.content}
+        ${esc(msgDto.content)}
         <span class="message-timestamp">${time}</span>
     `;
 
@@ -469,7 +470,7 @@ document.addEventListener("DOMContentLoaded", () => {
             
             // If chat opened and connection not started, connect
             if (!chatBox.classList.contains("hidden") && !signalRConnection) {
-                await startSignalRConnection(currentToken);
+                await startSignalRConnection();
                 
                 // If there's an active session from sessionStorage, load it
                 const savedSessionId = sessionStorage.getItem("activeChatSessionId");
@@ -512,7 +513,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // Auto-connect SignalR when Representative Agent page opens
     if (path.includes("agent.html")) {
         if (currentToken) {
-            startSignalRConnection(currentToken);
+            startSignalRConnection();
         }
     }
 });

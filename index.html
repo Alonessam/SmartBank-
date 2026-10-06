@@ -3,6 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Defense in depth against XSS: no inline scripts or event attributes are allowed; see docs/DEFENSE.md. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://api.qrserver.com; connect-src 'self' http://localhost:5038 ws://localhost:5038 https://smartbank-fintech-api.onrender.com wss://smartbank-fintech-api.onrender.com; object-src 'none'; base-uri 'self'; form-action 'self'">
     <title>SmartBank - Secure Banking Portal</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -164,6 +166,6 @@
     </main>
 
     <!-- Core App JS -->
-    <script src="app.js?v=1.1.0"></script>
+    <script src="app.js?v=1.2.0"></script>
 </body>
 </html>

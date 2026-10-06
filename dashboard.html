@@ -3,6 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Defense in depth against XSS: no inline scripts or event attributes are allowed; see docs/DEFENSE.md. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://api.qrserver.com; connect-src 'self' http://localhost:5038 ws://localhost:5038 https://smartbank-fintech-api.onrender.com wss://smartbank-fintech-api.onrender.com; object-src 'none'; base-uri 'self'; form-action 'self'">
     <title>SmartBank - Customer Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -88,10 +90,10 @@
                     <section class="card glassmorphism workspace-item" style="width: 100%; padding: 1.5rem;">
                         <!-- Tab Headers -->
                         <div class="operations-tabs" style="display: flex; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); padding: 0.35rem; border-radius: 12px; margin-bottom: 1.5rem;">
-                            <button id="tab-btn-transfer" class="op-tab-btn active" onclick="switchOperationsTab('transfer')" style="flex: 1; padding: 0.6rem; border: none; background: rgba(255,255,255,0.08); color: #fff; font-size: 0.85rem; font-weight: 600; border-radius: 8px; cursor: pointer; transition: all 0.3s; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+                            <button id="tab-btn-transfer" class="op-tab-btn active" data-optab="transfer" style="flex: 1; padding: 0.6rem; border: none; background: rgba(255,255,255,0.08); color: #fff; font-size: 0.85rem; font-weight: 600; border-radius: 8px; cursor: pointer; transition: all 0.3s; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
                                 💸 Para Transferi
                             </button>
-                            <button id="tab-btn-exchange" class="op-tab-btn" onclick="switchOperationsTab('exchange')" style="flex: 1; padding: 0.6rem; border: none; background: transparent; color: var(--text-muted); font-size: 0.85rem; font-weight: 600; border-radius: 8px; cursor: pointer; transition: all 0.3s;">
+                            <button id="tab-btn-exchange" class="op-tab-btn" data-optab="exchange" style="flex: 1; padding: 0.6rem; border: none; background: transparent; color: var(--text-muted); font-size: 0.85rem; font-weight: 600; border-radius: 8px; cursor: pointer; transition: all 0.3s;">
                                 💱 Döviz Al/Sat
                             </button>
                         </div>
@@ -157,7 +159,7 @@
                             <h3 id="title-exchange" style="margin-bottom: 0.25rem;">Döviz & Değerli Maden İşlemleri</h3>
                             <p id="exchange-desc" class="text-muted" style="margin-bottom: 1.5rem;">TRY hesabınızı kullanarak anında döviz veya altın/gümüş alıp satın</p>
 
-                            <form id="exchange-form" novalidate onsubmit="event.preventDefault();">
+                            <form id="exchange-form" novalidate>
                                 <div class="form-group">
                                     <label id="lbl-exch-type" for="exchange-action">İşlem Türü</label>
                                     <select id="exchange-action" class="form-control">
@@ -238,7 +240,7 @@
                     
                     <div class="customizer-workspace">
                         <!-- Interactive 3D Card Preview (Flipped on hover or click) -->
-                        <div class="debit-card-wrapper" id="debit-card-wrapper-hover" onclick="this.classList.toggle('flipped')" style="cursor: pointer;">
+                        <div class="debit-card-wrapper" id="debit-card-wrapper-hover" style="cursor: pointer;">
                             <div class="debit-card-inner" id="debit-card-inner-preview">
                                 <!-- FRONT -->
                                 <div class="debit-card card-front theme-neon-blue" id="debit-card-preview">
@@ -382,7 +384,7 @@
                             <!-- Pay Form -->
                             <div>
                                 <h5 style="margin: 0 0 0.5rem 0; font-size: 0.85rem; font-weight: 600; text-transform: uppercase; color: var(--text-muted);">Borç Ödeme</h5>
-                                <form id="cc-pay-debt-form" onsubmit="event.preventDefault();" style="display: flex; flex-direction: column; gap: 0.5rem;">
+                                <form id="cc-pay-debt-form" style="display: flex; flex-direction: column; gap: 0.5rem;">
                                     <select id="cc-pay-source" class="form-control" style="font-size: 0.8rem; padding: 0.4rem;" required>
                                         <!-- TRY Accounts options -->
                                     </select>
@@ -411,7 +413,7 @@
                             <div style="display: flex; flex-direction: column; justify-content: space-between; border-left: 1px solid rgba(255,255,255,0.08); padding-left: 0.75rem;">
                                 <div>
                                     <h5 style="margin: 0 0 0.5rem 0; font-size: 0.85rem; font-weight: 600; text-transform: uppercase; color: var(--text-muted);">Harcama Simüle Et</h5>
-                                    <form id="cc-charge-form" onsubmit="event.preventDefault();" style="display: flex; flex-direction: column; gap: 0.5rem;">
+                                    <form id="cc-charge-form" style="display: flex; flex-direction: column; gap: 0.5rem;">
                                         <input type="text" id="cc-charge-desc" class="form-control" style="font-size: 0.8rem; padding: 0.4rem;" placeholder="İşyeri (Örn: Starbucks)" required>
                                         <div style="display: flex; gap: 0.25rem;">
                                             <input type="number" id="cc-charge-amount" class="form-control" style="font-size: 0.8rem; padding: 0.4rem;" placeholder="Tutar" required>
@@ -443,7 +445,7 @@
                     <h3 style="margin: 0 0 0.5rem 0; font-size: 1.1rem; font-weight: 700; color: var(--accent-color);">Yeni Talimat Tanımla</h3>
                     <p class="text-muted" style="font-size: 0.8rem; margin-bottom: 1.25rem;">Otomatik para transferleri veya kredi kartı otomatik borç ödemesi kurgulayın.</p>
 
-                    <form id="standing-order-form" novalidate onsubmit="event.preventDefault();" style="display: flex; flex-direction: column; gap: 0.75rem;">
+                    <form id="standing-order-form" novalidate style="display: flex; flex-direction: column; gap: 0.75rem;">
                         <div class="form-group">
                             <label for="so-source-acc" style="font-size: 0.8rem;">Ödeme Yapılacak Vadesiz Hesap</label>
                             <select id="so-source-acc" class="form-control" required></select>
@@ -811,7 +813,7 @@
     <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
 
     <!-- App & Chat logic -->
-    <script src="app.js?v=1.1.0"></script>
-    <script src="chat.js?v=1.1.0"></script>
+    <script src="app.js?v=1.2.0"></script>
+    <script src="chat.js?v=1.2.0"></script>
 </body>
 </html>
