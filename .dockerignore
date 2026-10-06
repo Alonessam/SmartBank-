@@ -1,0 +1,22 @@
+# Keep the Docker build context small and free of host build output (restore and publish run inside the image).
+**/bin/
+**/obj/
+**/TestResults/
+.git/
+.github/
+.vs/
+.vscode/
+.idea/
+.config/
+docs/
+scripts/
+*.md
+LICENSE
+docker-compose.yml
+Dockerfile
+.dockerignore
+.env
+.env.*
+**/appsettings.Development.json
+src/SmartBank.Tests/
+src/SmartBank.Web/
