@@ -1341,6 +1341,16 @@ const i18n = {
         "err.InvalidDepartment": "The department name is not valid.",
         "err.InvalidSender": "The message sender is not valid.",
         "err.SessionClosed": "This chat session has been closed.",
+        "err.AccountCloseFailed": "The account could not be closed. Please try again.",
+        "err.AccountLimitReached": "You have reached the maximum number of accounts.",
+        "err.AmountTooSmall": "This amount is too small to be converted.",
+        "err.ContactLimitReached": "You have reached the maximum number of saved recipients.",
+        "err.InvalidAccountNumber": "The account number is not valid.",
+        "err.InvalidAccountType": "The account type is not valid.",
+        "err.InvalidAlias": "The recipient name is not valid.",
+        "err.InvalidDescription": "The description is not valid (at most 200 characters).",
+        "err.PaymentExceedsDebt": "The payment cannot be more than the current card debt.",
+        "err.StandingOrderLimitReached": "You have reached the maximum number of active standing orders.",
         "err.UnauthorizedSessionAccess": "You do not have access to this chat session."
     },
     tr: {
@@ -1834,6 +1844,16 @@ const i18n = {
         "err.InvalidDepartment": "Birim adı geçerli değil.",
         "err.InvalidSender": "Mesaj göndericisi geçerli değil.",
         "err.SessionClosed": "Bu sohbet oturumu kapatıldı.",
+        "err.AccountCloseFailed": "Hesap kapatılamadı. Lütfen tekrar deneyin.",
+        "err.AccountLimitReached": "En fazla hesap sayısına ulaştınız.",
+        "err.AmountTooSmall": "Bu tutar çevrilemeyecek kadar küçük.",
+        "err.ContactLimitReached": "Kayıtlı alıcı sınırına ulaştınız.",
+        "err.InvalidAccountNumber": "Hesap numarası geçerli değil.",
+        "err.InvalidAccountType": "Hesap türü geçerli değil.",
+        "err.InvalidAlias": "Alıcı adı geçerli değil.",
+        "err.InvalidDescription": "Açıklama geçerli değil (en fazla 200 karakter).",
+        "err.PaymentExceedsDebt": "Ödeme, mevcut kart borcundan fazla olamaz.",
+        "err.StandingOrderLimitReached": "Etkin düzenli talimat sınırına ulaştınız.",
         "err.UnauthorizedSessionAccess": "Bu destek odasına erişim yetkiniz yok."
     }
 };
