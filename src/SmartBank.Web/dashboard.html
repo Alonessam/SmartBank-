@@ -3,244 +3,246 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <!-- Defense in depth against XSS: no inline scripts or event attributes are allowed; see docs/DEFENSE.md. -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://api.qrserver.com; connect-src 'self' http://localhost:5038 ws://localhost:5038 https://smartbank-fintech-api.onrender.com wss://smartbank-fintech-api.onrender.com; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <!-- Defense in depth against XSS: no inline scripts or event attributes are allowed; only two pinned third-party scripts (SignalR from cdnjs,
+         canvas-confetti from jsDelivr), each with an integrity hash, are loaded; styles come from styles.css and Google Fonts only (no inline style attributes, so no 'unsafe-inline'); see docs/DEFENSE.md.
+         connect-src lists the production API and localhost:5038 (local development only; for a LAN test add that host here). -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/ https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' http://localhost:5038 ws://localhost:5038 https://smartbank-fintech-api.onrender.com wss://smartbank-fintech-api.onrender.com; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta name="referrer" content="no-referrer">
+    <meta name="description" content="SmartBank demo: your accounts, transfers, currency exchange, credit cards, standing orders and live support in one place.">
+    <meta name="theme-color" content="#0a0e1a">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230a0e1a'/%3E%3Ctext x='16' y='24' font-size='22' text-anchor='middle' fill='%2300a2ff'%3E%E2%9D%96%3C/text%3E%3C/svg%3E">
     <title>SmartBank - Customer Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=1.3.0">
 </head>
-<body class="dashboard-page">
-    <div class="background-decor">
+<body class="dashboard-page" data-page="dashboard" data-title-i18n="title.dashboard">
+    <a class="skip-link" href="#main-content" data-i18n="a11y.skip">Skip to main content</a>
+
+    <div class="background-decor" aria-hidden="true">
         <div class="circle circle-1"></div>
         <div class="circle circle-2"></div>
     </div>
 
-    <!-- Mock SMS Toast Notification -->
-    <div id="mock-sms-toast" class="mock-sms-toast hidden">
-        <div class="sms-icon">💬</div>
+    <!-- Demo notification toast (one-time codes). Announced to screen readers. -->
+    <div id="mock-sms-toast" class="mock-sms-toast hidden" role="status" aria-live="polite" aria-atomic="true">
+        <div class="sms-icon" aria-hidden="true">💬</div>
         <div class="sms-content">
             <div class="sms-header">
-                <span class="sms-app-name">SMARTBANK SMS</span>
-                <span class="sms-time" id="sms-time-label">just now</span>
+                <span class="sms-app-name" id="sms-app-name">SMARTBANK</span>
+                <span class="sms-time" id="sms-time-label" data-i18n="toast.now">just now</span>
             </div>
-            <p id="sms-text" class="sms-text">Verification code: 123456</p>
+            <p id="sms-text" class="sms-text"></p>
         </div>
     </div>
 
     <!-- Header -->
     <header class="main-header">
         <div class="logo">
-            <button id="sidebar-toggle" class="btn btn-secondary" style="margin-right: 0.5rem; padding: 0.4rem 0.6rem;">☰</button>
-            <span class="logo-icon">❖</span> SmartBank
+            <button type="button" id="sidebar-toggle" class="btn btn-secondary sidebar-toggle-btn" aria-controls="sidebar" aria-expanded="false" data-i18n-aria-label="sidebar.open" aria-label="Quick actions"><span aria-hidden="true">&#9776;</span></button>
+            <span class="logo-icon" aria-hidden="true">❖</span> SmartBank
         </div>
         <div class="header-actions">
-            <span id="user-display" class="user-badge">Loading...</span>
-            <button id="lang-toggle" class="btn btn-secondary">TR</button>
-            <button id="btn-logout" class="btn btn-danger">Logout</button>
+            <span id="user-display" class="user-badge">...</span>
+            <button type="button" id="lang-toggle" class="btn btn-secondary" data-i18n-aria-label="a11y.langToggle" aria-label="Switch language">TR</button>
+            <button type="button" id="btn-logout" class="btn btn-danger" data-i18n="common.logout">Logout</button>
         </div>
     </header>
 
     <!-- Sidebar -->
-    <aside id="sidebar" class="sidebar hidden">
+    <aside id="sidebar" class="sidebar hidden" aria-labelledby="sidebar-title">
         <div class="sidebar-header">
-            <h3>Hızlı İşlemler</h3>
-            <button id="sidebar-close" class="btn btn-secondary btn-xs">&times;</button>
+            <h3 id="sidebar-title" data-i18n="sidebar.title">Quick Actions</h3>
+            <button type="button" id="sidebar-close" class="btn btn-secondary btn-xs" data-i18n-aria-label="common.close" aria-label="Close"><span aria-hidden="true">&times;</span></button>
         </div>
         <div class="sidebar-content">
             <div class="sidebar-item">
-                <h4>💰 Hesaba Para Yükle</h4>
-                <p class="text-muted" style="font-size: 0.75rem; margin-bottom: 0.5rem;">Vadesiz TL hesabınıza 1000 TL yükleyin</p>
-                <button id="btn-add-1000-try" class="btn btn-primary btn-block">+1000 TL Ekle</button>
-                <div id="add-balance-message" class="alert hidden" style="margin-top: 0.5rem; font-size: 0.75rem;"></div>
+                <h4 data-i18n="sidebar.addMoneyTitle">Add Money</h4>
+                <p class="text-muted sidebar-item-desc" data-i18n="sidebar.addMoneyDesc">Add 1000 TRY to your TRY demand account</p>
+                <button type="button" id="btn-add-1000-try" class="btn btn-primary btn-block" data-i18n="sidebar.addMoneyBtn">Add +1000 TRY</button>
+                <div id="add-balance-message" class="alert hidden msg-sm" role="status"></div>
             </div>
         </div>
     </aside>
 
-    <main class="dashboard-container">
+    <main class="dashboard-container" id="main-content" tabindex="-1">
         <!-- Tab Navigation Bar -->
-        <div class="tabs-nav-bar" style="display: flex; gap: 0.5rem; margin-bottom: 1.5rem; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 0.5rem; overflow-x: auto; width: 100%;">
-            <button class="tab-btn active" data-tab="tab-accounts" id="btn-tab-accounts">❖ Hesaplarım & Transfer</button>
-            <button class="tab-btn" data-tab="tab-credit-cards" id="btn-tab-credit-cards">💳 Kredi Kartlarım & Ekstre</button>
-            <button class="tab-btn" data-tab="tab-standing-orders" id="btn-tab-standing-orders">📅 Talimatlarım</button>
+        <div class="tabs-nav-bar" role="tablist" data-i18n-aria-label="tabs.label" aria-label="Sections">
+            <button type="button" class="tab-btn active" role="tab" aria-selected="true" aria-controls="tab-accounts" data-tab="tab-accounts" id="btn-tab-accounts"><span aria-hidden="true">❖</span> <span data-i18n="tabs.accounts">Accounts &amp; Transfer</span></button>
+            <button type="button" class="tab-btn" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-credit-cards" data-tab="tab-credit-cards" id="btn-tab-credit-cards"><span aria-hidden="true">💳</span> <span data-i18n="tabs.cards">Credit Cards &amp; Statements</span></button>
+            <button type="button" class="tab-btn" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-standing-orders" data-tab="tab-standing-orders" id="btn-tab-standing-orders"><span aria-hidden="true">📅</span> <span data-i18n="tabs.orders">Standing Orders</span></button>
         </div>
 
         <!-- TAB 1: ACCOUNTS & TRANSFERS -->
-        <div id="tab-accounts" class="tab-content">
+        <div id="tab-accounts" class="tab-content" role="tabpanel" aria-labelledby="btn-tab-accounts">
             <!-- Accounts Panel -->
-            <section class="dashboard-section section-accounts">
+            <section class="dashboard-section section-accounts" aria-labelledby="title-accounts">
                 <div class="section-header-flex">
-                    <h3 id="title-accounts">Accounts</h3>
-                    <div style="display: flex; gap: 0.5rem;">
-                        <button id="btn-create-account" class="btn btn-secondary btn-sm">+ Yeni Hesap Aç</button>
+                    <h3 id="title-accounts" data-i18n="accounts.title">Accounts</h3>
+                    <div class="section-actions">
+                        <button type="button" id="btn-create-account" class="btn btn-secondary btn-sm" data-i18n="accounts.new">+ New Account</button>
                     </div>
                 </div>
-                <div id="accounts-list" class="accounts-grid">
-                    <!-- Accounts will be injected here -->
-                    <div class="loading-spinner">Loading account details...</div>
+                <div id="accounts-list" class="accounts-grid" aria-live="polite">
+                    <div class="loading-spinner" data-i18n="accounts.loading">Loading account details...</div>
                 </div>
             </section>
 
             <!-- Workspace: Forms and Tables -->
-            <div class="workspace-grid" style="align-items: start;">
+            <div class="workspace-grid workspace-start">
                 <!-- Left Column (Tabbed Operations Card) -->
-                <div style="display: flex; flex-direction: column; gap: 1.5rem;">
-                    <!-- Tabbed Operations Card -->
-                    <section class="card glassmorphism workspace-item" style="width: 100%; padding: 1.5rem;">
+                <div class="workspace-col">
+                    <section class="card glassmorphism workspace-item operations-card">
                         <!-- Tab Headers -->
-                        <div class="operations-tabs" style="display: flex; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); padding: 0.35rem; border-radius: 12px; margin-bottom: 1.5rem;">
-                            <button id="tab-btn-transfer" class="op-tab-btn active" data-optab="transfer" style="flex: 1; padding: 0.6rem; border: none; background: rgba(255,255,255,0.08); color: #fff; font-size: 0.85rem; font-weight: 600; border-radius: 8px; cursor: pointer; transition: all 0.3s; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
-                                💸 Para Transferi
-                            </button>
-                            <button id="tab-btn-exchange" class="op-tab-btn" data-optab="exchange" style="flex: 1; padding: 0.6rem; border: none; background: transparent; color: var(--text-muted); font-size: 0.85rem; font-weight: 600; border-radius: 8px; cursor: pointer; transition: all 0.3s;">
-                                💱 Döviz Al/Sat
-                            </button>
+                        <div class="operations-tabs" role="tablist" data-i18n-aria-label="ops.label" aria-label="Operations">
+                            <button type="button" id="tab-btn-transfer" class="op-tab-btn active" role="tab" aria-selected="true" aria-controls="tab-content-transfer" data-optab="transfer"><span aria-hidden="true">💸</span> <span data-i18n="ops.transferTab">Money Transfer</span></button>
+                            <button type="button" id="tab-btn-exchange" class="op-tab-btn" role="tab" aria-selected="false" tabindex="-1" aria-controls="tab-content-exchange" data-optab="exchange"><span aria-hidden="true">💱</span> <span data-i18n="ops.exchangeTab">Buy / Sell Currency</span></button>
                         </div>
 
                         <!-- Transfer Tab Content -->
-                        <div id="tab-content-transfer" class="op-tab-content">
-                            <h3 id="title-transfer" style="margin-bottom: 0.25rem;">Transfer Funds</h3>
-                            <p id="transfer-desc" class="text-muted" style="margin-bottom: 1.5rem;">Send money instantly using account number</p>
+                        <div id="tab-content-transfer" class="op-tab-content" role="tabpanel" aria-labelledby="tab-btn-transfer">
+                            <h3 class="ops-title" data-i18n="transfer.title">Transfer Funds</h3>
+                            <p class="text-muted ops-desc" data-i18n="transfer.desc">Send money instantly using the account number</p>
 
                             <form id="transfer-form" novalidate>
                                 <div class="form-group">
-                                    <label id="lbl-source-acc" for="transfer-source">Source Account</label>
+                                    <label for="transfer-source" data-i18n="transfer.source">Source Account</label>
                                     <select id="transfer-source" class="form-control" required>
                                         <!-- Options injected dynamically -->
                                     </select>
                                 </div>
                                 <div class="form-group">
-                                    <label id="lbl-saved-contacts" for="transfer-saved-contacts" style="font-size: 0.75rem; color: var(--text-muted);">Kayıtlı Alıcı Seç (Hızlı Doldur)</label>
-                                    <div style="display: flex; flex-direction: column; gap: 0.35rem;">
+                                    <label for="transfer-saved-contacts" class="label-sm" data-i18n="transfer.savedContacts">Pick a saved recipient (quick fill)</label>
+                                    <div class="saved-contacts-row">
                                         <select id="transfer-saved-contacts" class="form-control">
-                                            <option value="">-- Kayıtlı Alıcı Seç --</option>
+                                            <option value="" data-i18n="transfer.savedContactsPlaceholder">-- Select saved recipient --</option>
                                         </select>
-                                        <button id="btn-manage-contacts" type="button" class="btn btn-secondary btn-xs" style="align-self: flex-start; padding: 0.2rem 0.6rem; font-size: 0.7rem; border-radius: 6px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); color: var(--text-muted); font-weight: 600; cursor: pointer; transition: all 0.2s;">⚙️ Alıcıları Yönet</button>
+                                        <button id="btn-manage-contacts" type="button" class="btn btn-secondary btn-xs btn-manage" data-i18n="transfer.manageContacts">Manage recipients</button>
                                     </div>
                                 </div>
                                 <div class="form-group">
-                                    <label id="lbl-dest-acc" for="transfer-dest">Destination Account Number</label>
-                                    <input type="text" id="transfer-dest" class="form-control" required placeholder="TR0000...">
+                                    <label for="transfer-dest" data-i18n="transfer.dest">Destination Account Number</label>
+                                    <input type="text" id="transfer-dest" class="form-control" required maxlength="34" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="TR0000...">
                                 </div>
                                 <div class="form-group">
-                                    <label id="lbl-amount" for="transfer-amount">Amount</label>
-                                    <input type="number" id="transfer-amount" class="form-control" required placeholder="0.00">
+                                    <label for="transfer-amount" data-i18n="transfer.amount">Amount</label>
+                                    <input type="number" id="transfer-amount" class="form-control" required step="0.01" min="0.01" inputmode="decimal" autocomplete="off" placeholder="0.00">
                                 </div>
                                 <div class="form-group">
-                                    <label id="lbl-desc" for="transfer-desc-input">Description</label>
-                                    <input type="text" id="transfer-desc-input" class="form-control" placeholder="E.g., rent, groceries">
+                                    <label for="transfer-desc-input" data-i18n="transfer.description">Description</label>
+                                    <input type="text" id="transfer-desc-input" class="form-control" maxlength="200" autocomplete="off" data-i18n-placeholder="transfer.descriptionPh" placeholder="E.g., rent, groceries">
                                 </div>
                                 <div class="form-group">
-                                    <label id="lbl-transfer-category" for="transfer-category-input">Kategori</label>
+                                    <label for="transfer-category-input" data-i18n="transfer.category">Category</label>
                                     <select id="transfer-category-input" class="form-control">
-                                        <option value="Diğer">Diğer</option>
-                                        <option value="Market">Market</option>
-                                        <option value="Fatura">Fatura</option>
-                                        <option value="Eğlence">Eğlence</option>
-                                        <option value="Yatırım">Yatırım</option>
+                                        <option value="Diğer" data-i18n="cat.other">Other</option>
+                                        <option value="Market" data-i18n="cat.market">Groceries</option>
+                                        <option value="Fatura" data-i18n="cat.bills">Bills</option>
+                                        <option value="Eğlence" data-i18n="cat.fun">Entertainment</option>
+                                        <option value="Yatırım" data-i18n="cat.invest">Investment</option>
                                     </select>
                                 </div>
                                 <!-- Save Contact Checkbox & Alias Input -->
-                                <div class="form-group" style="display: flex; gap: 0.5rem; align-items: center; background: rgba(255,255,255,0.02); padding: 0.5rem; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05); margin-bottom: 1rem;">
-                                    <input type="checkbox" id="save-contact-check" style="cursor: pointer;">
-                                    <div style="display: flex; flex-direction: column; flex: 1;">
-                                        <label for="save-contact-check" style="font-size: 0.75rem; font-weight: 600; cursor: pointer; margin: 0;">Alıcıyı Kayıtlı Kişilerine Ekle</label>
-                                        <input type="text" id="save-contact-alias" class="form-control hidden" placeholder="Rumuz (örn: Ali Enpara)" style="margin-top: 0.25rem; font-size: 0.75rem; padding: 0.25rem 0.5rem; height: auto;">
+                                <div class="form-group save-contact-box">
+                                    <input type="checkbox" id="save-contact-check">
+                                    <div class="save-contact-fields">
+                                        <label for="save-contact-check" class="save-contact-label" data-i18n="transfer.saveContact">Add the recipient to my saved contacts</label>
+                                        <input type="text" id="save-contact-alias" class="form-control hidden save-contact-alias" maxlength="50" autocomplete="off" data-i18n-placeholder="transfer.aliasPh" data-i18n-aria-label="transfer.aliasLabel" placeholder="Nickname (e.g. Ali Savings)" aria-label="Nickname">
                                     </div>
                                 </div>
-                                <button type="submit" id="btn-transfer-submit" class="btn btn-primary btn-block">Execute Transfer</button>
+                                <button type="submit" id="btn-transfer-submit" class="btn btn-primary btn-block" data-i18n="transfer.submit">Execute Transfer</button>
                             </form>
-                            <div id="transfer-message" class="alert hidden"></div>
+                            <div id="transfer-message" class="alert hidden" role="status"></div>
                         </div>
 
                         <!-- Exchange Tab Content -->
-                        <div id="tab-content-exchange" class="op-tab-content hidden">
-                            <h3 id="title-exchange" style="margin-bottom: 0.25rem;">Döviz & Değerli Maden İşlemleri</h3>
-                            <p id="exchange-desc" class="text-muted" style="margin-bottom: 1.5rem;">TRY hesabınızı kullanarak anında döviz veya altın/gümüş alıp satın</p>
+                        <div id="tab-content-exchange" class="op-tab-content hidden" role="tabpanel" aria-labelledby="tab-btn-exchange">
+                            <h3 class="ops-title" data-i18n="exchange.title">Currency &amp; Precious Metals</h3>
+                            <p class="text-muted ops-desc" data-i18n="exchange.desc">Buy or sell currency and gold/silver instantly using your TRY account</p>
 
                             <form id="exchange-form" novalidate>
                                 <div class="form-group">
-                                    <label id="lbl-exch-type" for="exchange-action">İşlem Türü</label>
+                                    <label for="exchange-action" data-i18n="exchange.action">Transaction Type</label>
                                     <select id="exchange-action" class="form-control">
-                                        <option value="buy">Alış (Döviz/Maden Al)</option>
-                                        <option value="sell">Satış (Döviz/Maden Sat)</option>
+                                        <option value="buy" data-i18n="exchange.buy">Buy (currency / metal)</option>
+                                        <option value="sell" data-i18n="exchange.sell">Sell (currency / metal)</option>
                                     </select>
                                 </div>
                                 <div class="form-group">
-                                    <label id="lbl-exch-asset" for="exchange-asset">Döviz / Maden Cinsi</label>
+                                    <label for="exchange-asset" data-i18n="exchange.asset">Currency / Metal</label>
                                     <select id="exchange-asset" class="form-control">
-                                        <option value="USD">USD - Amerikan Doları</option>
-                                        <option value="EUR">EUR - Euro</option>
-                                        <option value="XAU">XAU - Altın (Gram)</option>
-                                        <option value="XAG">XAG - Gümüş (Gram)</option>
+                                        <option value="USD" data-i18n="exchange.usd">USD - US Dollar</option>
+                                        <option value="EUR" data-i18n="exchange.eur">EUR - Euro</option>
+                                        <option value="XAU" data-i18n="exchange.xau">XAU - Gold (gram)</option>
+                                        <option value="XAG" data-i18n="exchange.xag">XAG - Silver (gram)</option>
                                     </select>
                                 </div>
                                 <div class="form-group">
-                                    <label id="lbl-exch-source" for="exchange-source">Kaynak Hesap (Ödeme/Tahsilat)</label>
+                                    <label for="exchange-source" data-i18n="exchange.source">Source Account (payment / proceeds)</label>
                                     <select id="exchange-source" class="form-control">
                                         <!-- Injected TRY/Asset accounts dynamically -->
                                     </select>
                                 </div>
                                 <div class="form-group">
-                                    <label id="lbl-exch-amount" for="exchange-amount">Miktar (Asset Amount)</label>
-                                    <input type="number" id="exchange-amount" class="form-control" placeholder="0.00" required>
+                                    <label for="exchange-amount" data-i18n="exchange.amount">Asset Amount</label>
+                                    <input type="number" id="exchange-amount" class="form-control" step="0.01" min="0.01" inputmode="decimal" autocomplete="off" placeholder="0.00" required>
                                 </div>
-                                <div class="form-group" style="background: rgba(255,255,255,0.03); padding: 0.75rem; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
-                                    <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
-                                        <span class="text-muted">İşlem Kuru:</span>
-                                        <span id="exchange-current-rate" style="font-weight: bold; color: var(--accent-color);">-</span>
+                                <div class="form-group exchange-summary">
+                                    <div class="exchange-line">
+                                        <span class="text-muted" data-i18n="exchange.rate">Rate:</span>
+                                        <span id="exchange-current-rate" class="value-accent">-</span>
                                     </div>
-                                    <div style="display: flex; justify-content: space-between; font-size: 0.85rem; margin-top: 0.25rem;">
-                                        <span class="text-muted">Toplam Karşılık:</span>
-                                        <span id="exchange-total-cost" style="font-weight: bold; color: #00f260;">0.00 TRY</span>
+                                    <div class="exchange-line">
+                                        <span class="text-muted" data-i18n="exchange.total">Total:</span>
+                                        <span id="exchange-total-cost" class="value-positive">0.00 TRY</span>
                                     </div>
                                 </div>
-                                <button type="submit" id="btn-exchange-submit" class="btn btn-primary btn-block" style="margin-top: 1rem;">İşlemi Tamamla</button>
+                                <button type="submit" id="btn-exchange-submit" class="btn btn-primary btn-block" data-i18n="exchange.submit">Complete Transaction</button>
                             </form>
-                            <div id="exchange-message" class="alert hidden" style="margin-top: 1rem;"></div>
+                            <div id="exchange-message" class="alert hidden" role="status"></div>
                         </div>
                     </section>
                 </div>
 
                 <!-- Right Column (History Table) -->
-                <section class="card glassmorphism workspace-item table-container" style="align-self: start;">
-                    <h3 id="title-history">Transaction History</h3>
-                    <p id="history-desc" class="text-muted">Recent financial movements (Tıklayarak dekont görüntüleyebilirsiniz)</p>
+                <section class="card glassmorphism workspace-item table-container history-card" aria-labelledby="title-history">
+                    <h3 id="title-history" data-i18n="history.title">Transaction History</h3>
+                    <p id="history-desc" class="text-muted" data-i18n="history.desc">Recent financial movements (click a row to see the receipt)</p>
 
-                    <div class="table-scroll" style="max-height: 530px;">
-                        <table class="table">
+                    <div class="table-scroll history-scroll">
+                        <table class="table" aria-describedby="history-desc">
                             <thead>
                                 <tr>
-                                    <th id="th-date">Date</th>
-                                    <th id="th-type">Type</th>
-                                    <th id="th-desc">Description</th>
-                                    <th id="th-amount" class="text-right">Amount</th>
+                                    <th scope="col" data-i18n="history.date">Date</th>
+                                    <th scope="col" data-i18n="history.type">Type</th>
+                                    <th scope="col" data-i18n="history.description">Description</th>
+                                    <th scope="col" class="text-right" data-i18n="history.amount">Amount</th>
                                 </tr>
                             </thead>
                             <tbody id="transactions-body">
                                 <tr>
-                                    <td colspan="4" class="text-center text-muted" id="txt-no-tx">Select an account to view history</td>
+                                    <td colspan="4" class="text-center text-muted" data-i18n="history.empty">Select an account to view history</td>
                                 </tr>
                             </tbody>
                         </table>
                     </div>
-                    <div id="tx-load-more-container" style="text-align: center; margin-top: 1rem;">
-                        <button id="btn-tx-load-more" class="btn btn-secondary btn-sm" style="background: rgba(255,255,255,0.03); border-color: rgba(255,255,255,0.08); display: none;">Daha Fazla Göster</button>
+                    <div class="tx-load-more">
+                        <button type="button" id="btn-tx-load-more" class="btn btn-secondary btn-sm hidden">Show More</button>
                     </div>
                 </section>
             </div>
 
             <!-- Card Customizer Row -->
-            <div style="margin-bottom: 2.5rem;">
+            <div class="customizer-row">
                 <!-- Credit Card Customizer Card -->
-                <section class="card glassmorphism card-customizer-card">
-                    <h3 id="title-card-customizer">Credit Card Preview & Customizer</h3>
-                    <p id="desc-card-customizer" class="text-muted">Personalize your credit card design</p>
-                    
+                <section class="card glassmorphism card-customizer-card" aria-labelledby="title-card-customizer">
+                    <h3 id="title-card-customizer" data-i18n="customizer.title">Card &amp; Security Workspace</h3>
+                    <p id="desc-card-customizer" class="text-muted" data-i18n="customizer.desc">Custom card style &amp; 2FA security</p>
+
                     <div class="customizer-workspace">
-                        <!-- Interactive 3D Card Preview (Flipped on hover or click) -->
-                        <div class="debit-card-wrapper" id="debit-card-wrapper-hover" style="cursor: pointer;">
+                        <!-- Interactive 3D Card Preview (flips on hover, click or Enter/Space) -->
+                        <div class="debit-card-wrapper" id="debit-card-wrapper-hover" role="button" tabindex="0" aria-pressed="false" data-i18n-aria-label="customizer.flip" aria-label="Flip the card">
                             <div class="debit-card-inner" id="debit-card-inner-preview">
                                 <!-- FRONT -->
                                 <div class="debit-card card-front theme-neon-blue" id="debit-card-preview">
@@ -248,22 +250,20 @@
                                     <div class="card-logo">❖ SmartBank</div>
                                     <div class="card-type-badge" id="preview-card-type-badge">CREDIT</div>
                                     <div class="card-number" id="preview-card-number">**** **** **** 0000</div>
-                                    <div class="card-holder" id="preview-card-holder" style="position: absolute; bottom: 1.25rem; left: 1.25rem; font-size: 0.75rem; text-transform: uppercase;">USER NAME</div>
-                                    <div class="card-expiry" id="preview-card-expiry" style="position: absolute; bottom: 1.25rem; right: 1.25rem; font-size: 0.75rem; font-family: monospace;">EXP 12/31</div>
+                                    <div class="card-holder" id="preview-card-holder">USER NAME</div>
+                                    <div class="card-expiry" id="preview-card-expiry">EXP 12/31</div>
                                     <div class="card-glow"></div>
                                 </div>
                                 <!-- BACK -->
                                 <div class="debit-card card-back theme-neon-blue" id="debit-card-preview-back">
                                     <div class="card-back-stripe"></div>
                                     <div class="card-back-signature-container">
-                                        <div class="card-back-signature-title">AUTHORIZED SIGNATURE</div>
+                                        <div class="card-back-signature-title" data-i18n="customizer.signature">AUTHORIZED SIGNATURE</div>
                                         <div class="card-back-signature-panel">
-                                            <span class="card-back-cvv" id="preview-card-cvv">123</span>
+                                            <span class="card-back-cvv" id="preview-card-cvv">&#8226;&#8226;&#8226;</span>
                                         </div>
                                     </div>
-                                    <div class="card-back-info">
-                                        This card is property of SmartBank. Use is subject to bank rules.
-                                    </div>
+                                    <div class="card-back-info" data-i18n="customizer.cardInfo">This card is property of SmartBank. Use is subject to bank rules.</div>
                                     <div class="card-back-logo">❖ SmartBank</div>
                                 </div>
                             </div>
@@ -271,22 +271,22 @@
 
                         <!-- Customizer Controls -->
                         <div class="customizer-controls">
-                            <label id="lbl-select-theme">Choose Theme:</label>
-                            <div class="theme-options">
-                                <button class="theme-btn active" data-theme="theme-neon-blue" title="Neon Blue" style="background: linear-gradient(135deg, #0575e6, #00f260);"></button>
-                                <button class="theme-btn" data-theme="theme-sunset" title="Sunset Orange" style="background: linear-gradient(135deg, #f12711, #f5af19);"></button>
-                                <button class="theme-btn" data-theme="theme-metallic-dark" title="Metallic Dark" style="background: linear-gradient(135deg, #1f1c2c, #928dab);"></button>
-                                <button class="theme-btn" data-theme="theme-glass" title="Glassmorphism" style="background: rgba(255, 255, 255, 0.15); border: 1px solid rgba(255, 255, 255, 0.3);"></button>
+                            <span id="lbl-select-theme" data-i18n="customizer.theme">Choose Theme:</span>
+                            <div class="theme-options" role="group" aria-labelledby="lbl-select-theme">
+                                <button type="button" class="theme-btn active" aria-pressed="true" data-theme="theme-neon-blue" data-i18n-aria-label="theme.neon" data-i18n-title="theme.neon" aria-label="Neon Blue" title="Neon Blue"></button>
+                                <button type="button" class="theme-btn" aria-pressed="false" data-theme="theme-sunset" data-i18n-aria-label="theme.sunset" data-i18n-title="theme.sunset" aria-label="Sunset Orange" title="Sunset Orange"></button>
+                                <button type="button" class="theme-btn" aria-pressed="false" data-theme="theme-metallic-dark" data-i18n-aria-label="theme.metallic" data-i18n-title="theme.metallic" aria-label="Metallic Dark" title="Metallic Dark"></button>
+                                <button type="button" class="theme-btn" aria-pressed="false" data-theme="theme-glass" data-i18n-aria-label="theme.glass" data-i18n-title="theme.glass" aria-label="Glassmorphism" title="Glassmorphism"></button>
                             </div>
 
                             <!-- Security Toggler -->
                             <div class="security-settings">
                                 <div class="security-info">
-                                    <h4 id="lbl-2fa-title">2FA Security</h4>
-                                    <p id="lbl-2fa-desc" class="text-muted">Requires verification code for transfers over 1000 TRY</p>
+                                    <h4 id="lbl-2fa-title" data-i18n="twofa.title">2FA Security</h4>
+                                    <p id="lbl-2fa-desc" class="text-muted" data-i18n="twofa.desc">Requires a verification code for transfers over 1000 TRY</p>
                                 </div>
                                 <label class="switch-container">
-                                    <input type="checkbox" id="switch-2fa">
+                                    <input type="checkbox" id="switch-2fa" aria-labelledby="lbl-2fa-title" aria-describedby="lbl-2fa-desc">
                                     <span class="slider-round"></span>
                                 </label>
                             </div>
@@ -297,131 +297,132 @@
         </div>
 
         <!-- TAB 2: CREDIT CARDS & STATEMENTS -->
-        <div id="tab-credit-cards" class="tab-content hidden">
-            <div style="display: grid; grid-template-columns: 1fr 1.3fr; gap: 1.5rem; align-items: start;">
+        <div id="tab-credit-cards" class="tab-content hidden" role="tabpanel" aria-labelledby="btn-tab-credit-cards">
+            <div class="cc-layout">
                 <!-- Left Side: Cards List -->
-                <section class="dashboard-section section-credit-cards" style="margin-bottom: 0;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                        <h3 id="title-credit-cards" style="margin: 0;">Credit Cards</h3>
-                        <button id="btn-apply-creditcard" class="btn btn-primary btn-xs" style="font-size: 0.75rem; padding: 0.25rem 0.6rem;">+ Yeni Başvuru</button>
+                <section class="dashboard-section section-credit-cards" aria-labelledby="title-credit-cards">
+                    <div class="section-header-flex">
+                        <h3 id="title-credit-cards" data-i18n="cards.title">Credit Cards</h3>
+                        <button type="button" id="btn-apply-creditcard" class="btn btn-primary btn-xs" data-i18n="cards.apply">+ New Application</button>
                     </div>
-                    <div id="credit-cards-list" class="accounts-grid" style="grid-template-columns: 1fr; gap: 1rem;">
-                        <div class="loading-spinner">Loading credit card details...</div>
+                    <div id="credit-cards-list" class="accounts-grid single-col" aria-live="polite">
+                        <div class="loading-spinner" data-i18n="cards.loading">Loading credit card details...</div>
                     </div>
                 </section>
 
                 <!-- Right Side: Details & Statement panel directly on page -->
-                <section class="card glassmorphism" id="cc-details-panel" style="padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem;">
-                    <div id="cc-no-selected" class="text-center text-muted" style="padding: 4rem 0;">
-                        💳 Lütfen detaylarını ve ekstre hareketlerini görmek istediğiniz kredi kartını seçiniz.
-                    </div>
+                <section class="card glassmorphism cc-panel" id="cc-details-panel" aria-label="Credit card details" data-i18n-aria-label="cards.panelLabel">
+                    <div id="cc-no-selected" class="text-center text-muted cc-panel-placeholder"></div>
                     <div id="cc-details-content" class="hidden">
-                        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 0.75rem; margin-bottom: 0.5rem;">
-                            <h4 id="cc-details-title" style="margin: 0; font-size: 1.1rem; font-weight: 700; color: var(--accent-color);">SmartCredit Kart Detayları</h4>
-                            <span class="badge" id="cc-details-masked-no" style="font-family: monospace; font-size: 0.9rem;">**** **** **** 0000</span>
+                        <div class="cc-details-head">
+                            <h4 id="cc-details-title" data-i18n="cards.detailsTitle">SmartCredit Card Details</h4>
+                            <span class="badge" id="cc-details-masked-no">**** **** **** 0000</span>
                         </div>
 
                         <!-- Limit info boxes -->
-                        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin-bottom: 1rem;">
-                            <div style="background: rgba(255,255,255,0.02); padding: 0.75rem; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05); text-align: center;">
-                                <div class="text-muted" style="font-size: 0.75rem; text-transform: uppercase;">Toplam Limit</div>
-                                <div style="font-size: 1.05rem; font-weight: bold; margin-top: 0.25rem;" id="cc-details-limit">0.00 TRY</div>
+                        <div class="cc-limits">
+                            <div class="limit-box">
+                                <div class="limit-label" data-i18n="cards.limit">Total Limit</div>
+                                <div class="limit-value" id="cc-details-limit">0.00 TRY</div>
                             </div>
-                            <div style="background: rgba(255,255,255,0.02); padding: 0.75rem; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05); text-align: center;">
-                                <div class="text-muted" style="font-size: 0.75rem; text-transform: uppercase;">Kalan Limit</div>
-                                <div style="font-size: 1.05rem; font-weight: bold; margin-top: 0.25rem; color: #00f260;" id="cc-details-avail">0.00 TRY</div>
+                            <div class="limit-box">
+                                <div class="limit-label" data-i18n="cards.available">Available Limit</div>
+                                <div class="limit-value value-positive" id="cc-details-avail">0.00 TRY</div>
                             </div>
-                            <div style="background: rgba(255,255,255,0.02); padding: 0.75rem; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05); text-align: center;">
-                                <div class="text-muted" style="font-size: 0.75rem; text-transform: uppercase;">Güncel Borç</div>
-                                <div style="font-size: 1.05rem; font-weight: bold; margin-top: 0.25rem; color: #ff4b5c;" id="cc-details-debt">0.00 TRY</div>
+                            <div class="limit-box">
+                                <div class="limit-label" data-i18n="cards.debt">Current Debt</div>
+                                <div class="limit-value value-negative" id="cc-details-debt">0.00 TRY</div>
                             </div>
                         </div>
 
-                        <!-- Ekstre Hesap Özeti -->
-                        <div style="margin-bottom: 1rem;">
-                            <h5 style="margin: 0 0 0.5rem 0; font-size: 0.85rem; font-weight: 600; text-transform: uppercase; color: var(--text-muted);">Hesap Özeti (Ekstre)</h5>
-                            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem;">
-                                <div style="background: rgba(138,43,226,0.05); border: 1px solid rgba(138,43,226,0.15); padding: 0.5rem; border-radius: 6px; text-align: center;">
-                                    <span style="font-size: 0.65rem; color: var(--text-muted); display: block;">Dönem</span>
-                                    <span id="val-cc-stmt-period" style="font-size: 0.8rem; font-weight: bold;">-</span>
+                        <!-- Statement summary -->
+                        <div class="cc-section">
+                            <h5 class="section-title-sm" data-i18n="cards.stmtTitle">Account Summary (Statement)</h5>
+                            <div class="cc-stmt-grid">
+                                <div class="stmt-box">
+                                    <span class="stmt-label" data-i18n="cards.period">Period</span>
+                                    <span id="val-cc-stmt-period" class="stmt-value">-</span>
                                 </div>
-                                <div style="background: rgba(138,43,226,0.05); border: 1px solid rgba(138,43,226,0.15); padding: 0.5rem; border-radius: 6px; text-align: center;">
-                                    <span style="font-size: 0.65rem; color: var(--text-muted); display: block;">Dönem Borcu</span>
-                                    <span id="val-cc-stmt-debt" style="font-size: 0.8rem; font-weight: bold; color: #ff4b5c;">-</span>
+                                <div class="stmt-box">
+                                    <span class="stmt-label" data-i18n="cards.periodDebt">Period Debt</span>
+                                    <span id="val-cc-stmt-debt" class="stmt-value value-negative">-</span>
                                 </div>
-                                <div style="background: rgba(138,43,226,0.05); border: 1px solid rgba(138,43,226,0.15); padding: 0.5rem; border-radius: 6px; text-align: center;">
-                                    <span style="font-size: 0.65rem; color: var(--text-muted); display: block;">Asgari Ödeme</span>
-                                    <span id="val-cc-stmt-min" style="font-size: 0.8rem; font-weight: bold;">-</span>
+                                <div class="stmt-box">
+                                    <span class="stmt-label" data-i18n="cards.minPayment">Minimum Payment</span>
+                                    <span id="val-cc-stmt-min" class="stmt-value">-</span>
                                 </div>
-                                <div style="background: rgba(138,43,226,0.05); border: 1px solid rgba(138,43,226,0.15); padding: 0.5rem; border-radius: 6px; text-align: center;">
-                                    <span style="font-size: 0.65rem; color: var(--text-muted); display: block;">Son Ödeme</span>
-                                    <span id="val-cc-stmt-due" style="font-size: 0.8rem; font-weight: bold;">-</span>
+                                <div class="stmt-box">
+                                    <span class="stmt-label" data-i18n="cards.dueDate">Due Date</span>
+                                    <span id="val-cc-stmt-due" class="stmt-value">-</span>
                                 </div>
                             </div>
+                            <div id="cc-stmt-status" class="statement-payment-status hidden" role="status"></div>
                         </div>
 
                         <!-- Period Transactions -->
-                        <div style="margin-bottom: 1rem;">
-                            <h5 style="margin: 0 0 0.5rem 0; font-size: 0.85rem; font-weight: 600; text-transform: uppercase; color: var(--text-muted);">Dönem İçi Hareketler</h5>
-                            <div class="table-scroll" style="max-height: 160px; overflow-y: auto;">
-                                <table class="table" style="font-size: 0.8rem;">
+                        <div class="cc-section">
+                            <h5 class="section-title-sm" data-i18n="cards.periodTx">Period Transactions</h5>
+                            <div class="table-scroll cc-tx-scroll">
+                                <table class="table table-sm">
                                     <thead>
                                         <tr>
-                                            <th>Tarih</th>
-                                            <th>Açıklama</th>
-                                            <th class="text-right">Tutar</th>
+                                            <th scope="col" data-i18n="history.date">Date</th>
+                                            <th scope="col" data-i18n="history.description">Description</th>
+                                            <th scope="col" class="text-right" data-i18n="cards.txAmount">Amount</th>
                                         </tr>
                                     </thead>
                                     <tbody id="cc-stmt-transactions-body">
-                                        <tr><td colspan="3" class="text-center text-muted">Harcama bulunmuyor.</td></tr>
+                                        <tr><td colspan="3" class="text-center text-muted" data-i18n="cards.noSpend">No spending yet.</td></tr>
                                     </tbody>
                                 </table>
                             </div>
                         </div>
 
                         <!-- Pay Form & Simulation -->
-                        <div style="display: grid; grid-template-columns: 1.2fr 1fr 1.2fr; gap: 1rem; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 1rem;">
+                        <div class="cc-actions-grid">
                             <!-- Pay Form -->
-                            <div>
-                                <h5 style="margin: 0 0 0.5rem 0; font-size: 0.85rem; font-weight: 600; text-transform: uppercase; color: var(--text-muted);">Borç Ödeme</h5>
-                                <form id="cc-pay-debt-form" style="display: flex; flex-direction: column; gap: 0.5rem;">
-                                    <select id="cc-pay-source" class="form-control" style="font-size: 0.8rem; padding: 0.4rem;" required>
+                            <div class="cc-action-col">
+                                <h5 class="section-title-sm" data-i18n="cards.payTitle">Pay Debt</h5>
+                                <form id="cc-pay-debt-form" class="stack-form" novalidate>
+                                    <label for="cc-pay-source" class="visually-hidden" data-i18n="cards.paySource">Payment account</label>
+                                    <select id="cc-pay-source" class="form-control form-control-sm" required>
                                         <!-- TRY Accounts options -->
                                     </select>
-                                    <div style="display: flex; gap: 0.25rem;">
-                                        <input type="number" id="cc-pay-amount" class="form-control" style="font-size: 0.8rem; padding: 0.4rem;" placeholder="Miktar" required>
-                                        <button type="submit" id="btn-cc-pay-submit" class="btn btn-primary btn-sm">Öde</button>
+                                    <div class="inline-fields">
+                                        <label for="cc-pay-amount" class="visually-hidden" data-i18n="cards.payAmount">Amount to pay</label>
+                                        <input type="number" id="cc-pay-amount" class="form-control form-control-sm" step="0.01" min="0.01" inputmode="decimal" autocomplete="off" data-i18n-placeholder="cards.payAmountPh" placeholder="Amount" required>
+                                        <button type="submit" id="btn-cc-pay-submit" class="btn btn-primary btn-sm" data-i18n="cards.pay">Pay</button>
                                     </div>
-                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.25rem;">
-                                        <button type="button" id="btn-cc-pay-min" class="btn btn-secondary btn-xs" style="font-size: 0.65rem; padding: 0.2rem;">Asgari Öde</button>
-                                        <button type="button" id="btn-cc-pay-full" class="btn btn-secondary btn-xs" style="font-size: 0.65rem; padding: 0.2rem;">Borç Kapat</button>
+                                    <div class="preset-row">
+                                        <button type="button" id="btn-cc-pay-min" class="btn btn-secondary btn-xs" data-i18n="cards.payMin">Pay Minimum</button>
+                                        <button type="button" id="btn-cc-pay-full" class="btn btn-secondary btn-xs" data-i18n="cards.payFull">Pay in Full</button>
                                     </div>
                                 </form>
-                                <div id="cc-pay-message" class="alert hidden" style="font-size: 0.75rem; padding: 0.35rem; margin-top: 0.25rem;"></div>
+                                <div id="cc-pay-message" class="alert hidden msg-sm" role="status"></div>
                             </div>
 
                             <!-- Period Simulation -->
-                            <div style="display: flex; flex-direction: column; justify-content: space-between; border-left: 1px solid rgba(255,255,255,0.08); padding-left: 0.75rem;">
+                            <div class="cc-action-col cc-action-divided">
                                 <div>
-                                    <h5 style="margin: 0 0 0.25rem 0; font-size: 0.85rem; font-weight: 600; text-transform: uppercase; color: var(--text-muted);">Dönem Atlat</h5>
-                                    <p class="text-muted" style="font-size: 0.65rem; margin: 0;">Son ödeme günü simülasyonu. Ödenmeyen borca faiz uygulanıp yeni dönem faturası kesilir.</p>
+                                    <h5 class="section-title-sm" data-i18n="cards.advanceTitle">Advance Period</h5>
+                                    <p class="text-muted hint-xs" data-i18n="cards.advanceDesc">Simulates the due date: interest is applied to unpaid debt and a new statement is issued.</p>
                                 </div>
-                                <button id="btn-cc-advance-period" class="btn btn-warning btn-sm btn-block" style="background: rgba(255,75,92,0.1); border-color: rgba(255,75,92,0.3); color: #ff4b5c; font-weight: 600; margin-top: 0.5rem; font-size: 0.75rem; padding: 0.4rem;">Dönemi Kapat (Faiz Uygula)</button>
+                                <button type="button" id="btn-cc-advance-period" class="btn btn-warning btn-sm btn-block" data-i18n="cards.advanceBtn">Close Period (Apply Interest)</button>
                             </div>
 
-                            <!-- Harcama Simülasyonu -->
-                            <div style="display: flex; flex-direction: column; justify-content: space-between; border-left: 1px solid rgba(255,255,255,0.08); padding-left: 0.75rem;">
-                                <div>
-                                    <h5 style="margin: 0 0 0.5rem 0; font-size: 0.85rem; font-weight: 600; text-transform: uppercase; color: var(--text-muted);">Harcama Simüle Et</h5>
-                                    <form id="cc-charge-form" style="display: flex; flex-direction: column; gap: 0.5rem;">
-                                        <input type="text" id="cc-charge-desc" class="form-control" style="font-size: 0.8rem; padding: 0.4rem;" placeholder="İşyeri (Örn: Starbucks)" required>
-                                        <div style="display: flex; gap: 0.25rem;">
-                                            <input type="number" id="cc-charge-amount" class="form-control" style="font-size: 0.8rem; padding: 0.4rem;" placeholder="Tutar" required>
-                                            <button type="submit" id="btn-cc-charge-submit" class="btn btn-primary btn-sm" style="background: #ff4b5c; border-color: #ff4b5c;">Harcama Yap</button>
-                                        </div>
-                                    </form>
-                                    <div id="cc-charge-message" class="alert hidden" style="font-size: 0.75rem; padding: 0.35rem; margin-top: 0.25rem;"></div>
-                                </div>
+                            <!-- Spending simulation -->
+                            <div class="cc-action-col cc-action-divided">
+                                <h5 class="section-title-sm" data-i18n="cards.chargeTitle">Simulate Spending</h5>
+                                <form id="cc-charge-form" class="stack-form" novalidate>
+                                    <label for="cc-charge-desc" class="visually-hidden" data-i18n="cards.chargeMerchant">Merchant</label>
+                                    <input type="text" id="cc-charge-desc" class="form-control form-control-sm" maxlength="100" autocomplete="off" data-i18n-placeholder="cards.chargeMerchantPh" placeholder="Merchant (e.g. Starbucks)" required>
+                                    <div class="inline-fields">
+                                        <label for="cc-charge-amount" class="visually-hidden" data-i18n="cards.chargeAmount">Amount</label>
+                                        <input type="number" id="cc-charge-amount" class="form-control form-control-sm" step="0.01" min="0.01" inputmode="decimal" autocomplete="off" data-i18n-placeholder="cards.chargeAmountPh" placeholder="Amount" required>
+                                        <button type="submit" id="btn-cc-charge-submit" class="btn btn-primary btn-sm btn-charge" data-i18n="cards.chargeBtn">Spend</button>
+                                    </div>
+                                </form>
+                                <div id="cc-charge-message" class="alert hidden msg-sm" role="status"></div>
                             </div>
                         </div>
                     </div>
@@ -429,51 +430,51 @@
             </div>
         </div>
 
-        <!-- TAB 3: STANDING ORDERS (TALİMATLAR) -->
-        <div id="tab-standing-orders" class="tab-content hidden">
-            <div style="display: grid; grid-template-columns: 1fr 1.1fr; gap: 1.5rem; align-items: start;">
+        <!-- TAB 3: STANDING ORDERS -->
+        <div id="tab-standing-orders" class="tab-content hidden" role="tabpanel" aria-labelledby="btn-tab-standing-orders">
+            <div class="so-layout">
                 <!-- Left Side: Standing Orders List -->
-                <section class="dashboard-section" style="margin-bottom: 0;">
-                    <h3 id="title-standing-orders" style="margin-bottom: 1rem;">Mevcut Talimatlarım</h3>
-                    <div id="standing-orders-list" class="accounts-grid" style="grid-template-columns: 1fr; gap: 1rem;">
-                        <div class="loading-spinner">Talimatlar yükleniyor...</div>
+                <section class="dashboard-section" aria-labelledby="title-standing-orders">
+                    <h3 id="title-standing-orders" class="so-heading" data-i18n="orders.title">My Standing Orders</h3>
+                    <div id="standing-orders-list" class="accounts-grid single-col" aria-live="polite">
+                        <div class="loading-spinner" data-i18n="orders.loading">Loading standing orders...</div>
                     </div>
                 </section>
 
                 <!-- Right Side: Add Standing Order form -->
-                <section class="card glassmorphism" style="padding: 1.5rem;">
-                    <h3 style="margin: 0 0 0.5rem 0; font-size: 1.1rem; font-weight: 700; color: var(--accent-color);">Yeni Talimat Tanımla</h3>
-                    <p class="text-muted" style="font-size: 0.8rem; margin-bottom: 1.25rem;">Otomatik para transferleri veya kredi kartı otomatik borç ödemesi kurgulayın.</p>
+                <section class="card glassmorphism so-card" aria-labelledby="title-so-new">
+                    <h3 id="title-so-new" class="so-new-title" data-i18n="orders.newTitle">Create Standing Order</h3>
+                    <p class="text-muted so-new-desc" data-i18n="orders.newDesc">Set up automatic money transfers or automatic credit card payments.</p>
 
-                    <form id="standing-order-form" novalidate style="display: flex; flex-direction: column; gap: 0.75rem;">
+                    <form id="standing-order-form" class="stack-form so-form" novalidate>
                         <div class="form-group">
-                            <label for="so-source-acc" style="font-size: 0.8rem;">Ödeme Yapılacak Vadesiz Hesap</label>
+                            <label for="so-source-acc" class="label-sm" data-i18n="orders.source">TRY demand account to pay from</label>
                             <select id="so-source-acc" class="form-control" required></select>
                         </div>
                         <div class="form-group">
-                            <label for="so-type" style="font-size: 0.8rem;">Talimat Türü</label>
+                            <label for="so-type" class="label-sm" data-i18n="orders.type">Order type</label>
                             <select id="so-type" class="form-control" required>
-                                <option value="Transfer">Düzenli Para Transferi</option>
-                                <option value="CreditCardAutoPay">Kredi Kartı Otomatik Borç Ödeme</option>
+                                <option value="Transfer" data-i18n="orders.typeTransfer">Regular money transfer</option>
+                                <option value="CreditCardAutoPay" data-i18n="orders.typeCard">Automatic credit card payment</option>
                             </select>
                         </div>
 
                         <!-- Transfer Fields -->
-                        <div id="so-transfer-fields" style="display: flex; flex-direction: column; gap: 0.75rem;">
+                        <div id="so-transfer-fields" class="stack-form">
                             <div class="form-group">
-                                <label for="so-dest-acc" style="font-size: 0.8rem;">Alıcı Hesap Numarası</label>
-                                <input type="text" id="so-dest-acc" class="form-control" placeholder="TR0000...">
+                                <label for="so-dest-acc" class="label-sm" data-i18n="orders.dest">Recipient account number</label>
+                                <input type="text" id="so-dest-acc" class="form-control" maxlength="34" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="TR0000...">
                             </div>
                             <div class="form-group">
-                                <label for="so-amount" style="font-size: 0.8rem;">Yinelenen Tutar</label>
-                                <input type="number" id="so-amount" class="form-control" placeholder="0.00">
+                                <label for="so-amount" class="label-sm" data-i18n="orders.amount">Recurring amount</label>
+                                <input type="number" id="so-amount" class="form-control" step="0.01" min="0.01" inputmode="decimal" autocomplete="off" placeholder="0.00">
                             </div>
                             <div class="form-group">
-                                <label for="so-frequency" style="font-size: 0.8rem;">Yinelenme Sıklığı</label>
+                                <label for="so-frequency" class="label-sm" data-i18n="orders.frequency">Frequency</label>
                                 <select id="so-frequency" class="form-control">
-                                    <option value="Daily">Her Gün (Daily)</option>
-                                    <option value="Weekly">Her Hafta (Weekly)</option>
-                                    <option value="Monthly">Her Ay (Monthly)</option>
+                                    <option value="Daily" data-i18n="orders.daily">Every day</option>
+                                    <option value="Weekly" data-i18n="orders.weekly">Every week</option>
+                                    <option value="Monthly" data-i18n="orders.monthly">Every month</option>
                                 </select>
                             </div>
                         </div>
@@ -481,14 +482,14 @@
                         <!-- Credit Card Autopay Fields -->
                         <div id="so-cc-fields" class="hidden">
                             <div class="form-group">
-                                <label for="so-target-cc" style="font-size: 0.8rem;">Ödenecek Kredi Kartı</label>
+                                <label for="so-target-cc" class="label-sm" data-i18n="orders.targetCard">Credit card to pay</label>
                                 <select id="so-target-cc" class="form-control"></select>
                             </div>
                         </div>
 
-                        <button type="submit" id="btn-submit-standing-order" class="btn btn-primary btn-block" style="margin-top: 0.5rem;">Talimatı Kaydet</button>
+                        <button type="submit" id="btn-submit-standing-order" class="btn btn-primary btn-block" data-i18n="orders.submit">Save Order</button>
                     </form>
-                    <div id="standing-order-message" class="alert hidden" style="margin-top: 1rem;"></div>
+                    <div id="standing-order-message" class="alert hidden" role="status"></div>
                 </section>
             </div>
         </div>
@@ -497,323 +498,221 @@
     <!-- FLOATING CHAT WIDGET -->
     <div id="chat-widget" class="chat-widget">
         <!-- Floating Toggle Button -->
-        <button id="chat-toggle" class="chat-toggle btn btn-primary">
-            <span class="chat-toggle-icon">💬</span>
-            <span id="chat-toggle-label">Live Support</span>
+        <button type="button" id="chat-toggle" class="chat-toggle btn btn-primary" aria-expanded="false" aria-controls="chat-box">
+            <span class="chat-toggle-icon" aria-hidden="true">💬</span>
+            <span id="chat-toggle-label" data-i18n="chat.toggle">Live Support</span>
         </button>
 
         <!-- Chat Box -->
-        <div id="chat-box" class="chat-box glassmorphism hidden">
+        <div id="chat-box" class="chat-box glassmorphism hidden" role="dialog" aria-modal="false" aria-labelledby="lbl-chat-title">
             <div class="chat-header">
-                <span id="lbl-chat-title">Live Chat Support</span>
-                <button id="chat-close" class="close-btn">&times;</button>
+                <span id="lbl-chat-title" data-i18n="chat.title">Live Chat Support</span>
+                <button type="button" id="chat-close" class="close-btn" data-i18n-aria-label="common.close" aria-label="Close"><span aria-hidden="true">&times;</span></button>
             </div>
-            <div class="chat-messages" id="chat-messages">
+            <p id="chat-conn-status" class="conn-status hidden" role="status"></p>
+            <div class="chat-messages" id="chat-messages" role="log" aria-live="polite" aria-relevant="additions">
                 <!-- Messages will be injected here -->
                 <div class="chat-placeholder">
-                    <p id="chat-welcome">Welcome! Need help with your accounts, transfers, or card limits?</p>
-                    <button id="btn-start-chat" class="btn btn-secondary btn-sm">Start Session</button>
+                    <p data-i18n="chat.welcome">Welcome! Need help with your accounts, transfers, or card limits?</p>
+                    <button type="button" id="btn-start-chat" class="btn btn-secondary btn-sm" data-i18n="chat.start">Start Session</button>
                 </div>
-                <!-- Bouncing Typing Indicator -->
-                <div id="chat-typing-indicator" class="typing-indicator hidden">
-                    <span class="dot"></span>
-                    <span class="dot"></span>
-                    <span class="dot"></span>
-                </div>
+            </div>
+            <!-- Bouncing typing indicator: lives outside the message log so reloading the history cannot remove it -->
+            <div id="chat-typing-indicator" class="typing-indicator hidden" role="status" data-i18n-aria-label="chat.typing" aria-label="Typing...">
+                <span class="dot"></span>
+                <span class="dot"></span>
+                <span class="dot"></span>
             </div>
 
             <form id="chat-form" class="chat-input-area">
-                <input type="text" id="chat-input" disabled required maxlength="1000" placeholder="Type a message...">
-                <button type="submit" id="chat-send-btn" disabled class="btn btn-primary btn-sm">Send</button>
+                <label for="chat-input" class="visually-hidden" data-i18n="chat.inputLabel">Your message</label>
+                <input type="text" id="chat-input" disabled required maxlength="1000" autocomplete="off" data-i18n-placeholder="chat.inputPlaceholder" placeholder="Type a message...">
+                <button type="submit" id="chat-send-btn" disabled class="btn btn-primary btn-sm" data-i18n="common.send">Send</button>
             </form>
         </div>
     </div>
 
     <!-- Create Account Selection Modal -->
-    <div id="create-account-modal" class="modal-overlay hidden">
-        <div class="modal-content glassmorphism" style="max-width: 500px;">
+    <div id="create-account-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="create-acc-modal-title">
+        <div class="modal-content glassmorphism modal-content-md">
             <div class="modal-header">
-                <h3 id="create-acc-modal-title">Yeni Hesap Aç</h3>
-                <button id="btn-close-create-acc" class="close-btn">&times;</button>
+                <h3 id="create-acc-modal-title" data-i18n="newacc.title">Open New Account</h3>
+                <button type="button" id="btn-close-create-acc" class="close-btn" data-i18n-aria-label="common.close" aria-label="Close"><span aria-hidden="true">&times;</span></button>
             </div>
-            <div class="modal-body">
-                <label id="lbl-select-acc-type" style="margin-bottom: 0.75rem; display: block; font-weight: 600;">Hesap Türü Seçiniz:</label>
-                <div class="account-type-options">
-                    <label class="acc-type-card active">
-                        <input type="radio" name="new-acc-choice" value="DemandDeposit-TRY" checked style="display: none;">
-                        <div class="acc-type-details">
-                            <span class="acc-type-name">Vadesiz TL Hesabı</span>
-                            <span class="acc-type-desc">Günlük işlemler ve transferler için (TRY)</span>
-                        </div>
-                    </label>
-                    <label class="acc-type-card">
-                        <input type="radio" name="new-acc-choice" value="DemandDeposit-USD" style="display: none;">
-                        <div class="acc-type-details">
-                            <span class="acc-type-name">Vadesiz Dolar Hesabı</span>
-                            <span class="acc-type-desc">Dolar birikim ve transferler için (USD)</span>
-                        </div>
-                    </label>
-                    <label class="acc-type-card">
-                        <input type="radio" name="new-acc-choice" value="DemandDeposit-EUR" style="display: none;">
-                        <div class="acc-type-details">
-                            <span class="acc-type-name">Vadesiz Euro Hesabı</span>
-                            <span class="acc-type-desc">Euro birikim ve transferler için (EUR)</span>
-                        </div>
-                    </label>
-                    <label class="acc-type-card">
-                        <input type="radio" name="new-acc-choice" value="DemandDeposit-XAU" style="display: none;">
-                        <div class="acc-type-details">
-                            <span class="acc-type-name">Gram Altın Hesabı</span>
-                            <span class="acc-type-desc">Altın yatırımı ve birikimi için (XAU)</span>
-                        </div>
-                    </label>
-                    <label class="acc-type-card">
-                        <input type="radio" name="new-acc-choice" value="DemandDeposit-XAG" style="display: none;">
-                        <div class="acc-type-details">
-                            <span class="acc-type-name">Gram Gümüş Hesabı</span>
-                            <span class="acc-type-desc">Gümüş yatırımı ve birikimi için (XAG)</span>
-                        </div>
-                    </label>
-                    <label class="acc-type-card">
-                        <input type="radio" name="new-acc-choice" value="TimeDeposit-TRY" style="display: none;">
-                        <div class="acc-type-details">
-                            <span class="acc-type-name">Vadeli TL Hesabı (Kademeli Faiz)</span>
-                            <span class="acc-type-desc">30 Günlük vadede yüksek kademeli getiri (TRY)</span>
-                        </div>
-                    </label>
-                </div>
+            <div class="modal-body modal-body-left">
+                <fieldset class="account-type-fieldset">
+                    <legend id="lbl-select-acc-type" data-i18n="newacc.selectType">Select Account Type:</legend>
+                    <div class="account-type-options">
+                        <label class="acc-type-card active">
+                            <input type="radio" class="visually-hidden" name="new-acc-choice" value="DemandDeposit-TRY" checked>
+                            <div class="acc-type-details">
+                                <span class="acc-type-name" data-i18n="newacc.tryName">TRY Demand Account</span>
+                                <span class="acc-type-desc" data-i18n="newacc.tryDesc">For daily transactions and transfers (TRY)</span>
+                            </div>
+                        </label>
+                        <label class="acc-type-card">
+                            <input type="radio" class="visually-hidden" name="new-acc-choice" value="DemandDeposit-USD">
+                            <div class="acc-type-details">
+                                <span class="acc-type-name" data-i18n="newacc.usdName">USD Demand Account</span>
+                                <span class="acc-type-desc" data-i18n="newacc.usdDesc">For dollar savings and transfers (USD)</span>
+                            </div>
+                        </label>
+                        <label class="acc-type-card">
+                            <input type="radio" class="visually-hidden" name="new-acc-choice" value="DemandDeposit-EUR">
+                            <div class="acc-type-details">
+                                <span class="acc-type-name" data-i18n="newacc.eurName">EUR Demand Account</span>
+                                <span class="acc-type-desc" data-i18n="newacc.eurDesc">For euro savings and transfers (EUR)</span>
+                            </div>
+                        </label>
+                        <label class="acc-type-card">
+                            <input type="radio" class="visually-hidden" name="new-acc-choice" value="DemandDeposit-XAU">
+                            <div class="acc-type-details">
+                                <span class="acc-type-name" data-i18n="newacc.xauName">Gold (gram) Account</span>
+                                <span class="acc-type-desc" data-i18n="newacc.xauDesc">For gold investment and savings (XAU)</span>
+                            </div>
+                        </label>
+                        <label class="acc-type-card">
+                            <input type="radio" class="visually-hidden" name="new-acc-choice" value="DemandDeposit-XAG">
+                            <div class="acc-type-details">
+                                <span class="acc-type-name" data-i18n="newacc.xagName">Silver (gram) Account</span>
+                                <span class="acc-type-desc" data-i18n="newacc.xagDesc">For silver investment and savings (XAG)</span>
+                            </div>
+                        </label>
+                        <label class="acc-type-card">
+                            <input type="radio" class="visually-hidden" name="new-acc-choice" value="TimeDeposit-TRY">
+                            <div class="acc-type-details">
+                                <span class="acc-type-name" data-i18n="newacc.timeName">TRY Time Deposit (Tiered Interest)</span>
+                                <span class="acc-type-desc" data-i18n="newacc.timeDesc">High tiered return over a 30-day term (TRY)</span>
+                            </div>
+                        </label>
+                    </div>
+                </fieldset>
 
-                <!-- Mevduat Tiers & Calculator Panel -->
-                <div id="vadeli-tiers-panel" class="hidden" style="margin-top: 1rem; background: rgba(138,43,226,0.05); padding: 1rem; border-radius: 8px; border: 1px solid rgba(138,43,226,0.15); display: flex; flex-direction: column; gap: 0.75rem;">
-                    <h4 style="margin: 0; font-size: 0.85rem; font-weight: bold; color: var(--accent-color); display: flex; align-items: center; gap: 0.25rem;">📈 Güncel Mevduat Faiz Oranları</h4>
-                    <table style="width: 100%; font-size: 0.75rem; border-collapse: collapse; color: var(--text-main);">
+                <!-- Deposit tiers & calculator panel -->
+                <div id="vadeli-tiers-panel" class="tiers-panel hidden">
+                    <h4 class="tiers-title"><span aria-hidden="true">📈</span> <span data-i18n="newacc.ratesTitle">Current Deposit Interest Rates</span></h4>
+                    <table class="tiers-table">
                         <thead>
-                            <tr style="border-bottom: 1px solid rgba(255,255,255,0.08); text-align: left;">
-                                <th style="padding-bottom: 0.25rem;">Tutar Aralığı</th>
-                                <th style="padding-bottom: 0.25rem; text-align: right;">Faiz Oranı</th>
+                            <tr>
+                                <th scope="col" data-i18n="newacc.range">Amount Range</th>
+                                <th scope="col" class="text-right" data-i18n="newacc.rate">Interest Rate</th>
                             </tr>
                         </thead>
-                        <tbody>
-                            <tr style="border-bottom: 1px solid rgba(255,255,255,0.03);">
-                                <td style="padding: 0.35rem 0;">0 TRY - 50.000 TRY</td>
-                                <td style="padding: 0.35rem 0; text-align: right; font-weight: bold; color: #00f260;">%48.00</td>
-                            </tr>
-                            <tr style="border-bottom: 1px solid rgba(255,255,255,0.03);">
-                                <td style="padding: 0.35rem 0;">50.000 TRY - 250.000 TRY</td>
-                                <td style="padding: 0.35rem 0; text-align: right; font-weight: bold; color: #00f260;">%49.50</td>
-                            </tr>
-                            <tr style="border-bottom: 1px solid rgba(255,255,255,0.03);">
-                                <td style="padding: 0.35rem 0;">250.000 TRY - 1.000.000 TRY</td>
-                                <td style="padding: 0.35rem 0; text-align: right; font-weight: bold; color: #00f260;">%51.00</td>
-                            </tr>
-                            <tr>
-                                <td style="padding: 0.35rem 0;">1.000.000 TRY ve üzeri</td>
-                                <td style="padding: 0.35rem 0; text-align: right; font-weight: bold; color: #00f260;">%52.50</td>
-                            </tr>
-                        </tbody>
+                        <tbody id="deposit-tiers-body"></tbody>
                     </table>
 
                     <!-- Calculator -->
-                    <div style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem;">
-                        <label style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600; margin: 0;">Mevduat Kârı Hesaplama (30 Günlük Vade)</label>
-                        <div style="display: flex; gap: 0.5rem;">
-                            <input type="number" id="calc-principal" class="form-control" placeholder="Tutar Girin (örn: 100000)" style="font-size: 0.75rem; padding: 0.35rem 0.5rem; height: auto;">
-                            <button type="button" id="btn-calc-interest" class="btn btn-secondary btn-sm" style="font-size: 0.75rem; padding: 0.35rem 0.75rem; height: auto; white-space: nowrap;">Hesapla</button>
+                    <div class="calc-box">
+                        <label for="calc-principal" class="calc-label" data-i18n="newacc.calcTitle">Deposit Profit Calculator (30-day term)</label>
+                        <div class="calc-row">
+                            <input type="number" id="calc-principal" class="form-control form-control-sm" step="0.01" min="0.01" inputmode="decimal" autocomplete="off" data-i18n-placeholder="newacc.calcPh" placeholder="Enter amount (e.g. 100000)">
+                            <button type="button" id="btn-calc-interest" class="btn btn-secondary btn-sm nowrap" data-i18n="newacc.calcBtn">Calculate</button>
                         </div>
-                        <div id="calc-result" class="hidden" style="background: rgba(0, 0, 0, 0.2); padding: 0.6rem; border-radius: 6px; display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.75rem;">
-                            <div>Uygulanan Faiz Oranı: <span id="calc-rate" style="font-weight: bold; color: #00f260;">%0.00</span></div>
-                            <div>Vade Sonu Net Kazanç: <span id="calc-net-profit" style="font-weight: bold; color: #00f260;">0.00 TRY</span></div>
+                        <div id="calc-result" class="calc-result hidden" role="status">
+                            <div><span data-i18n="newacc.calcRate">Applied interest rate:</span> <span id="calc-rate" class="value-positive">%0.00</span></div>
+                            <div><span data-i18n="newacc.calcProfit">Net profit at maturity:</span> <span id="calc-net-profit" class="value-positive">0.00 TRY</span></div>
                         </div>
                     </div>
                 </div>
             </div>
-            <div class="modal-footer" style="margin-top: 1.5rem;">
-                <button type="button" id="btn-submit-create-acc" class="btn btn-primary btn-block">Hesap Aç</button>
+            <div class="modal-footer">
+                <button type="button" id="btn-submit-create-acc" class="btn btn-primary btn-block" data-i18n="newacc.submit">Open Account</button>
             </div>
         </div>
     </div>
 
     <!-- OTP Verification Modal -->
-    <div id="otp-modal" class="modal-overlay hidden">
+    <div id="otp-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="otp-modal-title" aria-describedby="otp-modal-desc">
         <div class="modal-content glassmorphism">
             <div class="modal-header">
-                <h3 id="otp-modal-title">Verification Required</h3>
-                <button id="btn-close-otp" class="close-btn">&times;</button>
+                <h3 id="otp-modal-title" data-i18n="otp.title">Security Verification</h3>
+                <button type="button" id="btn-close-otp" class="close-btn" data-i18n-aria-label="common.close" aria-label="Close"><span aria-hidden="true">&times;</span></button>
             </div>
             <div class="modal-body">
-                <div class="warning-icon-wrapper animate-pulse-slow">
+                <div class="warning-icon-wrapper animate-pulse-slow" aria-hidden="true">
                     <span class="warning-icon">🛡️</span>
                 </div>
-                <p id="otp-modal-desc" class="otp-desc">Please enter the 6-digit verification code sent to your registered device to approve this transfer.</p>
+                <p id="otp-modal-desc" class="otp-desc" data-i18n="otp.desc">Please enter the 6-digit verification code sent to your registered device to approve this transfer.</p>
                 <div class="otp-inputs">
-                    <input type="text" id="otp-code-input" class="form-control otp-input-field" maxlength="6" placeholder="000000" autofocus>
+                    <label for="otp-code-input" class="visually-hidden" data-i18n="otp.label">Verification code</label>
+                    <input type="text" id="otp-code-input" class="form-control otp-input-field" maxlength="6" pattern="\d*" inputmode="numeric" autocomplete="one-time-code" placeholder="000000">
                 </div>
-                <div id="otp-error-msg" class="alert alert-danger hidden"></div>
+                <div id="otp-error-msg" class="alert alert-danger hidden" role="alert"></div>
             </div>
             <div class="modal-footer">
-                <button type="button" id="btn-submit-otp" class="btn btn-primary btn-block">Confirm Code</button>
+                <button type="button" id="btn-submit-otp" class="btn btn-primary btn-block" data-i18n="otp.submit">Confirm Code</button>
             </div>
         </div>
     </div>
-
-    <!-- Credit Card Statement (Ekstre) Modal -->
-    <div id="statement-modal" class="modal-overlay hidden">
-        <div class="modal-content glassmorphism statement-modal-content">
-            <div class="modal-header">
-                <h3 id="stmt-modal-title">Credit Card Statement</h3>
-                <button id="btn-close-statement" class="close-btn">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="statement-summary-grid">
-                    <div class="summary-box">
-                        <span class="summary-label" id="lbl-stmt-period">Dönem</span>
-                        <span class="summary-value" id="val-stmt-period">-</span>
-                    </div>
-                    <div class="summary-box">
-                        <span class="summary-label" id="lbl-stmt-debt">Dönem Borcu</span>
-                        <span class="summary-value" id="val-stmt-debt">-</span>
-                    </div>
-                    <div class="summary-box">
-                        <span class="summary-label" id="lbl-stmt-min">Asgari Ödeme</span>
-                        <span class="summary-value" id="val-stmt-min">-</span>
-                    </div>
-                    <div class="summary-box">
-                        <span class="summary-label" id="lbl-stmt-due">Son Ödeme Tarihi</span>
-                        <span class="summary-value" id="val-stmt-due">-</span>
-                    </div>
-                </div>
-
-                <div class="statement-payment-status" id="stmt-payment-status-banner">
-                    <span id="stmt-status-text">Ödenmedi</span>
-                </div>
-
-                <!-- Simulation Zone -->
-                <div class="simulation-zone card">
-                    <h4 id="lbl-sim-title">🔄 Dönem / Faiz Simülasyonu</h4>
-                    <p class="text-muted" id="lbl-sim-desc">Bu buton, son ödeme tarihinin geçtiği senaryoyu simüle eder. Eğer borç tam ödenmediyse akdi faiz (%4.25), asgari ödenmediyse gecikme faizi (%5.0) yansıtılarak yeni dönem ekstresi kesilir.</p>
-                    <button id="btn-advance-period" class="btn btn-warning btn-sm">Son Ödeme Tarihini Geçir (Dönem Atlat)</button>
-                </div>
-
-                <div class="statement-section-title">
-                    <h4 id="lbl-stmt-tx-title">Dönem İçi Hareketler</h4>
-                </div>
-                <div class="table-scroll" style="max-height: 200px;">
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th id="th-stmt-date">Tarih</th>
-                                <th id="th-stmt-desc">Açıklama</th>
-                                <th id="th-stmt-amount" class="text-right">Tutar</th>
-                            </tr>
-                        </thead>
-                        <tbody id="statement-transactions-body">
-                            <!-- Transactions injected dynamically -->
-                        </tbody>
-                    </table>
-                </div>
-
-                <div class="statement-section-title" id="lbl-pay-debt-section-title">
-                    <h4 id="lbl-pay-debt-title">Borç Ödeme</h4>
-                </div>
-                <form id="pay-debt-form" novalidate>
-                    <div class="form-row-flex">
-                        <div class="form-group flex-1">
-                            <label id="lbl-pay-source" for="pay-debt-source">Ödeme Yapılacak Hesap</label>
-                            <select id="pay-debt-source" class="form-control" required>
-                                <!-- TRY Accounts options injected dynamically -->
-                            </select>
-                        </div>
-                        <div class="form-group flex-1">
-                            <label id="lbl-pay-amount" for="pay-debt-amount">Ödenecek Tutar</label>
-                            <input type="number" id="pay-debt-amount" class="form-control" required placeholder="0.00">
-                        </div>
-                    </div>
-                    <div class="pay-preset-buttons">
-                        <button type="button" id="btn-pay-minimum" class="btn btn-secondary btn-xs">Asgari Öde</button>
-                        <button type="button" id="btn-pay-full" class="btn btn-secondary btn-xs">Borcun Tamamını Öde</button>
-                    </div>
-                    <button type="submit" id="btn-pay-submit" class="btn btn-primary btn-block" style="margin-top: 1rem;">Borç Ödemesini Gerçekleştir</button>
-                </form>
-                <div id="pay-debt-message" class="alert hidden" style="margin-top: 1rem;"></div>
-            </div>
-        </div>
-    </div>
-
-
 
     <!-- Transaction Slip / Receipt Modal -->
-    <div id="slip-modal" class="modal-overlay hidden">
-        <div class="modal-content glassmorphism" style="max-width: 480px; padding: 2rem;">
+    <div id="slip-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="slip-title">
+        <div class="modal-content glassmorphism modal-content-sm slip-modal-content">
             <!-- Formal Receipt Design -->
-            <div style="border: 1px dashed rgba(255,255,255,0.15); padding: 1.5rem; border-radius: 12px; background: rgba(0,0,0,0.15); position: relative; overflow: hidden;">
-                <!-- Stamp Watermark -->
-                <div style="position: absolute; top: 40%; left: 12%; border: 3px double rgba(0, 242, 96, 0.25); color: rgba(0, 242, 96, 0.25); font-size: 1.25rem; font-weight: 800; text-transform: uppercase; padding: 0.5rem; border-radius: 8px; transform: rotate(-15deg); pointer-events: none; letter-spacing: 2px;">
-                    SmartBank A.Ş. Onaylıdır
-                </div>
-                
-                <div style="text-align: center; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 1rem; margin-bottom: 1rem;">
-                    <span style="font-size: 1.5rem; color: var(--accent-color); font-weight: 800; display: block; letter-spacing: 1px;">❖ SmartBank</span>
-                    <span style="font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; display: block; margin-top: 0.25rem;">İşlem Sonucu Dekontu / Receipt</span>
+            <div class="slip-paper">
+                <div class="slip-stamp" aria-hidden="true" data-i18n="slip.stamp">SmartBank A.Ş. Approved</div>
+
+                <div class="slip-head">
+                    <span class="slip-logo" aria-hidden="true">❖ SmartBank</span>
+                    <h3 id="slip-title" class="slip-sub" data-i18n="slip.title">Transaction Receipt</h3>
                 </div>
 
-                <div style="display: flex; flex-direction: column; gap: 0.75rem; font-size: 0.85rem;">
-                    <div style="display: flex; justify-content: space-between;">
-                        <span class="text-muted">İşlem Tarihi:</span>
-                        <span id="slip-date" style="font-weight: 500;">-</span>
+                <div class="slip-rows">
+                    <div class="slip-row">
+                        <span class="text-muted" data-i18n="slip.date">Date:</span>
+                        <span id="slip-date" class="slip-val">-</span>
                     </div>
-                    <div style="display: flex; justify-content: space-between;">
-                        <span class="text-muted">Referans No:</span>
-                        <span id="slip-ref-no" style="font-family: monospace; font-size: 0.75rem;">-</span>
+                    <div class="slip-row">
+                        <span class="text-muted" data-i18n="slip.ref">Reference No:</span>
+                        <span id="slip-ref-no" class="slip-mono">-</span>
                     </div>
-                    <div style="display: flex; justify-content: space-between;">
-                        <span class="text-muted">İşlem Türü:</span>
-                        <span id="slip-type" style="font-weight: 600; color: var(--accent-color);">-</span>
+                    <div class="slip-row">
+                        <span class="text-muted" data-i18n="slip.type">Transaction Type:</span>
+                        <span id="slip-type" class="slip-type">-</span>
                     </div>
-                    <div style="border-top: 1px solid rgba(255,255,255,0.04); padding-top: 0.5rem;">
-                        <div style="display: flex; justify-content: space-between; font-weight: 500;">
-                            <span>Gönderen (Sender):</span>
+                    <div class="slip-block">
+                        <div class="slip-row slip-strong">
+                            <span data-i18n="slip.sender">Sender:</span>
                             <span id="slip-sender-name">-</span>
                         </div>
-                        <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--text-muted); margin-top: 0.15rem;">
-                            <span>Hesap No:</span>
-                            <span id="slip-sender-acc" style="font-family: monospace;">-</span>
+                        <div class="slip-row slip-small">
+                            <span data-i18n="slip.accountNo">Account No:</span>
+                            <span id="slip-sender-acc" class="slip-mono">-</span>
                         </div>
                     </div>
-                    <div style="border-top: 1px solid rgba(255,255,255,0.04); padding-top: 0.5rem; margin-bottom: 0.25rem;">
-                        <div style="display: flex; justify-content: space-between; font-weight: 500;">
-                            <span>Alıcı (Receiver):</span>
+                    <div class="slip-block">
+                        <div class="slip-row slip-strong">
+                            <span data-i18n="slip.receiver">Receiver:</span>
                             <span id="slip-receiver-name">-</span>
                         </div>
-                        <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--text-muted); margin-top: 0.15rem;">
-                            <span>Hesap No:</span>
-                            <span id="slip-receiver-acc" style="font-family: monospace;">-</span>
+                        <div class="slip-row slip-small">
+                            <span data-i18n="slip.accountNo">Account No:</span>
+                            <span id="slip-receiver-acc" class="slip-mono">-</span>
                         </div>
                     </div>
-                    <div style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 0.75rem; display: flex; justify-content: space-between; align-items: center;">
-                        <span style="font-weight: bold; font-size: 1rem;">Tutar (Amount):</span>
-                        <span id="slip-amount" style="font-size: 1.2rem; font-weight: 800; color: #00f260;">0.00 TRY</span>
+                    <div class="slip-row slip-total">
+                        <span data-i18n="slip.amount">Amount:</span>
+                        <span id="slip-amount" class="slip-amount">0.00 TRY</span>
                     </div>
-                    <div style="display: flex; justify-content: space-between; font-size: 0.8rem; border-top: 1px solid rgba(255,255,255,0.04); padding-top: 0.5rem;">
-                        <span class="text-muted">Açıklama:</span>
-                        <span id="slip-desc" style="font-style: italic; max-width: 230px; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">-</span>
+                    <div class="slip-row slip-desc-row">
+                        <span class="text-muted" data-i18n="slip.description">Description:</span>
+                        <span id="slip-desc" class="slip-desc">-</span>
                     </div>
                 </div>
             </div>
-            <div class="modal-footer" style="display: flex; gap: 0.5rem; margin-top: 1.5rem; border-top: none; padding-top: 0;">
-                <button id="btn-close-slip" class="btn btn-secondary btn-block">Kapat</button>
+            <div class="modal-footer slip-footer">
+                <button type="button" id="btn-close-slip" class="btn btn-secondary btn-block" data-i18n="common.close">Close</button>
             </div>
         </div>
     </div>
 
-    <!-- SignalR CDN -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
-    <!-- Chart.js CDN -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <!-- Canvas Confetti CDN -->
-    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+    <!-- SignalR (pinned, integrity-checked) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js" integrity="sha384-/taWmisziXYpcfnYsumSUmNaiMvG/fF/OJOUCLnqCIYTrpOZy7WbFF6FfIxwOrfL" crossorigin="anonymous"></script>
+    <!-- Canvas Confetti (pinned, integrity-checked) -->
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js" integrity="sha384-HAH79XdRvHr6axVGh4xQWVCp14kcd32bNk4Xu0sHDHtFQ42n6BAM8ykvB47dGz6D" crossorigin="anonymous"></script>
 
     <!-- App & Chat logic -->
-    <script src="app.js?v=1.2.0"></script>
-    <script src="chat.js?v=1.2.0"></script>
+    <script src="app.js?v=1.3.0"></script>
+    <script src="chat.js?v=1.3.0"></script>
 </body>
 </html>

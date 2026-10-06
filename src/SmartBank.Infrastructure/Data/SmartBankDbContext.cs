@@ -63,7 +63,10 @@ namespace SmartBank.Infrastructure.Data
                 entity.Property(u => u.Email).IsRequired().HasMaxLength(100);
                 entity.Property(u => u.TwoFactorSecret).HasMaxLength(10);
                 entity.Property(u => u.PendingOtpBinding).HasMaxLength(64);
-                
+                entity.Property(u => u.FirstName).HasMaxLength(50);
+                entity.Property(u => u.LastName).HasMaxLength(50);
+                entity.Property(u => u.Version).IsConcurrencyToken();
+
                 entity.HasIndex(u => u.Username).IsUnique();
                 entity.HasIndex(u => u.Tckn).IsUnique();
                 entity.HasIndex(u => u.Email).IsUnique();
@@ -99,6 +102,8 @@ namespace SmartBank.Infrastructure.Data
                 entity.Property(a => a.Version).IsConcurrencyToken();
                 entity.Property(a => a.InterestRate).HasColumnType("decimal(5,2)"); // an annual rate such as 52.50
                 entity.Property(a => a.CardTheme).IsRequired().HasMaxLength(50);
+                entity.Property(a => a.AccountType).HasMaxLength(30);
+                entity.Property(a => a.ExpiryDate).HasMaxLength(10);
 
                 entity.HasIndex(a => a.AccountNumber).IsUnique();
                 entity.HasIndex(a => a.AccountCode).IsUnique();
@@ -129,6 +134,19 @@ namespace SmartBank.Infrastructure.Data
                       .WithMany(a => a.ReceivedTransactions)
                       .HasForeignKey(t => t.DestinationAccountId)
                       .OnDelete(DeleteBehavior.Restrict); // Prevent multiple cascade paths
+
+                // The history of one account is read newest first; the second column also serves the foreign-key lookups.
+                entity.HasIndex(t => new { t.SourceAccountId, t.CreatedAt });
+                entity.HasIndex(t => new { t.DestinationAccountId, t.CreatedAt });
+            });
+
+            // AuditLog Configuration: only inserted, read per user by time.
+            modelBuilder.Entity<AuditLog>(entity =>
+            {
+                entity.HasKey(a => a.Id);
+                entity.Property(a => a.Action).IsRequired().HasMaxLength(50);
+                entity.Property(a => a.IpAddress).IsRequired().HasMaxLength(64);
+                entity.HasIndex(a => new { a.UserId, a.CreatedAt });
             });
 
             // ChatSession Configuration
@@ -149,6 +167,7 @@ namespace SmartBank.Infrastructure.Data
                 entity.HasKey(cm => cm.Id);
                 entity.Property(cm => cm.Sender).IsRequired().HasMaxLength(20);
                 entity.Property(cm => cm.Content).IsRequired();
+                entity.HasIndex(cm => new { cm.SessionId, cm.CreatedAt });
 
                 entity.HasOne(cm => cm.Session)
                       .WithMany(s => s.Messages)
@@ -168,6 +187,10 @@ namespace SmartBank.Infrastructure.Data
                 entity.Property(cc => cc.CardLimit).HasColumnType("decimal(18,2)");
                 entity.Property(cc => cc.CurrentDebt).HasColumnType("decimal(18,2)");
                 entity.Property(cc => cc.CardTheme).IsRequired().HasMaxLength(50);
+
+                // "At most one credit card per customer" is enforced here, not only by a count in the service, so two
+                // simultaneous requests cannot both create one.
+                entity.HasIndex(cc => cc.UserId).IsUnique();
 
                 entity.HasOne(cc => cc.User)
                       .WithMany(u => u.CreditCards)
@@ -210,6 +233,9 @@ namespace SmartBank.Infrastructure.Data
                 entity.Property(sc => sc.AccountNumber).IsRequired().HasMaxLength(50);
                 entity.Property(sc => sc.Alias).IsRequired().HasMaxLength(100);
 
+                // One entry per recipient per customer (also the lookup path: UserId is the first column).
+                entity.HasIndex(sc => new { sc.UserId, sc.AccountNumber }).IsUnique();
+
                 entity.HasOne(sc => sc.User)
                       .WithMany()
                       .HasForeignKey(sc => sc.UserId)
@@ -238,6 +264,9 @@ namespace SmartBank.Infrastructure.Data
                 // The execution date doubles as the concurrency token: two workers that both picked up the same due
                 // order cannot both run it, because the second one's UPDATE of the next date finds it already moved.
                 entity.Property(so => so.NextExecutionDate).IsConcurrencyToken();
+
+                // The worker looks for due orders every 30 seconds.
+                entity.HasIndex(so => new { so.IsActive, so.NextExecutionDate });
 
                 entity.HasOne(so => so.User)
                       .WithMany()

@@ -1,7 +1,16 @@
-# SmartBank v1.1 — Savunma Notları
+# SmartBank — Mühendislik Notları (v1.1–v1.2)
 
-Her görev bittikçe buraya "ne yaptım, neden, hangi alternatifi eledim" notu eklenir.
-Mülakatta bu dosyadaki cümleleri **kendi kelimelerinle** anlatabilmen hedeflenir.
+Her değişiklik için aynı düzen: **sorun**, **ne yaptım**, **neden bu seçim (ve eledikler)**, **bilinen sınırlamalar**.
+Bölüm numaraları (T1, T2, ...) bu dosyaya özgüdür; `CHANGELOG.md` bu numaralara atıfta bulunur.
+Test sayıları, ilgili görev bittiği andaki sayılardır; güncel paket birkaç yüz test içerir.
+
+> **English summary.** This file is the engineering record of the v1.1 and v1.2 releases, written in Turkish. Each section follows the same
+> pattern: the problem found, what was changed, why (and which alternatives were rejected), and the known limitations that remain.
+> The sections: T1 secrets out of the repository, T2 CI and dependency audit, T3 secure randomness, T4 card encryption (AES-GCM, no CVV),
+> T5 account takeover and brute force, T6 concurrent money movements (optimistic concurrency), T7 clean-up and hardening, T8 role-based
+> authorization and integration tests, T9 README honesty, T10 stored XSS, T11 e-mail through an HTTPS API, T12 short-lived access tokens with
+> rotating refresh tokens, T13 support-chat limits and forged transfer cards, T14 production schema drift, T15 small hardening (log noise,
+> security headers, T.C. Kimlik No check digits). The README summarises the result; `CHANGELOG.md` lists the changes per release; `docs/ARCHITECTURE.md` shows how the parts fit together.
 
 ---
 
@@ -24,11 +33,6 @@ Mülakatta bu dosyadaki cümleleri **kendi kelimelerinle** anlatabilmen hedeflen
 
 **Nasıl kanıtladım.** Birim testler (anahtar yok/kısa/geçerli). Elle: anahtarsız çalıştırınca uygulama net bir hata mesajıyla çıkıyor; anahtarlı çalıştırınca açılıyor; token'sız ve saldırganın uydurduğu anahtarla imzalanmış token'lı istek 401 alıyor.
 
-**Mülakat soruları.**
-- Anahtarı git geçmişinden silmek neden yetmez?
-- HS256 neden en az 256 bit anahtar ister?
-- "Fail fast" nedir, neden varsayılan anahtar vermedim?
-- user-secrets ile ortam değişkeni arasındaki fark nedir?
 
 ---
 
@@ -51,10 +55,6 @@ Mülakatta bu dosyadaki cümleleri **kendi kelimelerinle** anlatabilmen hedeflen
 
 **Nasıl kanıtladım.** Yerelde: açık taraması "açık yok", build ve 19 test yeşil, Development ortamında `/openapi/v1.json` 200 dönüyor (33 endpoint). GitHub'da: workflow'un dal push'unda çalışması.
 
-**Mülakat soruları.**
-- Geçişli (transitive) bağımlılık nedir, güvenlik açığı oradaysa nasıl düzeltirsin?
-- CI neden sadece "test geçiyor" değil, bağımlılık denetimini de içermeli?
-- Bir güvenlik açığının "gerçek etkisi" nasıl değerlendirilir? (Bu açık için neden düşük?)
 
 ---
 
@@ -74,10 +74,6 @@ Mülakatta bu dosyadaki cümleleri **kendi kelimelerinle** anlatabilmen hedeflen
 
 **Nasıl kanıtladım.** 28 test yeşil, yerelde ve CI'da koruma adımı temiz.
 
-**Mülakat soruları.**
-- `Random` ile `RandomNumberGenerator` arasındaki fark nedir, ne zaman hangisi?
-- Modulo bias nedir?
-- OTP'yi tahmin edilebilir üretmek 2FA'ya ne yapar? Ek olarak hangi önlem lazım? (T5: deneme sınırı, kilit.)
 
 ---
 
@@ -109,12 +105,6 @@ Mülakatta bu dosyadaki cümleleri **kendi kelimelerinle** anlatabilmen hedeflen
 
 **Nasıl kanıtladım.** 53 birim test (rastgele nonce, kurcalama, yanlış anahtar, bozuk girdi, hash anahtara bağlı, sütun uzunluğu, servis akışları, eski satır). LocalDB'de geçici bir veritabanında **tüm migration'ları** uyguladım, API'yi çalıştırdım: kayıt, giriş, hesap/kart okuma (CVV boş), yeni hesap açılışında CVV bir kez dönüyor, tekrar okununca boş. Veritabanında CVV sütunu yok, kart şifreli metinleri `v1:` ile başlıyor, kredi kartında hash dolu. Test veritabanı sonra silindi. **Not:** PostgreSQL betiği T4'te henüz gerçek bir PostgreSQL'de çalıştırılmamıştı; T6'da `PostgresUpgradeScriptTests` ile doğrulandı (eski şema → modelle aynı sütunlar, ikinci çalıştırma değişiklik yapmıyor).
 
-**Mülakat soruları.**
-- Sabit IV neden kötü? CBC ile GCM farkı nedir?
-- GCM'de nonce tekrar kullanılırsa ne olur?
-- Neden düz SHA-256 değil HMAC? Anahtar ayrımı (HKDF) neden?
-- CVV neden saklanmaz? Şifreli de olsa neden saklanmaz?
-- Bozuk bir şifreli değeri okurken neden hata fırlatıp, görüntüleme yolunda yakalıyoruz?
 
 ---
 
@@ -145,20 +135,13 @@ Mülakatta bu dosyadaki cümleleri **kendi kelimelerinle** anlatabilmen hedeflen
 - *`ForwardedHeaders` neden Dockerfile'da?* Render gibi bir vekilin arkasında tüm istekler vekilin IP'sinden gelir; ayar olmazsa tüm kullanıcılar aynı hız sınırı kovasını paylaşır. İmaj yalnızca vekil arkasında kullanılmalı, doğrudan internete açılırsa `X-Forwarded-For` sahtelenebilir.
 
 **Bilinen sınırlamalar (dürüst liste).**
-- JWT ömrü 7 gün ve iptal edilemiyor. Parola sıfırlandığında eski token'lar süresi dolana kadar geçerli kalır. Çözüm (kısa ömürlü token + yenileme ya da güvenlik damgası) kapsam dışı.
+- JWT ömrü 7 gün ve iptal edilemiyor. Parola sıfırlandığında eski token'lar süresi dolana kadar geçerli kalır. Çözüm (kısa ömürlü token + yenileme ya da güvenlik damgası) bu görevin kapsamı dışındaydı. *(v1.2'de T12 ile giderildi: erişim token'ı artık 15 dakika yaşıyor ve oturumlar sunucuda iptal edilebiliyor.)*
 - Kayıt (`register`) hâlâ kullanıcı adı/TCKN'nin alınmış olduğunu söylüyor (kullanıcı sayımı).
 - `BankingService`'teki denetim kayıtları hâlâ sabit `127.0.0.1` yazıyor.
 - Herkese açık demo'da (`Demo:ExposeOtp=true`) giriş/transfer 2FA'sı fiilen PIN'e düşer. Bu bilinçli bir demo tavizi, bayrakla kontrol ediliyor ve README'de uyarı var.
 
 **Nasıl kanıtladım.** 100 birim test (OTP: yaşam döngüsü, amaç, bağlama, deneme sınırı, bekleme; kilit: eşik, süre sonu, sıfırlama; servis: giriş, kilit, 2FA, iki adımlı sıfırlama, transfer onayı). Bağlama kontrolünü kasıtlı bozunca 4 test düştü (mutasyon kontrolü). LocalDB'de tüm migration'larla çalışan API'ye karşı: 2FA yanıtında kod yok, 5 yanlış PIN sonrası `AccountLocked`, bilinmeyen TCKN ile yanlış PIN aynı yanıt, parola sıfırlama kodsuz başarısız ve yanıtta kod yok, denetim kaydında gerçek IP, hız sınırı IP başına (3 izin, sonra 429 + `Retry-After`, başka IP ayrı kova, auth dışı endpoint etkilenmiyor).
 
-**Mülakat soruları.**
-- Parola sıfırlamada neden e-posta kodu şart? Yanıtın TCKN'ye göre değişmemesi neden önemli?
-- OTP'yi neden amaca ve işleme bağlıyoruz? "Dynamic linking" nedir?
-- 6 haneli bir kod deneme sınırıyla neden güvenli sayılır? Saldırganın 5 denemede başarı olasılığı nedir?
-- Hesap kilidinin dezavantajı nedir, nasıl azaltılır?
-- Sabit zamanlı karşılaştırma neden? Bilinmeyen kullanıcıda neden yine BCrypt çalıştırıyoruz?
-- Uygulama içi hız sınırı ne zaman yetmez?
 
 ---
 
@@ -193,14 +176,6 @@ Kod okurken aynı sınıftan başka sorunlar da çıktı:
 
 **Nasıl kanıtladım.** (1) Gerçek veritabanı testleri: 40 eşzamanlı transfer (toplam bakiyeyi aşan), zıt yönlü transferler, yatırma + transfer karışımı, 30 eşzamanlı kart harcaması (limit aşılmıyor), 4 işçinin aynı talimatı aynı anda çalıştırması (tek kez icra), hatalı talimatın temiz kapanması, kart otomatik ödemesi. Değişmezler: toplam para sabit, hiçbir bakiye eksiye düşmüyor, her başarılı işlem tam bir kez kayıtlı, başarısızlıklar yalnızca beklenen iş sonuçları. Düzeltmeden önce başarısız (yukarıdaki rakamlar), sonra SQL Server (LocalDB) ve PostgreSQL 16'da tekrarlı çalıştırmalarda geçiyor. Deadlock'u bu testler ortaya çıkardı. (2) Gerçek API'ye karşı HTTP: 40 paralel transfer, 33 başarılı, 7 yetersiz bakiye, 0 pes, toplam tam 2000 TL, hesap sürümleri (v33) başarılı transfer sayısına eşit. (3) PostgreSQL yükseltme betiği: eski şema → modelle aynı sütunlar, ikinci çalıştırma değişiklik yapmıyor, unique indeks mevcut. CI, PostgreSQL servisiyle bu testleri her push'ta çalıştırır. Veritabanı bağlantısı yoksa bu testler "atlandı" olarak görünür (sessizce geçmez).
 
-**Mülakat soruları.**
-- Kayıp güncelleme (lost update) nedir? İki isteğin akışını adım adım çiz.
-- İyimser ile karamsar eşzamanlılık farkı nedir? Bu uygulamada neden iyimser, ne zaman karamsar tercih edersin?
-- Neden `xmin`/`rowversion` yerine uygulama yönetimli bir sürüm sayısı?
-- Yeniden deneme neden "baştan, taze okumalarla" olmalı? OTP kontrolünü neden yeniden deneme döngüsünün dışına aldın?
-- Deadlock nedir, SQL Server'da neden oluştu, nasıl ele aldın? Hangi hatalar yeniden denenebilir?
-- Talimat işçisinde iki örnek aynı talimatı nasıl iki kez çalıştırabilirdi? `NextExecutionDate` jetonu bunu nasıl engelliyor?
-- Testi önce başarısız görmenin değeri nedir? Bu testi InMemory sağlayıcıyla neden yazamadın?
 
 ---
 
@@ -232,19 +207,13 @@ Kod okurken aynı sınıftan başka sorunlar da çıktı:
 - *`AllowCredentials` neden hâlâ var:* SignalR istemcisi varsayılan olarak kimlik bilgisiyle bağlanır. Güvenli olması için artık joker değil, açık origin listesiyle birlikte kullanılıyor.
 
 **Bilinen sınırlamalar.**
-- Docker imajını bu makinede derleyemedim (Docker kurulu değil). Resmî .NET imajının `app` kullanıcısı ve 8080 varsayımı belgelenmiş standart, ama Render'a çıkmadan önce bir kez dağıtıp doğrulamak gerekir.
+- Docker imajını bu makinede derleyemedim (Docker kurulu değil). *(Sonradan Render'da derlenip dağıtıldı; üretim bu imajla çalışıyor. v1.3'ten beri CI de imajı her çalıştırmada derliyor.)*
 - Denetim kaydı hâlâ veritabanı seviyesinde değiştirilemez değil (yalnızca uygulama silmiyor). "Immutable" iddiası T9'da README'de düzeltilecek.
 - `/health` uçları kimlik doğrulamasız (tasarım gereği: yük dengeleyici çağırır).
 - `X-Forwarded-For` güveni: Dockerfile tüm vekilleri güvenilir sayar; yalnızca vekil arkasında çalıştırılmalı.
 
 **Nasıl kanıtladım.** 139 birim ve gerçek-veritabanı testi (CORS politikası: listedeki/benzeri/yanlış şema-port-alt alan, `null`/localhost yalnızca geliştirmede; ara katman: üretimde sızıntı yok, geliştirmede tam; denetim IP'si; servis hata mesajı sızdırmıyor). Canlı API'ye karşı: üretim modunda `/health` 200, `/health/ready` veritabanı yokken 503 ve gövdede bağlantı bilgisi yok, `/weatherforecast` ve `/db-check` 404, veritabanı kapalıyken giriş 500 ama gövde genel mesaj + `traceId`, CORS yalnızca listedeki origin'e `Access-Control-Allow-Origin` veriyor; geliştirme modunda `null` ve `localhost` kabul, kötü origin reddediliyor; tüm 13 migration uygulandı; `InterestRate` `decimal(5,2)`; denetim satırlarında gerçek IP.
 
-**Mülakat soruları.**
-- CORS joker + credentials neden tehlikeli? Same-origin policy ile CORS'un ilişkisi nedir? CORS bir sunucu güvenliği mekanizması mı?
-- Liveness ile readiness arasındaki fark nedir? Veritabanı kesintisinde hangisi başarısız olmalı?
-- Hata ayrıntısını neden istemciye değil loga yazıyoruz? `traceId` ne işe yarar?
-- Konteyneri root çalıştırmak neden kötü? 1024 altı portlar neden root ister?
-- `.gitignore`'da `[Log]s/` ne eşler? Neden hata?
 
 ---
 
@@ -274,26 +243,19 @@ Kod okurken aynı sınıftan başka sorunlar da çıktı:
 - *Entegrasyon testleri:* birim testler `ChatController`'ı atlayıp servisleri çağırdığı için bu açığı **göremezdi**. Açık, ara katman ve rota seviyesinde.
 
 **Bilinen sınırlamalar.**
-- Rol token'da taşınıyor ve token ömrü 7 gün: bir temsilcinin yetkisi alındığında, token süresi dolana kadar eski token çalışmaya devam eder. Çözüm (kısa ömürlü token + yenileme ya da her istekte rol doğrulama) bu sürümün kapsamı dışında.
+- Rol token'da taşınıyor ve token ömrü 7 gün: bir temsilcinin yetkisi alındığında, token süresi dolana kadar eski token çalışmaya devam eder. Çözüm (kısa ömürlü token + yenileme ya da her istekte rol doğrulama) bu sürümün kapsamı dışındaydı. *(v1.2'de T12 ile token ömrü 15 dakikaya indi; rol değişikliği bir sonraki yenilemede etkili olur.)*
 - Mevcut canlı veritabanında adında "agent" geçen hesaplar yükseltme sonrası müşteri olur; gerçek personelin README'deki SQL ile terfi ettirilip yeniden giriş yapması gerekir.
 - `deposit` ucu bir demo "para yükleme" musluğudur: giriş yapan herkes kendi hesabına 10.000.000 TL'ye kadar ekleyebilir. Gerçek bir sistemde olmaz, README'de belirtilecek.
 - Sohbetteki AI yanıtı, oturum sahibinin hesap bilgilerini kullanabiliyor olabilir. Bunun doğrulaması ve istem enjeksiyonu riski bu sürümde incelenmedi.
 
-**Nasıl kanıtladım.** 185 test (46'sı bu göreve ait entegrasyon testi). **Mutasyon kontrolü:** düzeltmeleri geçici olarak eski haline (kullanıcı adı kuralı, rol yok, odaya serbest giriş) getirince **14 test düştü**, geri alınca geçti. Entegrasyon testleri art arda üç çalıştırmada kararlı. Tüm paket SQL Server (LocalDB) ve PostgreSQL 16 ile geçiyor.
+**Nasıl kanıtladım.** Paket o gün 185 testten oluşuyordu (sayı sonraki sürümlerde arttı; 46'sı bu göreve ait entegrasyon testi). **Mutasyon kontrolü:** düzeltmeleri geçici olarak eski haline (kullanıcı adı kuralı, rol yok, odaya serbest giriş) getirince **14 test düştü**, geri alınca geçti. Entegrasyon testleri art arda üç çalıştırmada kararlı. Tüm paket SQL Server (LocalDB) ve PostgreSQL 16 ile geçiyor.
 
-**Mülakat soruları.**
-- Yetkilendirme (authorization) ile kimlik doğrulama (authentication) farkı nedir? Bu açık hangisiydi?
-- "Kullanıcı adında agent geçiyorsa temsilci" neden bir güvenlik açığı? Rol neden istemciden gelmemeli?
-- IDOR nedir? Bu projede nerelerde olabilirdi, nasıl test ettin?
-- SignalR hub'ında yetkilendirme neden `[Authorize]` ile bitmez? Grup üyeliği neden bir yetki sınırıdır?
-- Entegrasyon testi ile birim testi farkı nedir? Bu açığı hangisi yakalar?
-- JWT içindeki rol claim'inin dezavantajı nedir? Yetki geri alındığında ne olur?
 
 ---
 
 ## T9 — README dürüstlüğü
 
-**Sorun.** README, kodun yapmadığı veya doğrulanamayan şeyleri söylüyordu. Bir mülakatçı bunu kodla karşılaştırdığında ilk yakalayacağı şeyler bunlardır ve bir güvenlik projesinde **abartı, açığın kendisi kadar güven kaybettirir**.
+**Sorun.** README, kodun yapmadığı veya doğrulanamayan şeyleri söylüyordu. Bir okuyucu bunu kodla karşılaştırdığında ilk yakalayacağı şeyler bunlardır ve bir güvenlik projesinde **abartı, açığın kendisi kadar güven kaybettirir**.
 - "Bank-level / corporate-level architecture", "high-fidelity", "secure credit card pipelines", "advanced anti-fraud".
 - Türkçe bölümde: "**BDDK ve finansal güvenlik denetim standartlarına uygundur**": doğrulanmamış bir uyumluluk iddiası.
 - "**Immutable** audit trail": hiçbir şey değiştirmeyi engellemiyordu (yalnızca uygulama silmiyordu).
@@ -303,11 +265,11 @@ Kod okurken aynı sınıftan başka sorunlar da çıktı:
 **Ne yaptım.**
 - Girişe "Her şey simülasyondur, gerçek banka değildir" notu; abartılı sıfatlar çıkarıldı, söylenenler kodla örtüşüyor.
 - Denetim günlüğü "değiştirilemez" yerine "yalnızca-ekleme (gelenek gereği), kurcalamaya karşı korumalı değil"; uyumluluk iddiası kaldırıldı; hata ara katmanı "RFC 7807 *tarzı*" (alanlar uyuyor ama birebir standart değil).
-- **Güvenlik Modeli** tablosu (risk → kodun yaptığı) ve **Bilinen Sınırlamalar** bölümü: demo para musluğu, 7 günlük iptal edilemeyen token ve `localStorage`, örnek başına hız sınırı, düz metin OTP, simüle kartlar, kurcalanabilir denetim, kullanıcı sayımı, gözden geçirilmeyen AI sohbeti, iki veritabanı sağlayıcısı, derlenemeyen Docker değişikliği.
+- **Güvenlik Modeli** tablosu (risk → kodun yaptığı) ve **Bilinen Sınırlamalar** bölümü: demo para musluğu, 7 günlük iptal edilemeyen token (v1.2'de T12 ile giderildi) ve `localStorage`, örnek başına hız sınırı, düz metin OTP, simüle kartlar, kurcalanabilir denetim, kullanıcı sayımı, gözden geçirilmeyen AI sohbeti, iki veritabanı sağlayıcısı, henüz derlenmemiş Docker değişikliği (sonradan Render'da derlendi).
 - Mimari diyagramı (Mermaid), eşzamanlılık ve test bölümleri gerçek duruma göre yeniden yazıldı; teknoloji yığını (üretimde PostgreSQL) ve canlı demo notları (soğuk başlangıç, e-posta/SMTP, demo bayrağı).
 - `CHANGELOG.md` ve **yükseltme kontrol listesi**: yeni anahtarları üret, ortam değişkenlerini ayarla, SQL betiğini çalıştır, temsilcileri terfi ettir, `main`'e birleştir, sağlık uçlarını kontrol et.
 
-**Neden bu seçim.** Sınırlamaları kendin yazarsan mülakatta bir "gotcha"ya dönüşmez, olgunluk göstergesine dönüşür: "bunun farkındaydım, nedenini ve ne yapacağımı biliyorum". Ayrıca kullanıcıyı (ve sonraki geliştiriciyi) yanıltmamak başlı başına bir mühendislik sorumluluğudur.
+**Neden bu seçim.** Sınırlamaları kendin yazarsan okuyucu için bir sürpriz olmaz, bilinçli bir karar olarak görünür: "bunun farkındaydım, nedenini ve ne yapacağımı biliyorum". Ayrıca kullanıcıyı (ve sonraki geliştiriciyi) yanıltmamak başlı başına bir mühendislik sorumluluğudur.
 
 ### Bir süreç hatası ve dersi (dürüst not)
 
@@ -315,10 +277,6 @@ T5'ten itibaren bazı kod değişikliklerini PowerShell betikleriyle uyguladım.
 
 Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çevirdim, her şeyi taradım (yalnızca üç dosya), ve **bir daha olmaması için** depodaki tüm metin dosyalarını tarayan bir test ekledim (`EncodingHygieneTests`). Kural: ASCII dışı karakter içeren değişiklikleri betikle değil, UTF-8'e güvenilir bir araçla uygula; "geçen testler doğruluğun kanıtı değildir" dersi.
 
-**Mülakat soruları.**
-- Dokümantasyondaki abartı neden bir güvenlik riski? "Immutable" ile "append-only by convention" farkı nedir?
-- Bu projenin sınırlamalarını sayabilir misin? Hangisini ilk düzeltirdin ve nasıl?
-- Karakter kodlaması hatası nasıl oluştu ve neden testler yakalamadı? Nasıl önledin?
 
 ---
 
@@ -346,11 +304,6 @@ Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çe
 - Token hâlâ `localStorage`'da. XSS'in en kötü sonucu (token çalmak) ancak ömrü kısaltılıp iptal edilebilir yapılırsa küçülür (v1.2'nin sıradaki işi).
 - Zincirleme risk: sohbetteki `[CONFIRM_TRANSFER:...]` gibi işaretler mesaj içeriğinden ayrıştırılıyor; sunucunun bunları yalnızca güvenilir kaynaktan kabul ettiği ayrıca gözden geçirilmeli.
 
-**Mülakat soruları.**
-- Saklı, yansıyan ve DOM tabanlı XSS arasındaki fark nedir? Bu hangisiydi?
-- Neden `"` karakterini de kaçırmak gerekiyor? `<` ve `>` yetmez mi?
-- CSP tek başına neden yeterli değil, kaçırma tek başına neden yeterli değil?
-- Token `localStorage` yerine `HttpOnly` çerezde olsaydı bu saldırının etkisi ne olurdu, hangi yeni sorunlar çıkardı (CSRF)?
 
 ---
 
@@ -376,11 +329,6 @@ Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çe
 - Ücretsiz katman günde 300 e-posta; yoğun kullanımda sessizce reddedilir.
 - Kod hâlâ 5 dakikalık, düz metin OTP (README'deki sınırlama sürüyor).
 
-**Mülakat soruları.**
-- Render'da SMTP neden çalışmadı ve bunu nasıl teşhis ettin? (Kod hata vermiyordu.)
-- Gönderimi neden arka planda yapıyorsun, bunun bedeli ne?
-- SPF, DKIM ve DMARC nedir; gmail.com adresinden göndermek neden sorun?
-- Yapılandırma eksikse neden başlangıçta hata veriyorsun, sessizce devam etmiyorsun?
 
 ---
 
@@ -410,12 +358,6 @@ Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çe
 - Açık bir SignalR bağlantısı token süresi dolsa da bağlı kalır; token yalnızca bağlanırken denetlenir.
 - Temizlik bir arka plan işi değil: kullanıcının süresi bir günden fazla geçmiş token'ları bir sonraki girişte siliniyor.
 
-**Mülakat soruları.**
-- JWT neden iptal edilemez? "Çıkış yap" ne işe yarıyordu?
-- Yenileme token'ı neden her kullanımda değişiyor? Eski token tekrar gelirse neden herkesi çıkarıyorsun? İki sekme aynı anda yenilerse ne olur?
-- Neden token'ın kendisini değil özetini saklıyorsun? PIN'i hash'lerken BCrypt, burada neden SHA-256?
-- Token'ı `localStorage` yerine HttpOnly çerezde tutsaydın ne kazanır, ne kaybederdin (CSRF, farklı site çerezleri)?
-- Aynı yenileme token'ını aynı anda 8 istek kullanırsa neden yalnızca biri başarılı olur? (iyimser eşzamanlılık)
 
 
 ---
@@ -452,12 +394,6 @@ Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çe
 - `ConfirmTransferFromChatAsync` bir AI önerisine bağlı değil: kullanıcı, kendi hesabından, sohbet açıkken herhangi bir transferi hub üzerinden tetikleyebilir (REST ucuyla aynı yetki; ek bir yetki kazanılmıyor).
 - AI yanıt süresi/maliyeti için günlük üst sınır yok (dakika/saat sınırları dolaylı olarak sınırlıyor).
 
-**Mülakat soruları.**
-- Neden ASP.NET'in hız sınırlayıcısı SignalR hub metotlarını korumaz? Nasıl çözdün?
-- Sohbet metnini HTML'e kaçırmak (T10) neden "sahte kart" sorununu çözmez? İkisi farklı sorunlar mı?
-- Prompt injection nedir? Burada neden "modele güvenme, çıktısını komut sayma" ilkesi yeterli?
-- Kültür duyarlı büyük/küçük harf eşleştirmesi bir güvenlik sorununa nasıl dönüşebilir? (Türkçe I/ı)
-- Kayan pencere ile sabit pencere hız sınırı arasındaki fark nedir?
 
 
 ---
@@ -484,18 +420,15 @@ Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çe
 - Eski `MarketRates` tablosu hâlâ modelden farklı (`Id` uuid, fazladan `Name`/`NameEn`/`Change`). Tablo boş kalırsa başlangıçtaki tohum ekleme başarısız olur (şu an dolu).
 - Betik, tabloları kısa süre kilitler (küçük tablolar; demo için sorun değil).
 
-**Mülakat soruları.**
-- Kod yerelde çalışıp üretimde neden çalışmadı? "Benim makinemde çalışıyor" sorununu nasıl sistematik teşhis ettin?
-- `timestamp` ile `timestamptz` arasındaki fark nedir? Neden sonda `Z` olmayan bir zamanı tarayıcı yerel saat sanır?
-- Betiğin idempotent (tekrar çalıştırılabilir) olması neden önemli? Bu betikte "tekrar çalışınca saatleri kaydırma" riskini nasıl çözdün?
-- Üretimde migration'ı otomatik çalıştırmanın artı ve eksileri nelerdir?
 
 
 ---
 
 ## T15 — Küçük sertleştirmeler (v1.2): log gürültüsü, güvenlik başlıkları, T.C. kontrol basamakları
 
-Üç küçük iş, hepsi "sorun büyük değil ama bir mülakatçının ilk bakacağı yerler".
+(`CHANGELOG.md` içindeki "SQL komutları artık loga yazılmıyor", "API güvenlik başlıkları" ve "T.C. Kimlik Numarası kontrol basamakları" maddeleri bu bölümden gelir.)
+
+Üç küçük iş, hepsi "sorun büyük değil ama bir gözden geçirenin ilk bakacağı yerler".
 
 ### 1) Üretim logu SQL ile doluydu
 **Sorun.** Varsayılan log seviyesi `Information` olduğu için EF Core her SQL komutunu yazıyordu; kalıcı emir işçisi (standing-order worker) 30 saniyede bir sorgu çalıştırdığından Render logunun çoğu `Executed DbCommand` satırıydı. Gerçek hata satırlarını bulmak zorlaşıyor; üstelik SQL parametreleri logda dolaşıyor.
@@ -512,8 +445,3 @@ Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çe
 **Önemli sınır (dürüst).** Bu **kimlik doğrulama değildir**: numaranın o kişiye ait olduğunu yalnızca resmi MERNİS servisi söyler. Rastgele 11 haneli dizilerin çoğunu eler (yaklaşık 100'de 1'i geçer) ve yazım hatalarını yakalar; birinin gerçek bir numarayı kullanmasını engellemez. Demo için örnek geçerli numaralar: `11111111110`, `10000000146` (kimseye ait değil). Eski `11111111111` gibi sahte numaralarla **yeni kayıt yapılamaz**; zaten kayıtlı hesaplar giriş yapmaya devam eder (kontrol yalnızca kayıtta).
 **Neden bu seçim.** Girişte aynı kuralı uygulamak, kuraldan önce açılmış hesapları kilitlerdi.
 
-**Mülakat soruları.**
-- Neden SQL loglarını kapattın? Bunun bir güvenlik yanı var mı? (Parametreler.)
-- `nosniff` neden gerekli? `frame-ancestors 'none'` ile `X-Frame-Options` arasındaki fark ne, neden ikisi de?
-- HSTS ne işe yarar, `preload` neden riskli?
-- T.C. kontrol basamağı kimliği doğrular mı? Ne yakalar, ne yakalamaz?

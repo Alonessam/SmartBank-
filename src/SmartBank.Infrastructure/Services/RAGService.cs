@@ -1,150 +1,187 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using SmartBank.Core.Interfaces;
 
 namespace SmartBank.Infrastructure.Services
 {
+    /// <summary>
+    /// Finds the FAQ entry that fits a question. This is a SINGLETON: the FAQ file is read once, and the questions are
+    /// embedded (one request to Ollama each) once, lazily and in the background, the first time somebody searches. Until
+    /// that has worked, and whenever Ollama is not there, the keyword search answers. (It used to be created for every
+    /// message and re-embedded every question each time, so semantic search never had its vectors ready.)
+    /// </summary>
     public class RAGService : IRAGService
     {
+        // After a failed attempt (Ollama offline) the embeddings are tried again no sooner than this.
+        private static readonly TimeSpan RetryAfterFailure = TimeSpan.FromMinutes(10);
+
         private readonly HttpClient _httpClient;
         private readonly string _model;
-        private readonly List<FAQDocument> _documents;
+        private readonly ILogger<RAGService> _logger;
+        private readonly TimeProvider _time;
+        private readonly List<FaqDocument> _documents;
 
-        public RAGService(HttpClient httpClient, IConfiguration configuration)
+        private readonly object _embeddingGate = new();
+        private Task? _embeddingTask;
+        private DateTime _nextEmbeddingAttemptUtc = DateTime.MinValue;
+        private volatile bool _embeddingsReady;
+
+        public RAGService(HttpClient httpClient, IConfiguration configuration, ILogger<RAGService>? logger = null, TimeProvider? timeProvider = null)
+            : this(httpClient, configuration, null, logger, timeProvider)
+        {
+        }
+
+        /// <param name="documents">The FAQ entries; null reads faq_documents.json.</param>
+        internal RAGService(HttpClient httpClient, IConfiguration configuration, IEnumerable<FaqDocument>? documents, ILogger<RAGService>? logger = null, TimeProvider? timeProvider = null)
         {
             _httpClient = httpClient;
-            
-            // Ollama configuration
-            var baseUrl = configuration["OllamaSettings:BaseUrl"] ?? "http://localhost:11434";
-            _httpClient.BaseAddress = new Uri(baseUrl);
-            _httpClient.Timeout = TimeSpan.FromSeconds(2); // Short timeout for embeddings ping
-            
+            _logger = logger ?? NullLogger<RAGService>.Instance;
+            _time = timeProvider ?? TimeProvider.System;
+
+            _httpClient.BaseAddress ??= new Uri(configuration["OllamaSettings:BaseUrl"] ?? "http://localhost:11434");
+            _httpClient.Timeout = TimeSpan.FromSeconds(2); // a short timeout: this is only the embeddings endpoint
+
             _model = configuration["OllamaSettings:Model"] ?? "llama3";
-            _documents = LoadFAQDocuments();
+            _documents = documents?.ToList() ?? LoadFaqDocuments();
         }
+
+        internal bool EmbeddingsReady => _embeddingsReady;
 
         public async Task<string?> SearchFAQAsync(string query)
         {
             if (string.IsNullOrWhiteSpace(query) || _documents.Count == 0)
                 return null;
 
-            try
+            StartEmbeddingIfNeeded();
+
+            // Semantic search, only once every question has its vector.
+            if (_embeddingsReady)
             {
-                // Attempt 1: Semantic Embedding search if Ollama is online
-                var queryEmbedding = await GetEmbeddingAsync(query);
-                if (queryEmbedding != null)
+                try
                 {
-                    var bestMatch = FindBestSemanticMatch(queryEmbedding);
-                    if (bestMatch.doc != null && bestMatch.score > 0.70f)
+                    var queryEmbedding = await GetEmbeddingAsync(query);
+                    if (queryEmbedding != null)
                     {
-                        Console.WriteLine($"[RAG Service] Found semantic match: '{bestMatch.doc.Question}' (Score: {bestMatch.score:F2})");
-                        return bestMatch.doc.Answer;
+                        var best = FindBestSemanticMatch(queryEmbedding);
+                        if (best.Doc != null && best.Score > 0.70f)
+                        {
+                            _logger.LogDebug("FAQ semantic match: '{Question}' (score {Score:F2}).", best.Doc.Question, best.Score);
+                            return best.Doc.Answer;
+                        }
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[RAG Service] Ollama embedding failed, falling back to keyword search: {ex.Message}");
+                catch (Exception ex)
+                {
+                    _logger.LogInformation(ex, "The embedding request failed; the keyword search is used instead.");
+                }
             }
 
-            // Attempt 2: Fallback Keyword/Jaccard search
-            var bestKeywordMatch = FindBestKeywordMatch(query);
-            if (bestKeywordMatch.doc != null && bestKeywordMatch.score > 0.25f)
+            var keyword = FindBestKeywordMatch(query);
+            if (keyword.Doc != null && keyword.Score > 0.25f)
             {
-                Console.WriteLine($"[RAG Service] Found keyword match: '{bestKeywordMatch.doc.Question}' (Score: {bestKeywordMatch.score:F2})");
-                return bestKeywordMatch.doc.Answer;
+                _logger.LogDebug("FAQ keyword match: '{Question}' (score {Score:F2}).", keyword.Doc.Question, keyword.Score);
+                return keyword.Doc.Answer;
             }
 
             return null;
         }
 
-        private List<FAQDocument> LoadFAQDocuments()
+        private void StartEmbeddingIfNeeded()
+        {
+            if (_embeddingsReady) return;
+
+            lock (_embeddingGate)
+            {
+                if (_embeddingTask is { IsCompleted: false }) return;
+                if (_time.GetUtcNow().UtcDateTime < _nextEmbeddingAttemptUtc) return;
+
+                _nextEmbeddingAttemptUtc = _time.GetUtcNow().UtcDateTime + RetryAfterFailure;
+                _embeddingTask = Task.Run(EmbedAllAsync);
+            }
+        }
+
+        /// <summary>Embeds every question. All or nothing: a half-embedded FAQ would answer from a random subset.</summary>
+        internal async Task EmbedAllAsync()
         {
             try
             {
-                var basePath = AppContext.BaseDirectory;
-                var path = Path.Combine(basePath, "Data", "faq_documents.json");
-                
-                if (!File.Exists(path))
+                var vectors = new List<float[]>();
+                foreach (var doc in _documents)
                 {
-                    path = Path.Combine(Directory.GetCurrentDirectory(), "Data", "faq_documents.json");
-                }
-                if (!File.Exists(path))
-                {
-                    path = Path.Combine(Directory.GetCurrentDirectory(), "src", "SmartBank.API", "Data", "faq_documents.json");
-                }
-
-                if (File.Exists(path))
-                {
-                    var json = File.ReadAllText(path);
-                    var docs = JsonSerializer.Deserialize<List<FAQDocument>>(json, new JsonSerializerOptions
+                    var vector = await GetEmbeddingAsync(doc.Question);
+                    if (vector == null)
                     {
-                        PropertyNameCaseInsensitive = true
-                    }) ?? new List<FAQDocument>();
+                        _logger.LogInformation("Ollama gave no embeddings; the FAQ keeps using the keyword search.");
+                        return;
+                    }
 
-                    // Pre-embed documents synchronously in background task to avoid blocking constructor
-                    _ = Task.Run(async () =>
-                    {
-                        foreach (var doc in docs)
-                        {
-                            try
-                            {
-                                doc.Embedding = await GetEmbeddingAsync(doc.Question);
-                            }
-                            catch
-                            {
-                                // Fail silently, fallback is keyword search
-                            }
-                        }
-                    });
-
-                    return docs;
+                    vectors.Add(vector);
                 }
+
+                for (var i = 0; i < _documents.Count; i++) _documents[i].Embedding = vectors[i];
+                _embeddingsReady = true;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[RAG Service] Failed to load SSS documents: {ex.Message}");
+                _logger.LogInformation(ex, "Ollama is not available for embeddings; the FAQ keeps using the keyword search.");
+            }
+        }
+
+        private List<FaqDocument> LoadFaqDocuments()
+        {
+            try
+            {
+                var candidates = new[]
+                {
+                    Path.Combine(AppContext.BaseDirectory, "Data", "faq_documents.json"),
+                    Path.Combine(Directory.GetCurrentDirectory(), "Data", "faq_documents.json"),
+                    Path.Combine(Directory.GetCurrentDirectory(), "src", "SmartBank.API", "Data", "faq_documents.json")
+                };
+
+                var path = candidates.FirstOrDefault(File.Exists);
+                if (path != null)
+                {
+                    var json = File.ReadAllText(path);
+                    return JsonSerializer.Deserialize<List<FaqDocument>>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                           ?? new List<FaqDocument>();
+                }
+
+                _logger.LogWarning("faq_documents.json was not found; the FAQ search is off.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "The FAQ documents could not be loaded.");
             }
 
-            return new List<FAQDocument>();
+            return new List<FaqDocument>();
         }
 
         private async Task<float[]?> GetEmbeddingAsync(string text)
         {
-            var payload = new OllamaEmbeddingRequest
-            {
-                Model = _model,
-                Prompt = text
-            };
+            var payload = new OllamaEmbeddingRequest { Model = _model, Prompt = text };
 
-            var response = await _httpClient.PostAsJsonAsync("/api/embeddings", payload);
-            if (response.IsSuccessStatusCode)
-            {
-                var result = await response.Content.ReadFromJsonAsync<OllamaEmbeddingResponse>();
-                return result?.Embedding;
-            }
-            return null;
+            using var response = await _httpClient.PostAsJsonAsync("/api/embeddings", payload);
+            if (!response.IsSuccessStatusCode) return null;
+
+            var result = await response.Content.ReadFromJsonAsync<OllamaEmbeddingResponse>();
+            return result?.Embedding;
         }
 
-        private (FAQDocument? doc, float score) FindBestSemanticMatch(float[] queryEmbedding)
+        private (FaqDocument? Doc, float Score) FindBestSemanticMatch(float[] queryEmbedding)
         {
-            FAQDocument? bestDoc = null;
-            float maxSimilarity = -1.0f;
+            FaqDocument? bestDoc = null;
+            var maxSimilarity = -1.0f;
 
             foreach (var doc in _documents)
             {
                 if (doc.Embedding == null) continue;
-                
-                float similarity = CosineSimilarity(queryEmbedding, doc.Embedding);
+
+                var similarity = CosineSimilarity(queryEmbedding, doc.Embedding);
                 if (similarity > maxSimilarity)
                 {
                     maxSimilarity = similarity;
@@ -155,34 +192,31 @@ namespace SmartBank.Infrastructure.Services
             return (bestDoc, maxSimilarity);
         }
 
-        private (FAQDocument? doc, float score) FindBestKeywordMatch(string query)
+        private (FaqDocument? Doc, float Score) FindBestKeywordMatch(string query)
         {
             var queryTokens = Tokenize(query);
             if (queryTokens.Count == 0) return (null, 0);
 
-            FAQDocument? bestDoc = null;
-            float maxScore = 0.0f;
+            FaqDocument? bestDoc = null;
+            var maxScore = 0.0f;
 
             foreach (var doc in _documents)
             {
-                // 1. Calculate Jaccard similarity with keywords (normalized and split by space/hyphen)
+                // 1. Jaccard similarity with the keywords (normalised, split by space/hyphen)
                 var keywordTokens = doc.Keywords
                     .Select(k => NormalizeTurkish(k.ToLowerInvariant()))
                     .SelectMany(k => k.Split(new[] { ' ', '-' }, StringSplitOptions.RemoveEmptyEntries))
                     .ToList();
-                    
+
                 var intersection = queryTokens.Intersect(keywordTokens).Count();
                 var union = queryTokens.Union(keywordTokens).Count();
-                float jaccard = union > 0 ? (float)intersection / union : 0f;
+                var jaccard = union > 0 ? (float)intersection / union : 0f;
 
-                // 2. Term overlap check inside question title (normalized)
+                // 2. Term overlap with the question title (normalised)
                 var questionTokens = Tokenize(doc.Question);
-                var qIntersection = queryTokens.Intersect(questionTokens).Count();
-                float questionOverlap = (float)qIntersection / queryTokens.Count;
+                var questionOverlap = (float)queryTokens.Intersect(questionTokens).Count() / queryTokens.Count;
 
-                // Combined score
-                float combinedScore = (jaccard * 0.6f) + (questionOverlap * 0.4f);
-
+                var combinedScore = (jaccard * 0.6f) + (questionOverlap * 0.4f);
                 if (combinedScore > maxScore)
                 {
                     maxScore = combinedScore;
@@ -193,57 +227,40 @@ namespace SmartBank.Infrastructure.Services
             return (bestDoc, maxScore);
         }
 
-        private string NormalizeTurkish(string text)
+        private static string NormalizeTurkish(string text)
         {
             if (string.IsNullOrEmpty(text)) return text;
-            
-            var sb = new System.Text.StringBuilder(text);
-            sb.Replace('ı', 'i')
-              .Replace('ş', 's')
-              .Replace('ğ', 'g')
-              .Replace('ü', 'u')
-              .Replace('ö', 'o')
-              .Replace('ç', 'c')
-              .Replace('İ', 'i')
-              .Replace('Ş', 's')
-              .Replace('Ğ', 'g')
-              .Replace('Ü', 'u')
-              .Replace('Ö', 'o')
-              .Replace('Ç', 'c');
-            return sb.ToString();
+
+            return text
+                .Replace('ı', 'i').Replace('ş', 's').Replace('ğ', 'g').Replace('ü', 'u').Replace('ö', 'o').Replace('ç', 'c')
+                .Replace('İ', 'i').Replace('Ş', 's').Replace('Ğ', 'g').Replace('Ü', 'u').Replace('Ö', 'o').Replace('Ç', 'c');
         }
 
-        private List<string> Tokenize(string text)
+        private static List<string> Tokenize(string text)
         {
-            text = text.ToLowerInvariant();
-            text = NormalizeTurkish(text);
-            // Remove non-alphabetic chars
-            text = Regex.Replace(text, @"[^\w\s]", "");
+            text = NormalizeTurkish(text.ToLowerInvariant());
+            text = Regex.Replace(text, @"[^\w\s]", string.Empty);
             return text.Split(new[] { ' ', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
                        .Where(w => w.Length > 2) // skip tiny words/stop words
                        .ToList();
         }
 
-        private float CosineSimilarity(float[] vectorA, float[] vectorB)
+        private static float CosineSimilarity(float[] a, float[] b)
         {
-            if (vectorA.Length != vectorB.Length) return 0f;
+            if (a.Length != b.Length) return 0f;
 
-            float dotProduct = 0f;
-            float normA = 0f;
-            float normB = 0f;
-
-            for (int i = 0; i < vectorA.Length; i++)
+            float dot = 0f, normA = 0f, normB = 0f;
+            for (var i = 0; i < a.Length; i++)
             {
-                dotProduct += vectorA[i] * vectorB[i];
-                normA += vectorA[i] * vectorA[i];
-                normB += vectorB[i] * vectorB[i];
+                dot += a[i] * b[i];
+                normA += a[i] * a[i];
+                normB += b[i] * b[i];
             }
 
-            if (normA == 0f || normB == 0f) return 0f;
-            return dotProduct / ((float)Math.Sqrt(normA) * (float)Math.Sqrt(normB));
+            return normA == 0f || normB == 0f ? 0f : dot / ((float)Math.Sqrt(normA) * (float)Math.Sqrt(normB));
         }
 
-        private class FAQDocument
+        internal sealed class FaqDocument
         {
             public int Id { get; set; }
             public List<string> Keywords { get; set; } = new();

@@ -2,23 +2,37 @@ name: CI
 
 on:
   push:
-    branches: [main, "release/**", "v1.1/**"]
+    branches: [main, "release/**", "v1.*/**"]
   pull_request:
+  # Weekly run: the vulnerability audit can start failing without any commit (a new advisory), so it also runs on a timer.
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
 
+# Least privilege by default; no job needs more than read access to the repository contents.
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
 jobs:
+  # ---------------------------------------------------------------------------------------------------------------
+  # Build, unit/integration tests, and the real-database tests against PostgreSQL 16 (the production database).
+  # ---------------------------------------------------------------------------------------------------------------
   build-test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
 
     # PostgreSQL is the production database. The real-database tests (concurrent transfers, the standing-order worker,
-    # the production upgrade script) run against it. Without this variable they are skipped, as on a fresh clone.
+    # the production upgrade scripts) run against it. Without this variable they are skipped, as on a fresh clone.
     services:
       postgres:
         image: postgres:16
@@ -39,7 +53,7 @@ jobs:
 
       - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
 
       # System.Random is predictable. Security-relevant values must come from SecureRandom.
       # MarketRateService uses it only for demo price jitter.
@@ -71,6 +85,26 @@ jobs:
             exit 1
           fi
 
+      # Prints the overall line coverage in the job summary (no threshold yet; the number is for humans).
+      - name: Coverage summary
+        if: always()
+        run: |
+          file=$(ls TestResults/*/coverage.cobertura.xml 2>/dev/null | head -n 1 || true)
+          if [ -z "$file" ]; then
+            echo "No coverage report was produced." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          rate=$(grep -o '<coverage [^>]*' "$file" | grep -o 'line-rate="[0-9.]*"' | head -n 1 | cut -d'"' -f2)
+          branch=$(grep -o '<coverage [^>]*' "$file" | grep -o 'branch-rate="[0-9.]*"' | head -n 1 | cut -d'"' -f2)
+          {
+            echo "### Test coverage"
+            echo ""
+            echo "| Metric | Value |"
+            echo "|---|---|"
+            echo "| Line coverage | $(awk -v r="$rate" 'BEGIN { printf "%.1f%%", r * 100 }') |"
+            echo "| Branch coverage | $(awk -v r="$branch" 'BEGIN { printf "%.1f%%", r * 100 }') |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v7
@@ -79,15 +113,153 @@ jobs:
           path: TestResults/**/coverage.cobertura.xml
           if-no-files-found: ignore
 
-  dependency-audit:
+  # ---------------------------------------------------------------------------------------------------------------
+  # The same real-database tests against SQL Server 2022. The EF migrations and local development target SQL Server,
+  # so this keeps that provider honest. (The PostgreSQL-only tests are skipped here; the job above runs them.)
+  # ---------------------------------------------------------------------------------------------------------------
+  test-sqlserver:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    services:
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: "Sm4rtBank!CiOnly#1"
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P $MSSQL_SA_PASSWORD -Q 'SELECT 1' || /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P $MSSQL_SA_PASSWORD -Q 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+          --health-start-period 20s
+    env:
+      SMARTBANK_TEST_SQLSERVER: Server=localhost,1433;User Id=sa;Password=Sm4rtBank!CiOnly#1;TrustServerCertificate=True
+
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore SmartBank.slnx
+
+      - name: Build
+        run: dotnet build SmartBank.slnx --configuration Release --no-restore
+
+      - name: Real-database tests on SQL Server
+        run: |
+          set -o pipefail
+          dotnet test src/SmartBank.Tests --configuration Release --no-build \
+            --filter "FullyQualifiedName~SmartBank.Tests.Database" | tee test-sqlserver.log
+
+          # A run that executed nothing (for example because the variable was not picked up) must not count as a pass.
+          if grep -qE "Passed: +0," test-sqlserver.log; then
+            echo "::error::No SQL Server test ran."
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------------------------------------------------
+  # The EF model and the migrations must agree (no model change without a migration). Needs no database.
+  # ---------------------------------------------------------------------------------------------------------------
+  ef-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      # Throw-away values: the API validates its secrets at startup, and dotnet-ef starts the host to find the DbContext.
+      JwtSettings__Key: ci-only-jwt-signing-key-0123456789abcdef
+      Encryption__Key: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Restore tools and packages
+        run: |
+          dotnet tool restore
+          dotnet restore SmartBank.slnx
+
+      - name: Build the API
+        run: dotnet build src/SmartBank.API/SmartBank.API.csproj --configuration Release --no-restore
+
+      - name: Check for pending model changes
+        run: >
+          dotnet ef migrations has-pending-model-changes
+          --project src/SmartBank.Infrastructure --startup-project src/SmartBank.API
+          --no-build --configuration Release
+
+  # ---------------------------------------------------------------------------------------------------------------
+  # The frontend has no build step, so a syntax error would only show up in a browser. Parse every script.
+  # ---------------------------------------------------------------------------------------------------------------
+  frontend-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      # Node.js is preinstalled on the ubuntu-latest runner image.
+      - name: Syntax check (node --check)
+        run: |
+          status=0
+          for file in src/SmartBank.Web/*.js; do
+            echo "checking $file"
+            node --check "$file" || status=1
+          done
+          exit $status
+
+  # ---------------------------------------------------------------------------------------------------------------
+  # The Dockerfile is what Render builds. Build it here so a broken image is found before a deploy (no push).
+  # ---------------------------------------------------------------------------------------------------------------
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the image
+        run: docker build -t smartbank:ci .
+
+      # Without a database the API cannot serve requests, but it must start far enough to validate its secrets:
+      # with no keys it has to fail fast and say why.
+      - name: Image refuses to start without secrets
+        run: |
+          set +e
+          output=$(docker run --rm smartbank:ci 2>&1)
+          code=$?
+          echo "$output" | tail -n 5
+          if [ $code -eq 0 ] || ! echo "$output" | grep -q "Encryption:Key"; then
+            echo "::error::Expected a fail-fast startup error about Encryption:Key."
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------------------------------------------------
+  # Fails when a NuGet package (direct or transitive) has a known vulnerability.
+  # ---------------------------------------------------------------------------------------------------------------
+  dependency-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
 
       - name: Restore
         run: dotnet restore SmartBank.slnx
