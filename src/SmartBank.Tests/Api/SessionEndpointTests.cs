@@ -6,6 +6,7 @@ using System.Text.Json;
 namespace SmartBank.Tests.Api
 {
     /// <summary>The sign-in / refresh / sign-out cycle over real HTTP, including a protected endpoint with the refreshed token.</summary>
+    [Collection("EncryptionHelper")]
     public class SessionEndpointTests : IClassFixture<ApiFactory>
     {
         private readonly ApiFactory _factory;
