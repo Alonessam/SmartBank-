@@ -43,6 +43,25 @@ namespace SmartBank.Tests.Support
         };
     }
 
+    /// <summary>
+    /// The real registrations of Program.cs (AI, FAQ search, market rates), with the container checking that no singleton holds a
+    /// scoped service and that everything can be built.
+    /// </summary>
+    public sealed class RealWiringApiFactory : ApiFactory
+    {
+        protected override bool UseFakeAi => false;
+
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            base.ConfigureWebHost(builder);
+            builder.UseDefaultServiceProvider(options =>
+            {
+                options.ValidateScopes = true;
+                options.ValidateOnBuild = true;
+            });
+        }
+    }
+
     /// <summary>The application's clock is one the test moves by hand (starting at the real time, because the JWT middleware uses the real clock).</summary>
     public sealed class ClockedApiFactory : ApiFactory
     {
