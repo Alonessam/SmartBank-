@@ -199,9 +199,22 @@ builder.Services.AddScoped<IClientInfo, HttpContextClientInfo>();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 
+// HSTS: once a browser has seen this API over HTTPS it refuses plain HTTP for the next 180 days. (Only sent on HTTPS
+// requests and never in Development; behind Render's proxy it needs the forwarded-headers setting from the Dockerfile.)
+builder.Services.AddHsts(options =>
+{
+    options.MaxAge = TimeSpan.FromDays(180);
+    options.IncludeSubDomains = false; // onrender.com is shared: only this host
+});
+
 var app = builder.Build();
 
 app.UseMiddleware<GlobalExceptionMiddleware>();
+app.UseMiddleware<SecurityHeadersMiddleware>();
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHsts();
+}
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())

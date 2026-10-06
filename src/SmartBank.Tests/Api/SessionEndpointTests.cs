@@ -22,7 +22,7 @@ namespace SmartBank.Tests.Api
             var response = await client.PostAsJsonAsync("/api/auth/register", new
             {
                 username = "sess" + tag,
-                tckn = "5" + Math.Abs(tag.GetHashCode()).ToString("D10")[^10..],
+                tckn = TestTckn.Next(),
                 password = "123456",
                 firstName = "Sess",
                 lastName = "Ion",
