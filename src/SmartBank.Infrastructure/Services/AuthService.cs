@@ -76,7 +76,9 @@ namespace SmartBank.Infrastructure.Services
             // The e-mail address is unique in the database. It is stored lower-case from now on; the comparison also lowers
             // the stored value, because older rows may have been saved with the case the user typed.
             var email = registerDto.Email.Trim().ToLowerInvariant();
-            if (await _context.Users.AnyAsync(u => u.Email.ToLowerInvariant() == email))
+            // ToLower() (not ToLowerInvariant) inside the query: only ToLower is translated to SQL LOWER(). The in-memory provider
+            // accepts both, which is why only the real-database tests could catch this.
+            if (await _context.Users.AnyAsync(u => u.Email.ToLower() == email))
             {
                 return ServiceResult<AuthResponseDto>.Failure("EmailAlreadyExists", "This e-mail address is already registered.");
             }
