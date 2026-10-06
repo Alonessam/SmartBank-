@@ -1337,6 +1337,10 @@ const i18n = {
         "err.ContactNotFound": "The saved contact was not found.",
         "err.OrderNotFound": "The standing order was not found.",
         "err.SessionNotFound": "The chat session was not found.",
+        "err.AlreadyExists": "This item already exists.",
+        "err.InvalidDepartment": "The department name is not valid.",
+        "err.InvalidSender": "The message sender is not valid.",
+        "err.SessionClosed": "This chat session has been closed.",
         "err.UnauthorizedSessionAccess": "You do not have access to this chat session."
     },
     tr: {
@@ -1826,6 +1830,10 @@ const i18n = {
         "err.ContactNotFound": "Kayıtlı alıcı bulunamadı.",
         "err.OrderNotFound": "Talimat bulunamadı.",
         "err.SessionNotFound": "Sohbet oturumu bulunamadı.",
+        "err.AlreadyExists": "Bu kayıt zaten mevcut.",
+        "err.InvalidDepartment": "Birim adı geçerli değil.",
+        "err.InvalidSender": "Mesaj göndericisi geçerli değil.",
+        "err.SessionClosed": "Bu sohbet oturumu kapatıldı.",
         "err.UnauthorizedSessionAccess": "Bu destek odasına erişim yetkiniz yok."
     }
 };
