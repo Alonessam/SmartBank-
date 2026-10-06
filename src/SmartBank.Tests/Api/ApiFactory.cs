@@ -30,6 +30,9 @@ namespace SmartBank.Tests.Api
         /// <summary>Settings a test class can add or override (for example a very low rate limit). Applied last.</summary>
         protected virtual IReadOnlyDictionary<string, string> ExtraSettings { get; } = new Dictionary<string, string>();
 
+        /// <summary>False only for the test that checks the real AI wiring of Program.cs.</summary>
+        protected virtual bool UseFakeAi => true;
+
         /// <summary>The AI "model" of this application instance: the test decides what it says and sees what it was asked.</summary>
         public FakeAiChatbot Ai => Services.GetRequiredService<FakeAiChatbot>();
 
@@ -73,16 +76,19 @@ namespace SmartBank.Tests.Api
                 services.RemoveAll<IHostedService>();
 
                 // Nothing in these tests may reach the network or a local Ollama: the AI, the FAQ search and the market prices are fakes.
-                services.RemoveAll<IAIChatbotService>();
-                services.RemoveAll<OllamaService>();
-                services.RemoveAll<GeminiService>();
-                services.RemoveAll<IRAGService>();
-                services.RemoveAll<IMarketRateService>();
-                services.AddSingleton<FakeAiChatbot>();
-                services.AddSingleton<IAIChatbotService>(sp => sp.GetRequiredService<FakeAiChatbot>());
-                services.AddSingleton<IRAGService, FakeRagService>();
-                services.AddSingleton<FakeMarketRates>();
-                services.AddSingleton<IMarketRateService>(sp => sp.GetRequiredService<FakeMarketRates>());
+                if (UseFakeAi)
+                {
+                    services.RemoveAll<IAIChatbotService>();
+                    services.RemoveAll<OllamaService>();
+                    services.RemoveAll<GeminiService>();
+                    services.RemoveAll<IRAGService>();
+                    services.RemoveAll<IMarketRateService>();
+                    services.AddSingleton<FakeAiChatbot>();
+                    services.AddSingleton<IAIChatbotService>(sp => sp.GetRequiredService<FakeAiChatbot>());
+                    services.AddSingleton<IRAGService, FakeRagService>();
+                    services.AddSingleton<FakeMarketRates>();
+                    services.AddSingleton<IMarketRateService>(sp => sp.GetRequiredService<FakeMarketRates>());
+                }
             });
         }
 
