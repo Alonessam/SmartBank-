@@ -36,6 +36,11 @@
 - **Starting a support chat did nothing in production.** The hand-made `ChatSessions` table in Supabase had no `IsActive`
   column, so creating a session failed on the server. `docs/deploy/v1.2-postgres-upgrade.sql` now adds it.
 
+- **Production schema fixes** (found by comparing every production column with the model; `docs/deploy/schema-check.sql`):
+  creating a credit-card auto-pay standing order failed (`StandingOrders.Amount` was NOT NULL but the code stores NULL), and
+  all time columns were `timestamp without time zone`, so the API returned times without a `Z` and the browser showed them
+  three hours early in Turkey. The upgrade script converts them to `timestamptz` (existing values are UTC) and is safe to
+  run twice. Details: `docs/DEFENSE.md` (T14).
 ### Added
 
 - **One-time codes can be e-mailed through Brevo's HTTPS API** (`Brevo__ApiKey`, `Brevo__SenderEmail`, `Brevo__SenderName`).
