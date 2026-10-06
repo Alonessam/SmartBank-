@@ -3,16 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <!-- Defense in depth against XSS: no inline scripts or event attributes are allowed; see docs/DEFENSE.md. -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://api.qrserver.com; connect-src 'self' http://localhost:5038 ws://localhost:5038 https://smartbank-fintech-api.onrender.com wss://smartbank-fintech-api.onrender.com; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <!-- Defense in depth against XSS: no inline scripts or event attributes are allowed; only the pinned SignalR build from cdnjs (with an integrity hash) is loaded; styles come from styles.css and Google Fonts only (no inline style attributes, so no 'unsafe-inline'); see docs/DEFENSE.md.
+         connect-src lists the production API and localhost:5038 (local development only; for a LAN test add that host here). -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' http://localhost:5038 ws://localhost:5038 https://smartbank-fintech-api.onrender.com wss://smartbank-fintech-api.onrender.com; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta name="referrer" content="no-referrer">
+    <meta name="description" content="SmartBank demo: the support center panel where agents answer customer chats.">
+    <meta name="theme-color" content="#0a0e1a">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230a0e1a'/%3E%3Ctext x='16' y='24' font-size='22' text-anchor='middle' fill='%2300a2ff'%3E%E2%9D%96%3C/text%3E%3C/svg%3E">
     <title>SmartBank - Support Center Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=1.3.0">
 </head>
-<body class="agent-page">
-    <div class="background-decor">
+<body class="agent-page" data-page="agent" data-title-i18n="title.agent">
+    <a class="skip-link" href="#main-content" data-i18n="a11y.skip">Skip to main content</a>
+
+    <div class="background-decor" aria-hidden="true">
         <div class="circle circle-1"></div>
         <div class="circle circle-2"></div>
     </div>
@@ -20,47 +27,47 @@
     <!-- Header -->
     <header class="main-header">
         <div class="logo">
-            <span class="logo-icon">❖</span> SmartBank <span class="badge-role">Support Center</span>
+            <span class="logo-icon" aria-hidden="true">❖</span> SmartBank <span class="badge-role" data-i18n="agent.badge">Support Center</span>
         </div>
         <div class="header-actions">
-            <span id="user-display" class="user-badge">Loading...</span>
-            <button id="lang-toggle" class="btn btn-secondary">TR</button>
-            <button id="btn-logout" class="btn btn-danger">Logout</button>
+            <span id="user-display" class="user-badge">...</span>
+            <button type="button" id="lang-toggle" class="btn btn-secondary" data-i18n-aria-label="a11y.langToggle" aria-label="Switch language">TR</button>
+            <button type="button" id="btn-logout" class="btn btn-danger" data-i18n="common.logout">Logout</button>
         </div>
     </header>
 
-    <main class="agent-container-wrapper">
+    <main class="agent-container-wrapper" id="main-content" tabindex="-1">
         <!-- Agent Metrics Row -->
         <div class="agent-metrics-grid">
             <div class="metric-card glassmorphism">
-                <span class="metric-icon resolved">💬</span>
+                <span class="metric-icon resolved" aria-hidden="true">💬</span>
                 <div class="metric-details">
-                    <h5 id="lbl-metric-resolved">Resolved Chats</h5>
-                    <span class="metric-value" id="val-metric-resolved">0</span>
+                    <h5 id="lbl-metric-resolved" data-i18n="agent.metricResolved">Resolved Chats</h5>
+                    <span class="metric-value" id="val-metric-resolved" aria-labelledby="lbl-metric-resolved">&mdash;</span>
                 </div>
             </div>
             <div class="metric-card glassmorphism">
-                <span class="metric-icon time">⏱️</span>
+                <span class="metric-icon time" aria-hidden="true">⏱️</span>
                 <div class="metric-details">
-                    <h5 id="lbl-metric-time">Avg Response Time</h5>
-                    <span class="metric-value" id="val-metric-time">12s</span>
+                    <h5 id="lbl-metric-time" data-i18n="agent.metricTime">Avg Response Time</h5>
+                    <span class="metric-value" id="val-metric-time" aria-labelledby="lbl-metric-time">&mdash;</span>
                 </div>
             </div>
             <div class="metric-card glassmorphism">
-                <span class="metric-icon csat">⭐</span>
+                <span class="metric-icon csat" aria-hidden="true">⭐</span>
                 <div class="metric-details">
-                    <h5 id="lbl-metric-csat">CSAT Score</h5>
-                    <span class="metric-value" id="val-metric-csat">95%</span>
+                    <h5 id="lbl-metric-csat" data-i18n="agent.metricCsat">CSAT Score</h5>
+                    <span class="metric-value" id="val-metric-csat" aria-labelledby="lbl-metric-csat">&mdash;</span>
                 </div>
             </div>
             <div class="metric-card glassmorphism status-card">
-                <span class="status-dot online" id="status-indicator-dot"></span>
+                <span class="status-dot online" id="status-indicator-dot" aria-hidden="true"></span>
                 <div class="metric-details">
-                    <h5 id="lbl-metric-status">Your Status</h5>
+                    <label id="lbl-metric-status" for="agent-status-select" class="metric-label" data-i18n="agent.metricStatus">Your Status</label>
                     <select id="agent-status-select" class="metric-status-select">
-                        <option value="Active" id="opt-status-active">Active</option>
-                        <option value="Busy" id="opt-status-busy">Busy</option>
-                        <option value="Break" id="opt-status-break">Break</option>
+                        <option value="Active" data-i18n="agent.statusActive">Active</option>
+                        <option value="Busy" data-i18n="agent.statusBusy">Busy</option>
+                        <option value="Break" data-i18n="agent.statusBreak">Break</option>
                     </select>
                 </div>
             </div>
@@ -68,76 +75,76 @@
 
         <div class="agent-container">
             <!-- Sidebar - Active Support Sessions -->
-            <aside class="agent-sidebar card glassmorphism">
+            <aside class="agent-sidebar card glassmorphism" aria-labelledby="title-active-chats">
                 <div class="sidebar-header">
-                    <h3 id="title-active-chats">Active Support Chats</h3>
-                    <button id="btn-refresh-sessions" class="btn btn-secondary btn-sm">↺</button>
+                    <h3 id="title-active-chats" data-i18n="agent.activeChats">Active Support Chats</h3>
+                    <button type="button" id="btn-refresh-sessions" class="btn btn-secondary btn-sm" data-i18n-aria-label="agent.refresh" data-i18n-title="agent.refresh" aria-label="Refresh" title="Refresh">&#8634;</button>
                 </div>
-                <div id="active-sessions-list" class="sessions-list">
-                    <!-- Active sessions injected dynamically -->
-                    <div class="text-muted text-center py-4" id="txt-no-active-chats">No active chats at the moment</div>
+                <div id="active-sessions-list" class="sessions-list" aria-live="polite">
+                    <div class="text-muted text-center py-4" data-i18n="agent.noActive">No active chats at the moment</div>
                 </div>
             </aside>
 
             <!-- Main Chat Area -->
-            <section class="agent-chat-area card glassmorphism">
+            <section class="agent-chat-area card glassmorphism" aria-label="Chat">
                 <div id="agent-chat-header" class="agent-chat-header hidden">
                     <div class="chat-info">
-                        <h4 id="agent-chat-title">Chatting with Guest</h4>
-                        <p id="agent-chat-session-id" class="text-muted text-xs">Session ID: -</p>
+                        <h4 id="agent-chat-title">...</h4>
+                        <p id="agent-chat-session-id" class="text-muted text-xs"></p>
+                        <p id="agent-conn-status" class="conn-status hidden" role="status"></p>
                     </div>
                     <div class="chat-header-actions">
                         <!-- Department Transfer Selector -->
                         <div class="transfer-control">
+                            <label for="select-transfer-dept" class="visually-hidden" data-i18n="agent.transferLabel">Transfer to department</label>
                             <select id="select-transfer-dept" class="transfer-dept-select">
-                                <option value="" id="opt-transfer-select">Transfer to...</option>
-                                <option value="Genel Destek" id="opt-dept-general">Genel Destek</option>
-                                <option value="Kredi Departmanı" id="opt-dept-loans">Kredi Departmanı</option>
-                                <option value="Kart Hizmetleri" id="opt-dept-cards">Kart Hizmetleri</option>
-                                <option value="Yatırım Danışmanlığı" id="opt-dept-investments">Yatırım Danışmanlığı</option>
+                                <option value="" data-i18n="agent.transferTo">Transfer to...</option>
+                                <option value="Genel Destek" data-i18n="agent.deptGeneral">General Support</option>
+                                <option value="Kredi Departmanı" data-i18n="agent.deptLoans">Loans Department</option>
+                                <option value="Kart Hizmetleri" data-i18n="agent.deptCards">Card Services</option>
+                                <option value="Yatırım Danışmanlığı" data-i18n="agent.deptInvestments">Investment Advisory</option>
                             </select>
-                            <button id="btn-transfer-chat" class="btn btn-secondary btn-xs">OK</button>
+                            <button type="button" id="btn-transfer-chat" class="btn btn-secondary btn-xs" data-i18n="common.ok">OK</button>
                         </div>
-                        <button id="btn-close-session" class="btn btn-danger btn-sm">Close Session</button>
+                        <button type="button" id="btn-close-session" class="btn btn-danger btn-sm" data-i18n="agent.closeSession">Close Session</button>
                     </div>
                 </div>
 
                 <!-- Chat Message log -->
-                <div id="agent-chat-messages" class="agent-messages-container">
+                <div id="agent-chat-messages" class="agent-messages-container" role="log" aria-live="polite" aria-relevant="additions">
                     <div class="agent-chat-placeholder" id="agent-placeholder">
-                        <span class="chat-placeholder-icon">📥</span>
-                        <h3 id="txt-select-chat">Select a Support Session</h3>
-                        <p id="txt-select-chat-desc" class="text-muted">Click on a chat session on the left sidebar to start helping customers.</p>
+                        <span class="chat-placeholder-icon" aria-hidden="true">📥</span>
+                        <h3 data-i18n="agent.selectChat">Select a Support Session</h3>
+                        <p class="text-muted" data-i18n="agent.selectChatDesc">Click on a chat session on the left sidebar to start helping customers.</p>
                     </div>
                 </div>
 
                 <!-- AI Co-Pilot Suggestion Box -->
                 <div id="ai-copilot-container" class="ai-copilot-container hidden">
                     <div class="copilot-header">
-                        <span class="copilot-title" id="lbl-copilot-title">✨ AI Co-Pilot Recommendation</span>
-                        <button type="button" id="btn-regenerate-suggestion" class="btn btn-secondary btn-xs">🔄</button>
+                        <span class="copilot-title" data-i18n="agent.copilotTitle">AI Co-Pilot Recommendation</span>
+                        <button type="button" id="btn-regenerate-suggestion" class="btn btn-secondary btn-xs" data-i18n-aria-label="agent.regenerate" data-i18n-title="agent.regenerate" aria-label="Regenerate suggestion" title="Regenerate suggestion">&#128260;</button>
                     </div>
-                    <div id="ai-suggestion-text" class="ai-suggestion-text">
-                        Generating smart suggestions...
-                    </div>
+                    <div id="ai-suggestion-text" class="ai-suggestion-text" aria-live="polite"></div>
                     <div class="copilot-actions">
-                        <button type="button" id="btn-use-suggestion" class="btn btn-secondary btn-xs">✍️ Use Recommendation</button>
+                        <button type="button" id="btn-use-suggestion" class="btn btn-secondary btn-xs" data-i18n="agent.useSuggestion">Use Recommendation</button>
                     </div>
                 </div>
 
                 <!-- Message Input Area -->
                 <form id="agent-chat-form" class="agent-chat-input-area hidden">
-                    <input type="text" id="agent-chat-input" required maxlength="1000" placeholder="Type support message...">
-                    <button type="submit" id="agent-chat-send-btn" class="btn btn-primary">Send</button>
+                    <label for="agent-chat-input" class="visually-hidden" data-i18n="agent.inputLabel">Support message</label>
+                    <input type="text" id="agent-chat-input" required maxlength="1000" autocomplete="off" data-i18n-placeholder="agent.inputPlaceholder" placeholder="Type support message...">
+                    <button type="submit" id="agent-chat-send-btn" class="btn btn-primary" data-i18n="common.send">Send</button>
                 </form>
             </section>
         </div>
     </main>
 
-    <!-- SignalR CDN -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
+    <!-- SignalR (pinned, integrity-checked) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js" integrity="sha384-/taWmisziXYpcfnYsumSUmNaiMvG/fF/OJOUCLnqCIYTrpOZy7WbFF6FfIxwOrfL" crossorigin="anonymous"></script>
     <!-- App & Chat logic -->
-    <script src="app.js?v=1.2.0"></script>
-    <script src="chat.js?v=1.2.0"></script>
+    <script src="app.js?v=1.3.0"></script>
+    <script src="chat.js?v=1.3.0"></script>
 </body>
 </html>
