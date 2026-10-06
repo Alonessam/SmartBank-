@@ -152,7 +152,7 @@ v1.1 needs configuration and a database change. Deploying it without them makes 
 ### Documentation
 
 - README: honest feature descriptions, a security model and known limitations, an architecture diagram, setup for secrets,
-  tests and support agents. `docs/V1.1-PLAN.md` and `docs/DEFENSE.md` explain what was done and why.
+  tests and support agents. `docs/DEFENSE.md` explains what was done and why.
 
 ## [1.0.0]
 
