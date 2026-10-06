@@ -22,6 +22,18 @@ async function startSignalRConnection() {
         .build();
 
     // Setup incoming events
+
+    // The server refuses empty or oversized messages and too many messages in a row, and says so here.
+    signalRConnection.on("Error", (message) => {
+        const isAgentPanel = window.location.pathname.includes("agent.html");
+        const box = document.getElementById(isAgentPanel ? "agent-chat-messages" : "chat-messages");
+        if (!box) return;
+        const notice = document.createElement("div");
+        notice.className = "system-status-card failed";
+        notice.textContent = String(message);
+        box.appendChild(notice);
+        box.scrollTop = box.scrollHeight;
+    });
     signalRConnection.on("ReceiveMessage", (msgDto) => {
         // Hide typing indicator when receiving a message from AI or Agent
         if (msgDto.sender === "AI" || msgDto.sender === "Agent") {
@@ -178,8 +190,14 @@ function appendMessage(msgDto) {
 
     const content = msgDto.content;
 
+    // Machine markers become cards only when they come from the right sender. A customer or agent who types
+    // "[TRANSFER_SUCCESS: ...]" must get plain text, and the server also neutralises such text (see docs/DEFENSE.md, T13).
+    const sender = String(msgDto.sender || "").toLowerCase();
+    const fromSystem = sender === "system";
+    const fromAi = sender === "ai";
+
     // 0. Check if it's a Room Transfer message
-    if (content.includes("[SESSION_TRANSFERRED:")) {
+    if (fromSystem && content.includes("[SESSION_TRANSFERRED:")) {
         const toMatch = content.match(/to=([^\]]+)/);
         const department = toMatch ? toMatch[1] : "General";
 
@@ -223,7 +241,7 @@ function appendMessage(msgDto) {
     }
 
     // 1. Check if it's a Transfer Confirmation Widget
-    if (content.includes("[CONFIRM_TRANSFER:")) {
+    if (fromAi && content.includes("[CONFIRM_TRANSFER:")) {
         const sourceMatch = content.match(/source=([^,\s\]]+)/);
         const destMatch = content.match(/destination=([^,\s\]]+)/);
         const amountMatch = content.match(/amount=([^,\s\]]+)/);
@@ -289,7 +307,7 @@ function appendMessage(msgDto) {
     }
 
     // 2. Check if it's a Transfer Success message
-    if (content.includes("[TRANSFER_SUCCESS:")) {
+    if (fromSystem && content.includes("[TRANSFER_SUCCESS:")) {
         const amountMatch = content.match(/amount=([^,\s\]]+)/);
         const destMatch = content.match(/destination=([^,\s\]]+)/);
         const amount = amountMatch ? amountMatch[1] : "0";
@@ -328,7 +346,7 @@ function appendMessage(msgDto) {
     }
 
     // 3. Check if it's a Transfer Failed message
-    if (content.includes("[TRANSFER_FAILED:")) {
+    if (fromSystem && content.includes("[TRANSFER_FAILED:")) {
         const errorKeyMatch = content.match(/errorKey=([^,\s\]]+)/);
         const messageMatch = content.match(/message=([^\]]+)/);
         const errorKey = errorKeyMatch ? errorKeyMatch[1] : "TransferFailed";
