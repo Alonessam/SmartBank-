@@ -131,7 +131,13 @@ namespace SmartBank.Tests
                     file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}") ||
                     file.Contains($"{Path.DirectorySeparatorChar}SmartBank.Tests{Path.DirectorySeparatorChar}")) continue;
 
-                foreach (Match m in Regex.Matches(File.ReadAllText(file), "Failure\\(\\s*\"(?<key>[A-Za-z0-9]+)\"")) keys.Add(m.Groups["key"].Value);
+                var code = File.ReadAllText(file);
+
+                // ServiceResult.Failure("Key", ...), the BankingService helpers Fail<T>("Key", ...) / Fail("Key", ...), and keys
+                // kept in constants (ErrorKey = "Key", ScaleErrorKey = "Key"). The first version of this test only knew
+                // Failure(...), so keys created through the helpers were never checked.
+                foreach (Match m in Regex.Matches(code, "\\b(?:Failure|Fail)(?:<[^>()]+>)?\\(\\s*\"(?<key>[A-Za-z0-9]+)\"")) keys.Add(m.Groups["key"].Value);
+                foreach (Match m in Regex.Matches(code, "\\b[A-Za-z]*ErrorKey\\s*=\\s*\"(?<key>[A-Za-z0-9]+)\"")) keys.Add(m.Groups["key"].Value);
             }
 
             var missing = keys.Where(k => !en.Contains("err." + k)).OrderBy(k => k).ToList();
