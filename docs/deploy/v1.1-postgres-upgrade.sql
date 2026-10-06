@@ -17,7 +17,7 @@ ALTER TABLE "CreditCards" ADD COLUMN IF NOT EXISTS "CardNumberHash" varchar(64);
 CREATE UNIQUE INDEX IF NOT EXISTS "IX_CreditCards_CardNumberHash" ON "CreditCards" ("CardNumberHash");
 
 -- 3) Brute-force protection and one-time-code hardening
---    (EF migration 20261002xxxxxx_AddOtpAndLockoutFields). Use the same timestamp type as "TwoFactorExpiry".
+--    (EF migration 20261002141913_AddOtpAndLockoutFields). Use the same timestamp type as "TwoFactorExpiry".
 ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "FailedLoginCount"  integer NOT NULL DEFAULT 0;
 ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "LockoutEnd"        timestamp with time zone;
 ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "OtpFailedCount"    integer NOT NULL DEFAULT 0;
@@ -25,14 +25,14 @@ ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "PendingOtpPurpose" integer;       
 ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "PendingOtpBinding" varchar(64);      -- hash of the transfer a code approves
 
 -- 4) Optimistic-concurrency versions: protect balances and card debt against lost updates
---    (EF migration 20261002xxxxxx_AddConcurrencyVersions).
+--    (EF migration 20261002143708_AddConcurrencyVersions).
 ALTER TABLE "Accounts"    ADD COLUMN IF NOT EXISTS "Version" integer NOT NULL DEFAULT 0;
 ALTER TABLE "CreditCards" ADD COLUMN IF NOT EXISTS "Version" integer NOT NULL DEFAULT 0;
 
--- 5) Explicit precision for the interest rate (EF migration ..._SetInterestRatePrecision). An annual rate such as 52.50.
+-- 5) Explicit precision for the interest rate (EF migration 20261002144644_SetInterestRatePrecision). An annual rate such as 52.50.
 ALTER TABLE "Accounts" ALTER COLUMN "InterestRate" TYPE numeric(5,2);
 
--- 6) Roles (EF migration ..._AddUserRole). Support-agent access used to go to ANY account whose username contained
+-- 6) Roles (EF migration 20261002145306_AddUserRole). Support-agent access used to go to ANY account whose username contained
 --    "agent", which anyone could get by registering such a name. It is now a real column (0 = Customer, 1 = Agent) that
 --    nothing in the API can set, so existing accounts all become customers. Promote the support staff by hand:
 ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "Role" integer NOT NULL DEFAULT 0;
