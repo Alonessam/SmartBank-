@@ -1,4 +1,5 @@
 using FluentValidation;
+using SmartBank.Core.Common;
 using SmartBank.Core.DTOs;
 using System.Linq;
 
@@ -13,9 +14,11 @@ namespace SmartBank.Core.Validators
                 .MinimumLength(3).WithMessage("Username must be at least 3 characters long.");
 
             RuleFor(x => x.Tckn)
+                .Cascade(CascadeMode.Stop)
                 .NotEmpty().WithMessage("T.C. Kimlik Numarası is required.")
                 .Length(11).WithMessage("T.C. Kimlik Numarası must be exactly 11 characters long.")
-                .Must(x => x.All(char.IsDigit)).WithMessage("T.C. Kimlik Numarası must contain only digits.");
+                .Must(x => x.All(char.IsDigit)).WithMessage("T.C. Kimlik Numarası must contain only digits.")
+                .Must(TcKimlikNo.IsValid).WithMessage("T.C. Kimlik Numarası is not valid: its check digits do not match. Please re-check the number.");
 
             RuleFor(x => x.Password)
                 .NotEmpty().WithMessage("Password is required.")

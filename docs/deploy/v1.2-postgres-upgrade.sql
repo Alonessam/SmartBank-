@@ -27,6 +27,35 @@ CREATE UNIQUE INDEX IF NOT EXISTS "IX_RefreshTokens_TokenHash" ON "RefreshTokens
 CREATE INDEX IF NOT EXISTS "IX_RefreshTokens_UserId"   ON "RefreshTokens" ("UserId");
 CREATE INDEX IF NOT EXISTS "IX_RefreshTokens_FamilyId" ON "RefreshTokens" ("FamilyId");
 
+-- The production "ChatSessions" table was created by hand without the "IsActive" column the code writes, so every
+-- attempt to start a support chat failed on the server ("Start Session" did nothing). Existing sessions stay open.
+ALTER TABLE "ChatSessions" ADD COLUMN IF NOT EXISTS "IsActive" boolean NOT NULL DEFAULT true;
+
+-- A credit-card auto-pay standing order has no fixed amount (it pays the whole statement), so the code stores NULL.
+-- The hand-made column was NOT NULL, so creating such an order failed.
+ALTER TABLE "StandingOrders" ALTER COLUMN "Amount" DROP NOT NULL;
+
+-- Time zones. The hand-made tables used "timestamp without time zone". The API then sends times such as
+-- 2026-10-06T10:27:18 without a trailing "Z", and browsers read that as LOCAL time: in Turkey every time shown was three
+-- hours early. The model uses "timestamp with time zone" (like "RefreshTokens" and "Users"."LockoutEnd" already do),
+-- which is returned with the "Z". The stored values are UTC, so they are interpreted as UTC. Safe to run twice: only
+-- columns that are still "without time zone" are touched. The tables are small, so the rewrite takes moments.
+DO $$
+DECLARE col record;
+BEGIN
+    FOR col IN
+        SELECT table_name, column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND data_type = 'timestamp without time zone'
+          AND table_name IN ('Accounts', 'AuditLogs', 'ChatMessages', 'ChatSessions', 'CreditCards', 'CreditCardStatements',
+                             'CreditCardTransactions', 'MarketRates', 'SavedContacts', 'StandingOrders', 'Transactions', 'Users')
+    LOOP
+        EXECUTE format('ALTER TABLE %I ALTER COLUMN %I TYPE timestamp with time zone USING %I AT TIME ZONE ''UTC''',
+                       col.table_name, col.column_name, col.column_name);
+    END LOOP;
+END $$;
+
 COMMIT;
 
 -- Everyone has to sign in once after the upgrade: tokens issued by v1.1 (7 days, not revocable) keep working until

@@ -27,6 +27,19 @@ namespace SmartBank.Tests.Api
             return json.RootElement.TryGetProperty("errorKey", out var key) ? key.GetString() : null;
         }
 
+        [Fact]
+        public async Task A_number_with_wrong_check_digits_is_refused_with_a_clear_message()
+        {
+            using var client = _factory.CreateClient();
+
+            var response = await client.PostAsJsonAsync("/api/auth/register", Payload("badtckn" + Guid.NewGuid().ToString("N")[..6], "12345678901", "bad@example.com"));
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            var text = await response.Content.ReadAsStringAsync();
+            Assert.Contains("check digits", text);
+            Assert.Contains("ValidationError", text);
+        }
+
         [Theory]
         [InlineData("reg.same@example.com", "REG.SAME@example.com")]
         [InlineData("reg.exact@example.com", "reg.exact@example.com")]
@@ -36,10 +49,10 @@ namespace SmartBank.Tests.Api
             using var client = _factory.CreateClient();
             var tag = Guid.NewGuid().ToString("N")[..6];
 
-            var one = await client.PostAsJsonAsync("/api/auth/register", Payload("first" + tag, "7" + tag.GetHashCode().ToString("D10")[^10..], first));
+            var one = await client.PostAsJsonAsync("/api/auth/register", Payload("first" + tag, TestTckn.Next(), first));
             Assert.Equal(HttpStatusCode.OK, one.StatusCode);
 
-            var two = await client.PostAsJsonAsync("/api/auth/register", Payload("second" + tag, "6" + tag.GetHashCode().ToString("D10")[^10..], second));
+            var two = await client.PostAsJsonAsync("/api/auth/register", Payload("second" + tag, TestTckn.Next(), second));
 
             Assert.Equal(HttpStatusCode.BadRequest, two.StatusCode);
             Assert.Equal("EmailAlreadyExists", await ErrorKeyAsync(two));
