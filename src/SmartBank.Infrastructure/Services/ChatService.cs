@@ -64,6 +64,12 @@ namespace SmartBank.Infrastructure.Services
                 return ServiceResult<ChatMessageDto>.Failure("SessionNotFound", "Chat session was not found.");
             }
 
+            // A person must not be able to type a machine marker (a fake "transfer confirmation" card, for instance).
+            if (sender is "User" or "Agent")
+            {
+                content = ChatMarkers.Neutralize(content);
+            }
+
             var message = new ChatMessage
             {
                 SessionId = sessionId,

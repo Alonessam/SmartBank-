@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.IdentityModel.Tokens;
 using SmartBank.API.Health;
 using SmartBank.API.Hubs;
@@ -120,7 +121,11 @@ builder.Services.AddValidatorsFromAssemblyContaining<RegisterDtoValidator>();
 
 // Add services to the container.
 builder.Services.AddControllers();
-builder.Services.AddSignalR();
+// Chat messages are at most ChatLimits.MaxMessageLength characters; 16 KB per hub message is plenty and bounds abuse (default 32 KB).
+builder.Services.AddSignalR(options => options.MaximumReceiveMessageSize = 16 * 1024);
+builder.Services.TryAddSingleton(TimeProvider.System);
+builder.Services.AddSingleton(ChatSettings.From(builder.Configuration));
+builder.Services.AddSingleton<ChatRateLimiter>();
 
 // Per-IP rate limit on the auth endpoints (login, 2FA, password reset, register). This is the coarse layer;
 // the per-account lockout and the OTP attempt counter in the services are the precise ones.

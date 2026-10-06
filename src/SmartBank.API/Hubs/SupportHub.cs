@@ -4,6 +4,9 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.DependencyInjection;
+using System.ComponentModel.DataAnnotations;
+using SmartBank.API.Security;
+using SmartBank.Core.Common;
 using SmartBank.Core.Entities;
 using SmartBank.Core.Interfaces;
 using System.Linq;
@@ -22,14 +25,20 @@ namespace SmartBank.API.Hubs
         private readonly IHubContext<SupportHub> _hubContext;
         private readonly IServiceScopeFactory _serviceScopeFactory;
         private readonly IBankingService _bankingService;
+        private readonly ChatRateLimiter _limiter;
+        private readonly ChatSettings _limits;
 
         public SupportHub(
-            IChatService chatService, 
-            IAIChatbotService aiChatbotService, 
+            IChatService chatService,
+            IAIChatbotService aiChatbotService,
             IHubContext<SupportHub> _hubContext,
             IServiceScopeFactory serviceScopeFactory,
-            IBankingService bankingService)
+            IBankingService bankingService,
+            ChatRateLimiter limiter,
+            ChatSettings limits)
         {
+            _limiter = limiter;
+            _limits = limits;
             _chatService = chatService;
             _aiChatbotService = aiChatbotService;
             this._hubContext = _hubContext;
@@ -40,15 +49,25 @@ namespace SmartBank.API.Hubs
         public async Task StartSessionAsync(string title)
         {
             var userId = GetUserId();
-            
+
+            if (!_limiter.TryAcquire($"session:{LimitKey}", _limits.SessionsPerHour, TimeSpan.FromHours(1)))
+            {
+                await Clients.Caller.SendAsync("Error", "You have started too many chats. Please try again later.");
+                return;
+            }
+
+            // The title is shown to every support agent: cap it.
+            title = (title ?? string.Empty).Trim();
+            if (title.Length > ChatLimits.MaxTitleLength) title = title[..ChatLimits.MaxTitleLength];
+
             var result = await _chatService.CreateSessionAsync(userId, title);
-            
+
             if (result.IsSuccess && result.Data != null)
             {
                 var session = result.Data;
                 await Groups.AddToGroupAsync(Context.ConnectionId, session.Id.ToString());
                 await Clients.Caller.SendAsync("SessionStarted", session);
-                
+
                 // Proactively notify customer service agents in the "Agents" group
                 await Clients.Group("Agents").SendAsync("NewSessionRequest", session);
             }
@@ -68,7 +87,7 @@ namespace SmartBank.API.Hubs
             }
             // Add connection to the session group
             await Groups.AddToGroupAsync(Context.ConnectionId, sessionId.ToString());
-            
+
             // If the connector is an agent, we can also register them to the group
             // For now, we announce they joined the room
             var username = Context.User?.FindFirst(ClaimTypes.Name)?.Value ?? "Support Agent";
@@ -79,6 +98,29 @@ namespace SmartBank.API.Hubs
         {
             var userId = GetUserId();
             var username = Context.User?.FindFirst(ClaimTypes.Name)?.Value ?? "Guest";
+
+            // Every message costs a database write and, for a customer, an AI call, so size and rate are limited here
+            // (ASP.NET's rate-limiting middleware does not see calls made over an open SignalR connection).
+            content = (content ?? string.Empty).Trim();
+            if (content.Length == 0)
+            {
+                await Clients.Caller.SendAsync("Error", "Message cannot be empty.");
+                return;
+            }
+
+            if (content.Length > ChatLimits.MaxMessageLength)
+            {
+                await Clients.Caller.SendAsync("Error", $"Message is too long (at most {ChatLimits.MaxMessageLength} characters).");
+                return;
+            }
+
+            var perMinute = IsAgent ? _limits.MessagesPerMinute * ChatSettings.AgentMultiplier : _limits.MessagesPerMinute;
+            if (!_limiter.TryAcquire($"msg-min:{LimitKey}", perMinute, TimeSpan.FromMinutes(1)) ||
+                (!IsAgent && !_limiter.TryAcquire($"msg-hour:{LimitKey}", _limits.MessagesPerHour, TimeSpan.FromHours(1))))
+            {
+                await Clients.Caller.SendAsync("Error", "You are sending messages too fast. Please wait a moment.");
+                return;
+            }
 
             // The sender is the session's owner ("User") or a support agent ("Agent"). Anyone else is refused: it used
             // to be that every non-owner was labelled "Agent", so any customer could write into someone else's chat
@@ -136,6 +178,10 @@ namespace SmartBank.API.Hubs
                                         await _hubContext.Clients.Group(sessionId.ToString()).SendAsync("AgentStopTyping", "AI");
                                     }
 
+                                    // Anything the model writes is untrusted text. Only the confirmation card built below from parsed
+                                    // fields is a real marker; every other bracketed marker the model might emit is made inert.
+                                    var serverBuiltCard = false;
+
                                     // Parse AI Actions
                                     bool isGetBalances = aiResponseText.Contains("ACTION:GET_BALANCES", StringComparison.OrdinalIgnoreCase);
                                     bool isTransferAction = aiResponseText.Contains("ACTION:TRANSFER", StringComparison.OrdinalIgnoreCase);
@@ -144,11 +190,11 @@ namespace SmartBank.API.Hubs
                                     {
                                         var bankingService = scope.ServiceProvider.GetRequiredService<IBankingService>();
                                         var accountsResult = await bankingService.GetAccountsAsync(sessionUserId.Value);
-                                        
+
                                         string balanceContext = "";
                                         if (accountsResult.IsSuccess && accountsResult.Data != null && accountsResult.Data.Count > 0)
                                         {
-                                            balanceContext = "SYSTEM UPDATE: User's accounts and balances: " + 
+                                            balanceContext = "SYSTEM UPDATE: User's accounts and balances: " +
                                                              string.Join(", ", accountsResult.Data.Select(a => $"{a.AccountNumber} ({a.Currency}): {a.Balance}"));
                                         }
                                         else
@@ -171,12 +217,12 @@ namespace SmartBank.API.Hubs
                                         });
 
                                         aiResponseText = await GenerateAIResponseWithFailoverAsync(scope.ServiceProvider, history);
-                                        
+
                                         // In case the AI still stubborn or offline, check for raw action
                                         if (aiResponseText.Contains("ACTION:GET_BALANCES", StringComparison.OrdinalIgnoreCase))
                                         {
                                             bool isTurkish = history.Any(h => h.Content.Contains("merhaba", StringComparison.OrdinalIgnoreCase) || h.Content.Contains("hesab", StringComparison.OrdinalIgnoreCase) || h.Content.Contains("bakiye", StringComparison.OrdinalIgnoreCase));
-                                            aiResponseText = isTurkish 
+                                            aiResponseText = isTurkish
                                                 ? "Hesap bakiyelerinizi kontrol ettim ancak şu anda bilgilerinize erişilemiyor."
                                                 : "I checked your account balances, but your information is currently unavailable.";
                                         }
@@ -201,6 +247,7 @@ namespace SmartBank.API.Hubs
                                         if (!string.IsNullOrEmpty(source) && !string.IsNullOrEmpty(destination) && decimal.TryParse(amountStr, out var amount) && amount > 0)
                                         {
                                             aiResponseText = $"[CONFIRM_TRANSFER: source={source}, destination={destination}, amount={amount}, description={description}]";
+                                            serverBuiltCard = true;
                                         }
                                         else
                                         {
@@ -223,12 +270,14 @@ namespace SmartBank.API.Hubs
                                             if (aiResponseText.Contains("ACTION:TRANSFER", StringComparison.OrdinalIgnoreCase))
                                             {
                                                 bool isTurkish = history.Any(h => h.Content.Contains("merhaba", StringComparison.OrdinalIgnoreCase) || h.Content.Contains("para", StringComparison.OrdinalIgnoreCase) || h.Content.Contains("gönder", StringComparison.OrdinalIgnoreCase));
-                                                aiResponseText = isTurkish 
+                                                aiResponseText = isTurkish
                                                     ? "Para transferini gerçekleştirebilmem için lütfen kaynak hesap, alıcı hesap numarası ve transfer miktarını belirtir misiniz?"
                                                     : "To execute the transfer, please provide the source account, destination account, and amount.";
                                             }
                                         }
                                     }
+
+                                    if (!serverBuiltCard) aiResponseText = ChatMarkers.Neutralize(aiResponseText);
 
                                     var aiMsgResult = await scopedChatService.AddMessageAsync(sessionId, "AI", aiResponseText);
                                     if (aiMsgResult.IsSuccess && aiMsgResult.Data != null)
@@ -271,12 +320,27 @@ namespace SmartBank.API.Hubs
 
             var request = new TransferRequestDto
             {
-                SourceAccountNumber = source,
-                DestinationAccountNumber = destination,
+                SourceAccountNumber = source ?? string.Empty,
+                DestinationAccountNumber = destination ?? string.Empty,
                 Amount = amount,
-                Description = description,
+                Description = description ?? string.Empty,
                 OtpCode = otpCode
             };
+
+            // The REST endpoint validates the request model; a hub method gets no such check, so do the same here
+            // (amount range, description length) before the transfer service sees the values.
+            var problems = new List<ValidationResult>();
+            if (!Validator.TryValidateObject(request, new ValidationContext(request), problems, validateAllProperties: true))
+            {
+                await Clients.Caller.SendAsync("Error", problems[0].ErrorMessage ?? "Invalid transfer request.");
+                return;
+            }
+
+            if (!_limiter.TryAcquire($"transfer:{LimitKey}", _limits.TransfersPerMinute, TimeSpan.FromMinutes(1)))
+            {
+                await Clients.Caller.SendAsync("Error", "Too many transfer attempts. Please wait a moment.");
+                return;
+            }
 
             var transferResult = await _bankingService.TransferMoneyAsync(userId.Value, request);
 
@@ -313,7 +377,7 @@ namespace SmartBank.API.Hubs
                                     CreatedAt = DateTime.UtcNow
                                 });
 
-                                var aiResponseText = await GenerateAIResponseWithFailoverAsync(scope.ServiceProvider, history);
+                                var aiResponseText = ChatMarkers.Neutralize(await GenerateAIResponseWithFailoverAsync(scope.ServiceProvider, history));
                                 var aiMsgResult = await scopedChatService.AddMessageAsync(sessionId, "AI", aiResponseText);
                                 if (aiMsgResult.IsSuccess && aiMsgResult.Data != null)
                                 {
@@ -334,7 +398,7 @@ namespace SmartBank.API.Hubs
                 var errorKey = transferResult.ErrorKey ?? "TransferFailed";
                 var errorMsg = transferResult.Message ?? "Transfer failed.";
                 var msgText = $"[TRANSFER_FAILED: errorKey={errorKey}, message={errorMsg}]";
-                
+
                 var addMsgResult = await _chatService.AddMessageAsync(sessionId, "System", msgText);
                 if (addMsgResult.IsSuccess && addMsgResult.Data != null)
                 {
@@ -414,33 +478,33 @@ namespace SmartBank.API.Hubs
                 catch (Exception geminiEx)
                 {
                     Console.WriteLine($"[SupportHub Failover] Gemini API also failed. Error: {geminiEx.Message}");
-                    
+
                     // Final localized fallback
                     var text = (lastUserMessage ?? "").ToLowerInvariant();
-                    bool isTurkish = text.Contains("merhaba") || 
-                                     text.Contains("selam") || 
-                                     text.Contains("nasıl") || 
-                                     text.Contains("nasil") || 
-                                     text.Contains("yardım") || 
-                                     text.Contains("yardim") || 
-                                     text.Contains("kredi") || 
-                                     text.Contains("hesap") || 
-                                     text.Contains("hesab") || 
-                                     text.Contains("para") || 
-                                     text.Contains("cek") || 
-                                     text.Contains("çek") || 
-                                     text.Contains("kart") || 
-                                     text.Contains("bakiye") || 
-                                     text.Contains("gönder") || 
-                                     text.Contains("gonder") || 
-                                     text.Contains("işlem") || 
-                                     text.Contains("islem") || 
-                                     text.Contains("destek") || 
-                                     text.Contains("bağla") || 
-                                     text.Contains("bagla") || 
+                    bool isTurkish = text.Contains("merhaba") ||
+                                     text.Contains("selam") ||
+                                     text.Contains("nasıl") ||
+                                     text.Contains("nasil") ||
+                                     text.Contains("yardım") ||
+                                     text.Contains("yardim") ||
+                                     text.Contains("kredi") ||
+                                     text.Contains("hesap") ||
+                                     text.Contains("hesab") ||
+                                     text.Contains("para") ||
+                                     text.Contains("cek") ||
+                                     text.Contains("çek") ||
+                                     text.Contains("kart") ||
+                                     text.Contains("bakiye") ||
+                                     text.Contains("gönder") ||
+                                     text.Contains("gonder") ||
+                                     text.Contains("işlem") ||
+                                     text.Contains("islem") ||
+                                     text.Contains("destek") ||
+                                     text.Contains("bağla") ||
+                                     text.Contains("bagla") ||
                                      text.Contains("istiyorum");
 
-                    return isTurkish 
+                    return isTurkish
                         ? "Şu anda yapay zeka servisimiz çevrimdışı. Sizi en kısa sürede canlı destek temsilcimize bağlayacağız."
                         : "Our AI support is currently offline. We will connect you to a live support representative shortly.";
                 }
@@ -472,6 +536,9 @@ namespace SmartBank.API.Hubs
         }
 
         private bool IsAgent => Context.User?.IsInRole(RoleNames.Agent) == true;
+
+        // Limits are per signed-in user, not per connection: opening more tabs must not multiply the allowance.
+        private string LimitKey => GetUserId()?.ToString() ?? Context.ConnectionId;
 
         // A session may be used by its owner and by support agents, nobody else.
         private async Task<bool> CanAccessSessionAsync(Guid sessionId)
