@@ -2,6 +2,15 @@
 
 Her değişiklik için aynı düzen: **sorun**, **ne yaptım**, **neden bu seçim (ve eledikler)**, **bilinen sınırlamalar**.
 Bölüm numaraları (T1, T2, ...) bu dosyaya özgüdür; `CHANGELOG.md` bu numaralara atıfta bulunur.
+Test sayıları, ilgili görev bittiği andaki sayılardır; güncel paket birkaç yüz test içerir.
+
+> **English summary.** This file is the engineering record of the v1.1 and v1.2 releases, written in Turkish. Each section follows the same
+> pattern: the problem found, what was changed, why (and which alternatives were rejected), and the known limitations that remain.
+> The sections: T1 secrets out of the repository, T2 CI and dependency audit, T3 secure randomness, T4 card encryption (AES-GCM, no CVV),
+> T5 account takeover and brute force, T6 concurrent money movements (optimistic concurrency), T7 clean-up and hardening, T8 role-based
+> authorization and integration tests, T9 README honesty, T10 stored XSS, T11 e-mail through an HTTPS API, T12 short-lived access tokens with
+> rotating refresh tokens, T13 support-chat limits and forged transfer cards, T14 production schema drift, T15 small hardening (log noise,
+> security headers, T.C. Kimlik No check digits). The README summarises the result; `CHANGELOG.md` lists the changes per release; `docs/ARCHITECTURE.md` shows how the parts fit together.
 
 ---
 
@@ -126,7 +135,7 @@ Bölüm numaraları (T1, T2, ...) bu dosyaya özgüdür; `CHANGELOG.md` bu numar
 - *`ForwardedHeaders` neden Dockerfile'da?* Render gibi bir vekilin arkasında tüm istekler vekilin IP'sinden gelir; ayar olmazsa tüm kullanıcılar aynı hız sınırı kovasını paylaşır. İmaj yalnızca vekil arkasında kullanılmalı, doğrudan internete açılırsa `X-Forwarded-For` sahtelenebilir.
 
 **Bilinen sınırlamalar (dürüst liste).**
-- JWT ömrü 7 gün ve iptal edilemiyor. Parola sıfırlandığında eski token'lar süresi dolana kadar geçerli kalır. Çözüm (kısa ömürlü token + yenileme ya da güvenlik damgası) kapsam dışı.
+- JWT ömrü 7 gün ve iptal edilemiyor. Parola sıfırlandığında eski token'lar süresi dolana kadar geçerli kalır. Çözüm (kısa ömürlü token + yenileme ya da güvenlik damgası) bu görevin kapsamı dışındaydı. *(v1.2'de T12 ile giderildi: erişim token'ı artık 15 dakika yaşıyor ve oturumlar sunucuda iptal edilebiliyor.)*
 - Kayıt (`register`) hâlâ kullanıcı adı/TCKN'nin alınmış olduğunu söylüyor (kullanıcı sayımı).
 - `BankingService`'teki denetim kayıtları hâlâ sabit `127.0.0.1` yazıyor.
 - Herkese açık demo'da (`Demo:ExposeOtp=true`) giriş/transfer 2FA'sı fiilen PIN'e düşer. Bu bilinçli bir demo tavizi, bayrakla kontrol ediliyor ve README'de uyarı var.
@@ -198,7 +207,7 @@ Kod okurken aynı sınıftan başka sorunlar da çıktı:
 - *`AllowCredentials` neden hâlâ var:* SignalR istemcisi varsayılan olarak kimlik bilgisiyle bağlanır. Güvenli olması için artık joker değil, açık origin listesiyle birlikte kullanılıyor.
 
 **Bilinen sınırlamalar.**
-- Docker imajını bu makinede derleyemedim (Docker kurulu değil). Resmî .NET imajının `app` kullanıcısı ve 8080 varsayımı belgelenmiş standart, ama Render'a çıkmadan önce bir kez dağıtıp doğrulamak gerekir.
+- Docker imajını bu makinede derleyemedim (Docker kurulu değil). *(Sonradan Render'da derlenip dağıtıldı; üretim bu imajla çalışıyor. v1.3'ten beri CI de imajı her çalıştırmada derliyor.)*
 - Denetim kaydı hâlâ veritabanı seviyesinde değiştirilemez değil (yalnızca uygulama silmiyor). "Immutable" iddiası T9'da README'de düzeltilecek.
 - `/health` uçları kimlik doğrulamasız (tasarım gereği: yük dengeleyici çağırır).
 - `X-Forwarded-For` güveni: Dockerfile tüm vekilleri güvenilir sayar; yalnızca vekil arkasında çalıştırılmalı.
@@ -234,12 +243,12 @@ Kod okurken aynı sınıftan başka sorunlar da çıktı:
 - *Entegrasyon testleri:* birim testler `ChatController`'ı atlayıp servisleri çağırdığı için bu açığı **göremezdi**. Açık, ara katman ve rota seviyesinde.
 
 **Bilinen sınırlamalar.**
-- Rol token'da taşınıyor ve token ömrü 7 gün: bir temsilcinin yetkisi alındığında, token süresi dolana kadar eski token çalışmaya devam eder. Çözüm (kısa ömürlü token + yenileme ya da her istekte rol doğrulama) bu sürümün kapsamı dışında.
+- Rol token'da taşınıyor ve token ömrü 7 gün: bir temsilcinin yetkisi alındığında, token süresi dolana kadar eski token çalışmaya devam eder. Çözüm (kısa ömürlü token + yenileme ya da her istekte rol doğrulama) bu sürümün kapsamı dışındaydı. *(v1.2'de T12 ile token ömrü 15 dakikaya indi; rol değişikliği bir sonraki yenilemede etkili olur.)*
 - Mevcut canlı veritabanında adında "agent" geçen hesaplar yükseltme sonrası müşteri olur; gerçek personelin README'deki SQL ile terfi ettirilip yeniden giriş yapması gerekir.
 - `deposit` ucu bir demo "para yükleme" musluğudur: giriş yapan herkes kendi hesabına 10.000.000 TL'ye kadar ekleyebilir. Gerçek bir sistemde olmaz, README'de belirtilecek.
 - Sohbetteki AI yanıtı, oturum sahibinin hesap bilgilerini kullanabiliyor olabilir. Bunun doğrulaması ve istem enjeksiyonu riski bu sürümde incelenmedi.
 
-**Nasıl kanıtladım.** 185 test (46'sı bu göreve ait entegrasyon testi). **Mutasyon kontrolü:** düzeltmeleri geçici olarak eski haline (kullanıcı adı kuralı, rol yok, odaya serbest giriş) getirince **14 test düştü**, geri alınca geçti. Entegrasyon testleri art arda üç çalıştırmada kararlı. Tüm paket SQL Server (LocalDB) ve PostgreSQL 16 ile geçiyor.
+**Nasıl kanıtladım.** Paket o gün 185 testten oluşuyordu (sayı sonraki sürümlerde arttı; 46'sı bu göreve ait entegrasyon testi). **Mutasyon kontrolü:** düzeltmeleri geçici olarak eski haline (kullanıcı adı kuralı, rol yok, odaya serbest giriş) getirince **14 test düştü**, geri alınca geçti. Entegrasyon testleri art arda üç çalıştırmada kararlı. Tüm paket SQL Server (LocalDB) ve PostgreSQL 16 ile geçiyor.
 
 
 ---
@@ -256,7 +265,7 @@ Kod okurken aynı sınıftan başka sorunlar da çıktı:
 **Ne yaptım.**
 - Girişe "Her şey simülasyondur, gerçek banka değildir" notu; abartılı sıfatlar çıkarıldı, söylenenler kodla örtüşüyor.
 - Denetim günlüğü "değiştirilemez" yerine "yalnızca-ekleme (gelenek gereği), kurcalamaya karşı korumalı değil"; uyumluluk iddiası kaldırıldı; hata ara katmanı "RFC 7807 *tarzı*" (alanlar uyuyor ama birebir standart değil).
-- **Güvenlik Modeli** tablosu (risk → kodun yaptığı) ve **Bilinen Sınırlamalar** bölümü: demo para musluğu, 7 günlük iptal edilemeyen token ve `localStorage`, örnek başına hız sınırı, düz metin OTP, simüle kartlar, kurcalanabilir denetim, kullanıcı sayımı, gözden geçirilmeyen AI sohbeti, iki veritabanı sağlayıcısı, derlenemeyen Docker değişikliği.
+- **Güvenlik Modeli** tablosu (risk → kodun yaptığı) ve **Bilinen Sınırlamalar** bölümü: demo para musluğu, 7 günlük iptal edilemeyen token (v1.2'de T12 ile giderildi) ve `localStorage`, örnek başına hız sınırı, düz metin OTP, simüle kartlar, kurcalanabilir denetim, kullanıcı sayımı, gözden geçirilmeyen AI sohbeti, iki veritabanı sağlayıcısı, henüz derlenmemiş Docker değişikliği (sonradan Render'da derlendi).
 - Mimari diyagramı (Mermaid), eşzamanlılık ve test bölümleri gerçek duruma göre yeniden yazıldı; teknoloji yığını (üretimde PostgreSQL) ve canlı demo notları (soğuk başlangıç, e-posta/SMTP, demo bayrağı).
 - `CHANGELOG.md` ve **yükseltme kontrol listesi**: yeni anahtarları üret, ortam değişkenlerini ayarla, SQL betiğini çalıştır, temsilcileri terfi ettir, `main`'e birleştir, sağlık uçlarını kontrol et.
 
@@ -416,6 +425,8 @@ Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çe
 ---
 
 ## T15 — Küçük sertleştirmeler (v1.2): log gürültüsü, güvenlik başlıkları, T.C. kontrol basamakları
+
+(`CHANGELOG.md` içindeki "SQL komutları artık loga yazılmıyor", "API güvenlik başlıkları" ve "T.C. Kimlik Numarası kontrol basamakları" maddeleri bu bölümden gelir.)
 
 Üç küçük iş, hepsi "sorun büyük değil ama bir gözden geçirenin ilk bakacağı yerler".
 
