@@ -8,9 +8,36 @@ updates:
       - "/src/SmartBank.Tests"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10
+    groups:
+      # One pull request for the framework packages, so the projects never end up on different patch versions.
+      microsoft-aspnetcore-efcore:
+        patterns:
+          - "Microsoft.AspNetCore.*"
+          - "Microsoft.EntityFrameworkCore.*"
+          - "Microsoft.Extensions.*"
+          - "Npgsql.EntityFrameworkCore.PostgreSQL"
+      test-tools:
+        patterns:
+          - "xunit*"
+          - "Moq"
+          - "coverlet.*"
+          - "Microsoft.NET.Test.Sdk"
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
