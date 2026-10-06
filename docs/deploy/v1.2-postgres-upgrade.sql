@@ -27,6 +27,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS "IX_RefreshTokens_TokenHash" ON "RefreshTokens
 CREATE INDEX IF NOT EXISTS "IX_RefreshTokens_UserId"   ON "RefreshTokens" ("UserId");
 CREATE INDEX IF NOT EXISTS "IX_RefreshTokens_FamilyId" ON "RefreshTokens" ("FamilyId");
 
+-- The production "ChatSessions" table was created by hand without the "IsActive" column the code writes, so every
+-- attempt to start a support chat failed on the server ("Start Session" did nothing). Existing sessions stay open.
+ALTER TABLE "ChatSessions" ADD COLUMN IF NOT EXISTS "IsActive" boolean NOT NULL DEFAULT true;
+
 COMMIT;
 
 -- Everyone has to sign in once after the upgrade: tokens issued by v1.1 (7 days, not revocable) keep working until
