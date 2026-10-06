@@ -14,8 +14,8 @@ namespace SmartBank.Core.Validators
         public const int MaxEmailLength = 100;
         public const int MaxFullNameLength = 100;
 
-        private static readonly Regex FirstNamePattern = new(@"^[a-zA-ZçğıöşüÇĞİÖŞÜ\s]+$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
-        private static readonly Regex LastNamePattern = new(@"^[a-zA-ZçğıöşüÇĞİÖŞÜ]+$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+        // One rule for both names, shared with the DTO attributes and the web form (see NameRules).
+        private static readonly Regex NamePattern = new(NameRules.Pattern, RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
         public RegisterDtoValidator()
         {
@@ -40,13 +40,13 @@ namespace SmartBank.Core.Validators
                 .Cascade(CascadeMode.Stop)
                 .NotEmpty().WithMessage("First Name is required.")
                 .MaximumLength(MaxNameLength).WithMessage("First name cannot exceed 50 characters.")
-                .Must(x => FirstNamePattern.IsMatch(x)).WithMessage("First name can only contain letters.");
+                .Must(x => NamePattern.IsMatch(x)).WithMessage(NameRules.Message);
 
             RuleFor(x => x.LastName)
                 .Cascade(CascadeMode.Stop)
                 .NotEmpty().WithMessage("Last Name is required.")
                 .MaximumLength(MaxNameLength).WithMessage("Last name cannot exceed 50 characters.")
-                .Must(x => LastNamePattern.IsMatch(x)).WithMessage("Last name can only contain letters (no spaces).");
+                .Must(x => NamePattern.IsMatch(x)).WithMessage(NameRules.Message);
 
             // "First Last" is stored in a 100-character column: 50 + a space + 50 would be one too many.
             RuleFor(x => x)

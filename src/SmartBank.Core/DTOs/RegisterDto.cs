@@ -2,6 +2,17 @@ using System.ComponentModel.DataAnnotations;
 
 namespace SmartBank.Core.DTOs
 {
+    /// <summary>
+    /// What a person's first or last name may look like. Real names contain spaces ("Zeynep Nur"), hyphens ("Çelik-Yılmaz"),
+    /// apostrophes ("O'Neil") and dots ("Ş. Ç."); the old letters-only rule rejected them. The web form uses the same rule
+    /// (NAME_PATTERN in app.js). Letters and combining marks of any script are accepted, digits and symbols are not.
+    /// </summary>
+    public static class NameRules
+    {
+        public const string Pattern = @"^[\p{L}\p{M}]+(?:[ '’.\-]+[\p{L}\p{M}]+)*\.?\z";
+        public const string Message = "Names can contain letters, spaces, hyphens, apostrophes and dots only.";
+    }
+
     public class RegisterDto
     {
         [Required(ErrorMessage = "Username is required.")]
@@ -17,12 +28,12 @@ namespace SmartBank.Core.DTOs
         public string Password { get; set; } = string.Empty;
 
         [Required(ErrorMessage = "First name is required.")]
-        [RegularExpression(@"^[a-zA-ZçğıöşüÇĞİÖŞÜ\s]+$", ErrorMessage = "First name can only contain letters.")]
+        [RegularExpression(NameRules.Pattern, ErrorMessage = NameRules.Message)]
         [StringLength(50, ErrorMessage = "First name cannot exceed 50 characters.")]
         public string FirstName { get; set; } = string.Empty;
 
         [Required(ErrorMessage = "Last name is required.")]
-        [RegularExpression(@"^[a-zA-ZçğıöşüÇĞİÖŞÜ]+$", ErrorMessage = "Last name can only contain letters (no spaces).")]
+        [RegularExpression(NameRules.Pattern, ErrorMessage = NameRules.Message)]
         [StringLength(50, ErrorMessage = "Last name cannot exceed 50 characters.")]
         public string LastName { get; set; } = string.Empty;
 
