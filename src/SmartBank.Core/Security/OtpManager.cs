@@ -60,6 +60,18 @@ namespace SmartBank.Core.Security
             return utcNow - issuedAt < cooldown;
         }
 
+        /// <summary>
+        /// True when the user holds an unexpired code that was issued for a *different* purpose. There is only one pending
+        /// slot, so issuing a new code would silently destroy it: a public "forgot password" request must not be able to
+        /// invalidate the login or transfer code a customer is typing in right now.
+        /// </summary>
+        public static bool HasLivePendingCodeForOtherPurpose(User user, OtpPurpose purpose, DateTime utcNow) =>
+            !string.IsNullOrEmpty(user.TwoFactorSecret) &&
+            user.TwoFactorExpiry.HasValue &&
+            user.TwoFactorExpiry.Value >= utcNow &&
+            user.PendingOtpPurpose.HasValue &&
+            user.PendingOtpPurpose.Value != purpose;
+
         public static OtpCheckResult Verify(User user, OtpPurpose purpose, string? submittedCode, DateTime utcNow, string? binding = null)
         {
             // Nothing pending for this purpose: there is nothing to guess, so this does not count as a failed attempt.

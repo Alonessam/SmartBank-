@@ -8,5 +8,8 @@ namespace SmartBank.Core.DTOs
         public decimal Buy { get; set; }
         public decimal Sell { get; set; }
         public decimal Change { get; set; }
+
+        /// <summary>True when this price is a stand-in (the live feed was unavailable or returned nonsense). Never trade against it.</summary>
+        public bool IsFallback { get; set; }
     }
 }
