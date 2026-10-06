@@ -1,8 +1,13 @@
--- SmartBank v1.2: refresh tokens (PostgreSQL / Supabase)
+-- SmartBank v1.2: refresh tokens + schema fixes (PostgreSQL / Supabase)
 --
--- Run ONCE in the Supabase SQL editor BEFORE deploying the v1.2 API (the API reads this table at every sign-in).
--- This is the PostgreSQL equivalent of the EF migration 20261005191128_AddRefreshTokens (which targets SQL Server / LocalDB).
--- It is safe to run twice. The v1.1 script must already have been applied.
+-- Run ONCE in the Supabase SQL editor BEFORE deploying the v1.2 API (the API reads the new table at every sign-in).
+-- It is safe to run twice. The v1.1 script must already have been applied. Contents:
+--   1. the "RefreshTokens" table, the PostgreSQL equivalent of the EF migration 20261005191128_AddRefreshTokens
+--      (the EF migrations target SQL Server / LocalDB);
+--   2. "ChatSessions"."IsActive", missing from the hand-made production table ("Start Session" did nothing);
+--   3. "StandingOrders"."Amount" becomes nullable (credit-card auto-pay orders have no fixed amount);
+--   4. every "timestamp without time zone" column becomes "timestamp with time zone" (existing values are read as UTC).
+-- Compare with docs/deploy/schema-check.sql afterwards.
 
 BEGIN;
 
