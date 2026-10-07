@@ -286,6 +286,8 @@ Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çe
 
 **Neden bu kadar ciddi.** Bu bir "saklı" (stored) XSS: kurbanın bir bağlantıya tıklaması gerekmiyor, sadece kendi hesabına bakması yeterli. Saldırgan, kurban adına istediği API çağrısını yapabilir (para transferi dahil).
 
+> *Güncelleme (v1.3.2): `esc()` yardımcısı ve `APP_VERSION` kaldırıldı; render kodu artık DOM API'si (`h()` ve `textContent`) kullanıyor. Aşağıdaki anlatım v1.2 dönemini tarif eder.*
+
 **Ne yaptım.**
 - `app.js` içine `esc()` yardımcısı ekledim (`& < > " ' \`` karakterlerini kaçırır). Özellikle tırnakları da kaçırıyor, çünkü `data-alias="${c.alias}"` gibi öznitelik bağlamlarında `"` ile öznitelikten çıkıp yeni bir `onmouseover=` eklemek mümkündü.
 - Sunucudan veya başka kullanıcıdan gelen **her** şablon enterpolasyonunu `esc(...)` ile sardım (`app.js` ve `chat.js`). Sayılar `toFixed()` ile üretildiği, sabit metinler kodun içinde olduğu için onlara dokunmadım.

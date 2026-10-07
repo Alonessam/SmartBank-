@@ -4,6 +4,39 @@ All notable changes are listed here, newest first. The format follows [Keep a Ch
 with the sections Added, Changed, Fixed and Security in each release. "T10", "T11", ... refer to the sections of
 [`docs/DEFENSE.md`](docs/DEFENSE.md), which holds the reasoning behind each change.
 
+## [1.3.2] - 2026-10-07
+
+A second full review (backend, frontend, docs, CI) and the fixes it found. Includes the 1.3.1 registration fix.
+
+### Upgrade notes (v1.3.2)
+
+1. **Run `docs/deploy/v1.3.2-postgres-upgrade.sql` first** in the Supabase SQL editor. It is idempotent: it drops `NOT NULL` on
+   columns the code writes as NULL, drops old `CHECK` constraints on `ChatMessages` that mention `Sender`, and widens narrow
+   `varchar` columns. `docs/deploy/schema-check.sql` now also lists the production foreign keys.
+2. Deploy the API (Render Manual Deploy), then the web app (`deploy-pages` script).
+
+### Changed
+
+- API contract: every chat message carries `sessionId`; the hub has `LeaveSessionAsync(Guid)`; transactions expose
+  `sourceCurrency`, `destinationCurrency`, `sourceAmount` and `destinationAmount`; `AuthResponseDto` no longer returns `tckn`;
+  account numbers are trimmed and upper-cased; request bodies are limited to 64 KB.
+- Chat has its own rate-limit policy (`RateLimiting__Chat__PermitLimit`, `__WindowSeconds`).
+- Simulation endpoints answer 404 `SimulationDisabled` when switched off; the anonymous OTP endpoints always answer
+  `InvalidOrExpiredCode`; the 2FA status call uses the banking policy.
+
+### Fixed
+
+- Registration and login session creation run in one explicit transaction.
+- Race when two requests close the last account of a user (now guarded through `User.Version`).
+- Rule B (daily limit) counts only same-currency transfers.
+- CORS headers survive the global exception handler, so browsers show the real error instead of a CORS failure.
+- Frontend: chat reconnects after an expired token and treats hub refusals as failures; chat history is filtered per session;
+  history shows the amount on each side of an exchange; standing orders show their type and active state; the CVV is shown once;
+  indicative (fallback) rates are badged and lock the exchange form; auth calls time out after 30 s with a "server waking up"
+  hint; a resend-code button; contrast and mobile overflow fixes; the `esc()` helper and `APP_VERSION` were removed (DOM APIs
+  are used instead).
+- Docs, CI and deploy scripts: baseline schema test (`BaselineSchemaTests`), RUNBOOK and deploy notes corrected.
+
 ## [1.3.1] - 2026-10-07
 
 ### Fixed
@@ -305,7 +338,8 @@ v1.1 needed configuration and a database change. Deploying it without them made 
 
 Initial portfolio release (first commit 2026-06-27).
 
-[1.3.1]: https://github.com/Alonessam/SmartBank-/compare/v1.3.0...main
+[1.3.2]: https://github.com/Alonessam/SmartBank-/compare/v1.3.0...main
+[1.3.1]: https://github.com/Alonessam/SmartBank-/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/Alonessam/SmartBank-/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/Alonessam/SmartBank-/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Alonessam/SmartBank-/releases/tag/v1.1.0

@@ -264,6 +264,7 @@ This generates random values for `JwtSettings:Key` and `Encryption:Key` (`-Rotat
 | `RateLimiting__Banking__PermitLimit` | Per-user limit (per IP when the caller is not identified) on the banking endpoints (default 60 per minute) |
 | `RateLimiting__Transfer__PermitLimit` | Per-user limit on money-moving calls: transfer, exchange, deposit and card payment (default 10 per minute); replaces the banking limit for those calls |
 | `RateLimiting__Market__PermitLimit` | Per-IP limit on the public market-rates endpoint (default 60 per minute) |
+| `RateLimiting__Chat__PermitLimit`, `__WindowSeconds` | Per-user limit on the chat REST endpoints (default 60 per minute) |
 | `Chat__MessagesPerMinute`, `Chat__MessagesPerHour`, `Chat__SessionsPerHour`, `Chat__TransfersPerMinute` | Per-user support-chat limits (defaults 10, 100, 10 and 5; agents get three times the per-minute allowance). Whole numbers from 1 to 100000 |
 | `Cors__AllowedOrigins__0`, `__1`, ... | Browser origins allowed to call the API (default `https://alonessam.github.io`). Anything else is rejected. In Development, pages opened from disk and `localhost` are also accepted |
 | `AllowedHosts` | Host headers the API answers to (default `*`). In Production the API logs a warning while it is `*`; set it to the API's host name (semicolon-separated for several), then check that the platform health check still passes |
