@@ -6,7 +6,18 @@
    ========================================================================== */
 "use strict";
 
-const APP_VERSION = "1.3.0";
+// Framing guard. A <meta> CSP cannot carry frame-ancestors (GitHub Pages sends no headers), so a page that finds itself
+// inside another site's frame hides itself: clicks on an invisible banking page would be clickjacking.
+(function frameGuard() {
+    try {
+        if (window.top !== window.self) {
+            document.documentElement.hidden = true;
+            document.documentElement.style.display = "none";
+        }
+    } catch (err) {
+        document.documentElement.hidden = true; // reading window.top threw: we are framed by another origin
+    }
+})();
 
 // One constant decides which page this is (<body data-page="login|dashboard|agent">): no URL sniffing.
 const PAGE = (document.body && document.body.dataset && document.body.dataset.page) || "";
@@ -25,14 +36,8 @@ const API_ORIGIN = (() => {
 const API_URL = `${API_ORIGIN}/api`;
 const HUBS_URL = `${API_ORIGIN}/hubs`;
 
-// Escapes text before it is placed inside an innerHTML template (element text AND quoted attribute values).
-// Everything that comes from the server or from another user (descriptions, aliases, names, chat text) must go through this.
-// (New code builds dynamic DOM with h() / textContent instead, which needs no escaping.)
-function esc(value) {
-    return String(value ?? "").replace(/[&<>"'`]/g, ch => ({
-        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;", "`": "&#96;"
-    }[ch]));
-}
+// Dynamic DOM is built with h() / textContent only: nothing here ever hands a string to the HTML parser, so there is
+// nothing to escape (a guard test forbids innerHTML and friends).
 
 // A value that may only become a CSS class token: lower-case letters, digits, dash and underscore.
 function cssToken(value, fallback) {
@@ -110,7 +115,11 @@ function translatePage(root) {
     if (titleKey) document.title = t(titleKey);
 
     const langBtn = document.getElementById("lang-toggle");
-    if (langBtn) langBtn.textContent = currentLanguage === "en" ? "TR" : "EN";
+    if (langBtn) {
+        langBtn.textContent = currentLanguage === "en" ? "TR" : "EN";
+        // The accessible name starts with the visible text ("TR - Switch language"), as WCAG 2.5.3 asks.
+        langBtn.setAttribute("aria-label", `${langBtn.textContent} - ${t("a11y.langToggle")}`);
+    }
 }
 
 function setLanguage(lang) {
@@ -245,13 +254,67 @@ function formatBusinessDate(value) {
     return date ? date.toLocaleDateString(locale(), { year: "numeric", month: "short", day: "numeric", timeZone: "Europe/Istanbul" }) : "-";
 }
 
+// 48.00% in English, %48,00 in Turkish.
+function formatPercent(value) {
+    const text = formatNumber(value, 2, 2);
+    return currentLanguage === "tr" ? `%${text}` : `${text}%`;
+}
+
+// The server writes some descriptions in Turkish (deposit, exchange, account closing, card payments, standing orders).
+// The English UI shows them translated; what a customer typed (transfer notes, merchants) is never touched.
+const SERVER_DESCRIPTIONS = [
+    [/^Hesaba Para Y\u00fckleme$/, "svc.deposit", []],
+    [/^(\S+) (\w+) Al\u0131m\u0131 \(Kur: (\S+) TRY\)$/, "svc.buy", ["amount", "asset", "rate"]],
+    [/^(\S+) (\w+) Sat\u0131\u015f\u0131 \(Kur: (\S+) TRY\)$/, "svc.sell", ["amount", "asset", "rate"]],
+    [/^Hesap Kapatma Bakiye Aktar\u0131m\u0131 \((\w+) -> (\w+)\): (\S+) (\w+)$/, "svc.closeAccount", ["from", "to", "amount", "currency"]],
+    [/^Kredi Kart\u0131 Bor\u00e7 \u00d6deme - Kart: \*(\S+)$/, "svc.cardPayment", ["last4"]],
+    [/^Kredi Kart\u0131 Otomatik Bor\u00e7 \u00d6deme - K\u0131smi \((.+)\)$/, "svc.cardAutoPartial", ["period"]],
+    [/^Kredi Kart\u0131 Otomatik Bor\u00e7 \u00d6deme \((.+)\)$/, "svc.cardAuto", ["period"]],
+    [/^Gecikme\/Akdi Faiz Yans\u0131mas\u0131 \((.+)\)$/, "svc.interest", ["period"]],
+    [/^Otomatik Talimat: (\w+) \u00d6demesi$/, "svc.standingOrder", ["type"]],
+    [/^Market Harcamas\u0131$/, "svc.groceries", []]
+];
+const TURKISH_MONTHS = ["Ocak", "\u015eubat", "Mart", "Nisan", "May\u0131s", "Haziran", "Temmuz", "A\u011fustos", "Eyl\u00fcl", "Ekim", "Kas\u0131m", "Aral\u0131k"];
+
+// "Ekim 2026" (written by the server) in the language of the page.
+function localizePeriodName(name) {
+    const match = /^(\S+) (\d{4})$/.exec(String(name ?? ""));
+    const month = match ? TURKISH_MONTHS.indexOf(match[1]) : -1;
+    if (month < 0) return String(name ?? "");
+    return new Date(Date.UTC(Number(match[2]), month, 15)).toLocaleDateString(locale(), { month: "long", year: "numeric", timeZone: "UTC" });
+}
+
+function serverDescription(text) {
+    const value = String(text ?? "");
+    if (currentLanguage === "tr") return value;
+    for (const [pattern, key, names] of SERVER_DESCRIPTIONS) {
+        const match = pattern.exec(value);
+        if (!match) continue;
+        const vars = {};
+        names.forEach((name, index) => { vars[name] = match[index + 1]; });
+        if (vars.period) vars.period = localizePeriodName(vars.period);
+        if (vars.type) vars.type = t(vars.type === "CreditCardAutoPay" ? "orders.titleCard" : "orders.titleTransfer");
+        return t(key, vars);
+    }
+    return value;
+}
+
+// Account numbers are pasted with spaces and in lower case: the server compares them exactly.
+function normalizeAccountNumber(value) {
+    return String(value ?? "").replace(/\s+/g, "").toUpperCase();
+}
+
 // Display-only upper-casing in the Turkish locale (i -> I with dot). Never used for protocol strings.
 function displayUpper(text) {
     return String(text ?? "").toLocaleUpperCase("tr-TR");
 }
 
-// Parses what a money input holds. Returns { ok: true, value } or { ok: false, errorKey } (positive, at most 2 decimals).
-function parseAmount(raw) {
+// The limits the server enforces (Money.MaxAmount / Money.MaxStandingOrderAmount).
+const MAX_AMOUNT = 10000000;
+const MAX_STANDING_ORDER_AMOUNT = 1000000;
+
+// Parses what a money input holds. Returns { ok: true, value } or { ok: false, errorKey } (positive, at most 2 decimals, at most max).
+function parseAmount(raw, max) {
     const text = String(raw ?? "").trim().replace(/\s/g, "");
     if (!text) return { ok: false, errorKey: "InvalidAmount" };
     const normalized = /^\d+,\d+$/.test(text) ? text.replace(",", ".") : text;
@@ -260,6 +323,7 @@ function parseAmount(raw) {
     if (fraction.length > 2) return { ok: false, errorKey: "InvalidAmountScale" };
     const value = Number(normalized);
     if (!Number.isFinite(value) || value <= 0) return { ok: false, errorKey: "InvalidAmount" };
+    if (value > (max || MAX_AMOUNT)) return { ok: false, errorKey: "AmountTooLarge" };
     return { ok: true, value };
 }
 
@@ -519,28 +583,52 @@ async function api(path, options) {
             signal: controller ? controller.signal : undefined
         });
         const data = await readJson(response);
-        return { ok: response.ok, status: response.status, data, networkError: false };
+        // Retry-After is only readable when the API exposes it to scripts (CORS); null otherwise.
+        const retryAfter = Number(response.headers && response.headers.get ? response.headers.get("Retry-After") : 0) || 0;
+        return { ok: response.ok, status: response.status, data, networkError: false, retryAfter };
     } catch (err) {
-        return { ok: false, status: 0, data: null, networkError: true };
+        const timedOut = !!(controller && controller.signal.aborted);
+        return { ok: false, status: 0, data: null, networkError: true, timedOut };
     } finally {
         if (timer) clearTimeout(timer);
+    }
+}
+
+// The demo API runs on a free host that sleeps when idle: the first call can take up to a minute. Calls to it that a person is
+// waiting for get a timeout and, after a few seconds, a hint that the server is waking up.
+const AUTH_TIMEOUT_MS = 30000;
+const WAKE_HINT_MS = 5000;
+
+async function withWakeHint(task) {
+    let hint = null;
+    const timer = setTimeout(() => { hint = notify(t("auth.waking"), "info", 20000); }, WAKE_HINT_MS);
+    try {
+        return await task();
+    } finally {
+        clearTimeout(timer);
+        if (hint) hint.remove();
     }
 }
 
 // The text to show for a failed api() result: translated by errorKey, never the raw English server text
 // (except ValidationError / model-validation messages, which name the field that is wrong).
 function messageFromResponse(res) {
+    if (res && res.timedOut) return t("err.Timeout");
     if (!res || res.networkError) return t("err.ConnectionError");
     const data = res.data && typeof res.data === "object" ? res.data : {};
 
+    // A rate limit that says how long to wait is more useful than the generic text of its error key.
+    if (res.status === 429 && res.retryAfter > 0) return t("err.TooManyRequestsWait", { seconds: Math.min(res.retryAfter, 600) });
+
+    // Validation texts name the wrong field but the server writes them in English: only the English UI shows them as they are.
     if (data.errors && typeof data.errors === "object") {
         const joined = Object.values(data.errors).flat().map(String).join(" ").trim();
-        if (joined) return joined;
+        if (joined) return currentLanguage === "en" ? joined : t("err.ValidationError");
     }
-    if (data.errorKey === "ValidationError" && data.message) return stripOtpMarker(data.message);
+    if (data.errorKey === "ValidationError" && data.message) return currentLanguage === "en" ? stripOtpMarker(data.message) : t("err.ValidationError");
     if (data.errorKey && hasKey(`err.${data.errorKey}`)) return t(`err.${data.errorKey}`);
 
-    if (res.status === 429) return t("err.TooManyRequests");
+    if (res.status === 429) return res.retryAfter > 0 ? t("err.TooManyRequestsWait", { seconds: Math.min(res.retryAfter, 600) }) : t("err.TooManyRequests");
     if (res.status === 401) return t("err.SessionExpired");
     if (res.status === 403) return t("err.Forbidden");
     if (res.status >= 500) return t("err.ServerError");
@@ -618,6 +706,16 @@ function focusableIn(root) {
     return Array.from(root.querySelectorAll(FOCUSABLE)).filter(el => !el.closest(".hidden") && el.getClientRects().length > 0);
 }
 
+// While a dialog is open everything behind it is inert: no Tab stops, no clicks, hidden from screen readers. Toasts stay usable.
+const INERT_EXEMPT = "#toast-region, #mock-sms-toast, .skip-link, script";
+function syncModalInert() {
+    const top = modalStack[modalStack.length - 1] || null;
+    Array.from(document.body.children).forEach(el => {
+        if (!top || el === top || el.matches(INERT_EXEMPT)) el.removeAttribute("inert");
+        else el.setAttribute("inert", "");
+    });
+}
+
 function openModal(overlay, options) {
     if (!overlay) return;
     const opts = options || {};
@@ -631,6 +729,7 @@ function openModal(overlay, options) {
     }
     if (!modalStack.includes(overlay)) modalStack.push(overlay);
     document.body.classList.add("modal-open");
+    syncModalInert();
 
     const content = overlay.querySelector(".modal-content");
     let target = typeof opts.initialFocus === "string" ? overlay.querySelector(opts.initialFocus) : opts.initialFocus;
@@ -647,12 +746,16 @@ function closeModal(overlay, options) {
     const index = modalStack.indexOf(overlay);
     if (index >= 0) modalStack.splice(index, 1);
     if (!modalStack.length) document.body.classList.remove("modal-open");
+    syncModalInert();
     if (!state) return;
 
     if (state.onClose) state.onClose();
     const restore = !options || options.restoreFocus !== false;
-    if (restore && state.returnFocus && document.contains(state.returnFocus) && typeof state.returnFocus.focus === "function") {
-        state.returnFocus.focus();
+    if (restore) {
+        // The element that opened the dialog may be gone (a re-rendered list): focus then falls back to the page's main area.
+        const back = state.returnFocus && document.contains(state.returnFocus) && typeof state.returnFocus.focus === "function"
+            ? state.returnFocus : document.getElementById("main-content");
+        if (back) back.focus();
     }
 }
 
@@ -776,22 +879,30 @@ function uiPrompt(options) {
         confirmButton.addEventListener("click", submit);
         input.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); submit(); } });
         dialog.footer.append(cancel, confirmButton);
-        dialog.open({ initialFocus: input, onClose: () => resolve(answer) });
+        // A click beside the box must not throw away a half-typed value (a PIN): only Cancel, the X and Escape close it.
+        dialog.open({ initialFocus: input, closeOnBackdrop: false, onClose: () => resolve(answer) });
     });
 }
 
-// Non-blocking message (replaces alert()). Announced by screen readers through the live region.
-function notify(message, kind, timeoutMs) {
+// The toast region exists from the start (a live region that appears together with its first message is often not announced).
+function ensureToastRegion() {
     let region = byId("toast-region");
     if (!region) {
         region = h("div", { id: "toast-region", class: "toast-region", "aria-live": "polite", "aria-atomic": "false" });
         document.body.append(region);
     }
+    return region;
+}
+
+// Non-blocking message (replaces alert()). Announced by screen readers through the live region. Returns the toast element.
+function notify(message, kind, timeoutMs) {
+    const region = ensureToastRegion();
     const toast = h("div", { class: `toast toast-${kind === "error" ? "error" : kind === "success" ? "success" : "info"}`, role: kind === "error" ? "alert" : "status" },
         h("span", { class: "toast-text", text: message }),
         h("button", { type: "button", class: "toast-close", "aria-label": t("common.close"), onclick: () => toast.remove() }, "×"));
     region.append(toast);
     setTimeout(() => toast.remove(), timeoutMs || (kind === "error" ? 8000 : 5000));
+    return toast;
 }
 
 // The demo "notification" for one-time codes. Without a code (the normal case) the server e-mailed it.
@@ -864,7 +975,7 @@ const i18n = {
         "a11y.skip": "Skip to main content",
         "a11y.langToggle": "Switch language",
         "dialog.confirmTitle": "Please confirm",
-        "unit.gram": "Gr",
+        "unit.gram": "g",
 
         // Page titles
         "title.login": "SmartBank - Secure Banking Portal",
@@ -964,7 +1075,7 @@ const i18n = {
         "accounts.closeTransferDesc": "The account you want to close has a balance of {balance}. Select the account that receives it:",
         "accounts.targetLabel": "Target account for the balance",
         "accounts.transferAndClose": "Transfer & Close Account",
-        "accounts.timeInfo": "%{rate} interest | Term: 30 days",
+        "accounts.timeInfo": "{rate} interest | Term: 30 days",
         "acc.titleDemand": "SmartSavings",
         "acc.titleTime": "SmartDeposit (Time)",
         "acc.titleGold": "SmartGold",
@@ -1013,7 +1124,7 @@ const i18n = {
         "exchange.total": "Total:",
         "exchange.submit": "Complete Transaction",
         "exchange.noTry": "You have no TRY account",
-        "exchange.noAsset": "You have no {asset} account (buying opens one)",
+        "exchange.noAsset": "You have no {asset} account to sell from",
         "exchange.noAccount": "Please select a valid account.",
         "exchange.success": "Exchange transaction completed successfully!",
 
@@ -1032,10 +1143,7 @@ const i18n = {
         "history.openReceipt": "Open the receipt",
         "txType.Transfer": "Transfer",
         "txType.Deposit": "Deposit",
-        "txType.DepositMoney": "Deposit",
         "txType.Withdrawal": "Withdrawal",
-        "txType.Exchange": "Exchange",
-        "txType.ExchangeMoney": "Exchange",
         "slip.title": "Transaction Receipt",
         "slip.stamp": "SmartBank A.Ş. Approved",
         "slip.date": "Date:",
@@ -1068,7 +1176,7 @@ const i18n = {
         "customizer.flip": "Flip the card",
         "customizer.signature": "AUTHORIZED SIGNATURE",
         "customizer.cardInfo": "This card is property of SmartBank. Use is subject to bank rules.",
-        "customizer.theme": "Choose Theme:",
+        "customizer.theme": "Preview theme:",
         "theme.neon": "Neon Blue",
         "theme.sunset": "Sunset Orange",
         "theme.metallic": "Metallic Dark",
@@ -1251,7 +1359,7 @@ const i18n = {
         "agent.metricResolved": "Resolved Chats",
         "agent.metricTime": "Avg Response Time",
         "agent.metricCsat": "CSAT Score",
-        "agent.metricStatus": "Your Status",
+        "agent.metricStatus": "Your Status (display only)",
         "agent.statusActive": "Active",
         "agent.statusBusy": "Busy",
         "agent.statusBreak": "Break",
@@ -1282,6 +1390,44 @@ const i18n = {
         "agent.inputLabel": "Support message",
         "agent.inputPlaceholder": "Type support message...",
 
+        // New in 1.3.2
+        "unit.seconds": "s",
+        "auth.waking": "The demo server was asleep and is waking up. This can take up to a minute...",
+        "login.resend": "Send a new code",
+        "login.resent": "A new code was sent.",
+        "register.usernameShort": "The username must have at least 3 characters.",
+        "forgot.resendIn": "Send again in {seconds}s",
+        "transfer.destInvalid": "The account number must have 10 to 30 characters.",
+        "svc.deposit": "Deposit to account",
+        "svc.buy": "Bought {amount} {asset} (rate: {rate} TRY)",
+        "svc.sell": "Sold {amount} {asset} (rate: {rate} TRY)",
+        "svc.closeAccount": "Balance moved when closing an account ({from} -> {to}): {amount} {currency}",
+        "svc.cardPayment": "Credit card debt payment - card *{last4}",
+        "svc.cardAutoPartial": "Automatic credit card payment - partial ({period})",
+        "svc.cardAuto": "Automatic credit card payment ({period})",
+        "svc.interest": "Late fee and interest ({period})",
+        "svc.standingOrder": "Standing order: {type}",
+        "svc.groceries": "Grocery spending",
+        "exchange.indicativeHint": "The live rate is not available, so only an indicative price is shown and exchange is paused. Please try again in a moment.",
+        "market.indicative": "INDICATIVE",
+        "orders.inactive": "Inactive",
+        "orders.deleteConfirm": "Remove this inactive standing order from the list?",
+        "twofa.loadFailed": "The 2FA status could not be loaded.",
+        "twofa.pinWrong": "The password is not correct.",
+        "cards.issuedTitle": "Your card is ready",
+        "cards.issuedDesc": "Your card was created. The security code (CVV) is shown only now and cannot be displayed again, so please note it down.",
+        "cards.cvvLabel": "Security code (CVV)",
+        "chat.unread": "New message from support",
+        "chat.done": "Done",
+        "hub.sessionClosed": "This chat session has been closed.",
+        "hub.expired": "Your session expired. Please try again.",
+        "agent.chatLabel": "Chat",
+        "agent.closeConfirm": "Close this conversation for the customer?",
+        "err.AmountTooLarge": "The amount is above the allowed limit.",
+        "err.SimulationDisabled": "The simulation tools are switched off on this server.",
+        "err.Timeout": "The server did not answer in time. The demo server may be waking up; please try again in a moment.",
+        "err.TooManyRequestsWait": "Too many requests. Please wait {seconds} seconds and try again.",
+
         // Errors (server error keys and client-side problems)
         "err.Generic": "Something went wrong. Please try again.",
         "err.ConnectionError": "Connection to the server failed. Please check your connection and try again.",
@@ -1299,7 +1445,6 @@ const i18n = {
         "err.InvalidOrExpiredCode": "Invalid or expired verification code.",
         "err.InvalidOtpCode": "Invalid or expired verification code.",
         "err.InvalidRefreshToken": "Your session is no longer valid. Please sign in again.",
-        "err.TcknNotFound": "This T.C. Identity Number is not registered.",
         "err.UserNotFound": "The user was not found.",
         "err.PinRequired": "Please enter your 6-digit password.",
         "err.Requires2FA": "Two-factor verification required.",
@@ -1319,7 +1464,6 @@ const i18n = {
         "err.CurrencyMismatch": "Transfers between different currencies are not supported.",
         "err.InvalidSourceAccount": "This account cannot be used as the source.",
         "err.InvalidExchangeSource": "This account cannot be used for this exchange.",
-        "err.FailedToOpenAssetAccount": "The account for this currency or metal could not be opened.",
         "err.InvalidAmount": "The amount must be greater than zero.",
         "err.InvalidAmountScale": "The amount can have at most 2 decimal places.",
         "err.InvalidCurrency": "This currency is not supported.",
@@ -1367,7 +1511,7 @@ const i18n = {
         "a11y.skip": "Ana içeriğe geç",
         "a11y.langToggle": "Dili değiştir",
         "dialog.confirmTitle": "Lütfen onaylayın",
-        "unit.gram": "Gr",
+        "unit.gram": "gr",
 
         // Page titles
         "title.login": "SmartBank - Güvenli Bankacılık Portalı",
@@ -1467,7 +1611,7 @@ const i18n = {
         "accounts.closeTransferDesc": "Kapatmak istediğiniz hesapta {balance} bakiye bulunmaktadır. Bakiyenin aktarılacağı hesabı seçin:",
         "accounts.targetLabel": "Bakiyenin aktarılacağı hesap",
         "accounts.transferAndClose": "Aktar ve Hesabı Kapat",
-        "accounts.timeInfo": "%{rate} faiz | Vade: 30 gün",
+        "accounts.timeInfo": "{rate} faiz | Vade: 30 gün",
         "acc.titleDemand": "Vadesiz Hesap",
         "acc.titleTime": "SmartDeposit (Vadeli)",
         "acc.titleGold": "SmartGold (Altın)",
@@ -1516,7 +1660,7 @@ const i18n = {
         "exchange.total": "Toplam Karşılık:",
         "exchange.submit": "İşlemi Tamamla",
         "exchange.noTry": "TRY hesabınız bulunmuyor",
-        "exchange.noAsset": "{asset} hesabınız bulunmuyor (alış yapınca otomatik açılır)",
+        "exchange.noAsset": "Satış yapabileceğiniz bir {asset} hesabınız yok",
         "exchange.noAccount": "Lütfen geçerli bir hesap seçin.",
         "exchange.success": "Döviz/Maden işlemi başarıyla gerçekleştirildi!",
 
@@ -1535,10 +1679,7 @@ const i18n = {
         "history.openReceipt": "Dekontu aç",
         "txType.Transfer": "Transfer",
         "txType.Deposit": "Para Yatırma",
-        "txType.DepositMoney": "Para Yatırma",
         "txType.Withdrawal": "Para Çekme",
-        "txType.Exchange": "Döviz İşlemi",
-        "txType.ExchangeMoney": "Döviz İşlemi",
         "slip.title": "İşlem Sonucu Dekontu",
         "slip.stamp": "SmartBank A.Ş. Onaylıdır",
         "slip.date": "İşlem Tarihi:",
@@ -1571,7 +1712,7 @@ const i18n = {
         "customizer.flip": "Kartı çevir",
         "customizer.signature": "YETKİLİ İMZA",
         "customizer.cardInfo": "Bu kart SmartBank'ın mülkiyetindedir. Kullanımı banka kurallarına tabidir.",
-        "customizer.theme": "Tema Seçin:",
+        "customizer.theme": "Önizleme teması:",
         "theme.neon": "Neon Mavi",
         "theme.sunset": "Gün Batımı Turuncusu",
         "theme.metallic": "Metalik Koyu",
@@ -1754,7 +1895,7 @@ const i18n = {
         "agent.metricResolved": "Çözülen Sohbetler",
         "agent.metricTime": "Ort. Yanıt Süresi",
         "agent.metricCsat": "CSAT Skoru",
-        "agent.metricStatus": "Durumunuz",
+        "agent.metricStatus": "Durumunuz (yalnızca görünüm)",
         "agent.statusActive": "Aktif",
         "agent.statusBusy": "Meşgul",
         "agent.statusBreak": "Mola",
@@ -1785,6 +1926,44 @@ const i18n = {
         "agent.inputLabel": "Destek mesajı",
         "agent.inputPlaceholder": "Destek mesajı yazın...",
 
+        // New in 1.3.2
+        "unit.seconds": "sn",
+        "auth.waking": "Demo sunucusu uykudaydı ve uyanıyor. Bu bir dakikaya kadar sürebilir...",
+        "login.resend": "Yeni kod gönder",
+        "login.resent": "Yeni bir kod gönderildi.",
+        "register.usernameShort": "Kullanıcı adı en az 3 karakter olmalıdır.",
+        "forgot.resendIn": "{seconds} sn sonra tekrar gönder",
+        "transfer.destInvalid": "Hesap numarası 10 ile 30 karakter arasında olmalıdır.",
+        "svc.deposit": "Hesaba Para Yükleme",
+        "svc.buy": "{amount} {asset} Alımı (Kur: {rate} TRY)",
+        "svc.sell": "{amount} {asset} Satışı (Kur: {rate} TRY)",
+        "svc.closeAccount": "Hesap Kapatma Bakiye Aktarımı ({from} -> {to}): {amount} {currency}",
+        "svc.cardPayment": "Kredi Kartı Borç Ödeme - Kart: *{last4}",
+        "svc.cardAutoPartial": "Kredi Kartı Otomatik Borç Ödeme - Kısmi ({period})",
+        "svc.cardAuto": "Kredi Kartı Otomatik Borç Ödeme ({period})",
+        "svc.interest": "Gecikme/Akdi Faiz Yansıması ({period})",
+        "svc.standingOrder": "Otomatik Talimat: {type}",
+        "svc.groceries": "Market Harcaması",
+        "exchange.indicativeHint": "Canlı kur alınamadığı için yalnızca gösterge fiyat gösteriliyor ve döviz işlemi duraklatıldı. Lütfen biraz sonra tekrar deneyin.",
+        "market.indicative": "GÖSTERGE",
+        "orders.inactive": "Pasif",
+        "orders.deleteConfirm": "Bu pasif talimat listeden kaldırılsın mı?",
+        "twofa.loadFailed": "2FA durumu yüklenemedi.",
+        "twofa.pinWrong": "Şifre doğru değil.",
+        "cards.issuedTitle": "Kartınız hazır",
+        "cards.issuedDesc": "Kartınız oluşturuldu. Güvenlik kodu (CVV) yalnızca şimdi gösterilir ve bir daha görüntülenemez, lütfen not alın.",
+        "cards.cvvLabel": "Güvenlik kodu (CVV)",
+        "chat.unread": "Destekten yeni mesaj",
+        "chat.done": "Tamamlandı",
+        "hub.sessionClosed": "Bu sohbet oturumu kapatıldı.",
+        "hub.expired": "Oturumunuz sona erdi. Lütfen tekrar deneyin.",
+        "agent.chatLabel": "Sohbet",
+        "agent.closeConfirm": "Bu görüşme müşteri için kapatılsın mı?",
+        "err.AmountTooLarge": "Tutar izin verilen sınırın üzerinde.",
+        "err.SimulationDisabled": "Bu sunucuda simülasyon araçları kapalı.",
+        "err.Timeout": "Sunucu zamanında yanıt vermedi. Demo sunucusu uyanıyor olabilir; lütfen biraz sonra tekrar deneyin.",
+        "err.TooManyRequestsWait": "Çok fazla istek. Lütfen {seconds} saniye bekleyip tekrar deneyin.",
+
         // Errors (server error keys and client-side problems)
         "err.Generic": "Bir sorun oluştu. Lütfen tekrar deneyin.",
         "err.ConnectionError": "Sunucuya bağlanılamadı. Lütfen bağlantınızı kontrol edip tekrar deneyin.",
@@ -1802,7 +1981,6 @@ const i18n = {
         "err.InvalidOrExpiredCode": "Geçersiz veya süresi dolmuş doğrulama kodu.",
         "err.InvalidOtpCode": "Geçersiz veya süresi dolmuş doğrulama kodu.",
         "err.InvalidRefreshToken": "Oturumunuz artık geçerli değil. Lütfen tekrar giriş yapın.",
-        "err.TcknNotFound": "Bu T.C. Kimlik Numarası sistemde kayıtlı değil.",
         "err.UserNotFound": "Kullanıcı bulunamadı.",
         "err.PinRequired": "Lütfen 6 haneli şifrenizi girin.",
         "err.Requires2FA": "İki aşamalı güvenlik doğrulaması gerekiyor.",
@@ -1822,7 +2000,6 @@ const i18n = {
         "err.CurrencyMismatch": "Farklı para birimleri arasında transfer desteklenmiyor.",
         "err.InvalidSourceAccount": "Bu hesap kaynak olarak kullanılamaz.",
         "err.InvalidExchangeSource": "Bu hesap bu döviz işlemi için kullanılamaz.",
-        "err.FailedToOpenAssetAccount": "Bu döviz veya maden için hesap açılamadı.",
         "err.InvalidAmount": "Tutar sıfırdan büyük olmalıdır.",
         "err.InvalidAmountScale": "Tutar en fazla 2 ondalık basamak içerebilir.",
         "err.InvalidCurrency": "Bu para birimi desteklenmiyor.",
@@ -1915,6 +2092,7 @@ function initAuthEvents() {
 function initLoginForm() {
     const form = byId("login-form");
     const submit = byId("btn-login-submit");
+    const resendButton = byId("btn-login-resend");
     const errorDiv = byId("login-error");
     const state = { step: "credentials", demo: false };
 
@@ -1922,6 +2100,7 @@ function initLoginForm() {
         const is2fa = state.step === "2fa";
         byId("login-2fa-group").classList.toggle("hidden", !is2fa);
         byId("btn-login-back").classList.toggle("hidden", !is2fa);
+        resendButton.classList.toggle("hidden", !is2fa);
         byId("login-tckn").readOnly = is2fa;
         byId("login-password").readOnly = is2fa;
         submit.textContent = t(is2fa ? "login.verify" : "login.submit");
@@ -1951,43 +2130,50 @@ function initLoginForm() {
         redirectByUserRole();
     };
 
+    // First step (and "send a new code"): the credentials go to the server, which either signs in or asks for a code.
+    const signIn = async (resend) => {
+        hideMessage(errorDiv);
+        const tckn = byId("login-tckn").value.trim();
+        const password = byId("login-password").value;
+
+        if (!/^\d{11}$/.test(tckn)) { fail(t("login.tcknInvalid"), "login-tckn"); return; }
+        if (!/^\d{6}$/.test(password)) { fail(t("login.passwordInvalid"), "login-password"); return; }
+
+        const res = await withWakeHint(() => api("/auth/login", { method: "POST", auth: false, timeoutMs: AUTH_TIMEOUT_MS, body: { tckn, password } }));
+        if (!res.ok) {
+            if (res.data && res.data.errorKey === "Requires2FA") {
+                // The server only appends "|OTP:code" in demo mode (Demo:ExposeOtp). Normally the code is e-mailed.
+                const { otp } = splitOtpMarker(res.data.message);
+                state.demo = !!otp;
+                state.step = "2fa";
+                showOtpToast(otp);
+                applyStep(!resend);
+                if (resend) notify(t("login.resent"), "success");
+                return;
+            }
+            fail(messageFromResponse(res));
+            return;
+        }
+        finishLogin(res.data);
+    };
+
     form.addEventListener("submit", event => {
         event.preventDefault();
         withBusy(submit, async () => {
+            if (state.step !== "2fa") { await signIn(false); return; }
+
             hideMessage(errorDiv);
             const tckn = byId("login-tckn").value.trim();
-            const password = byId("login-password").value;
+            const code = byId("login-2fa-code").value.trim();
+            if (!/^\d{6}$/.test(code)) { fail(t("login.codeInvalid"), "login-2fa-code"); return; }
 
-            if (state.step === "2fa") {
-                const code = byId("login-2fa-code").value.trim();
-                if (!/^\d{6}$/.test(code)) { fail(t("login.codeInvalid"), "login-2fa-code"); return; }
-
-                const res = await api("/auth/verify-2fa", { method: "POST", auth: false, body: { tckn, code } });
-                if (!res.ok) { fail(messageFromResponse(res), "login-2fa-code"); return; }
-                finishLogin(res.data);
-                return;
-            }
-
-            if (!/^\d{11}$/.test(tckn)) { fail(t("login.tcknInvalid"), "login-tckn"); return; }
-            if (!/^\d{6}$/.test(password)) { fail(t("login.passwordInvalid"), "login-password"); return; }
-
-            const res = await api("/auth/login", { method: "POST", auth: false, body: { tckn, password } });
-            if (!res.ok) {
-                if (res.data && res.data.errorKey === "Requires2FA") {
-                    // The server only appends "|OTP:code" in demo mode (Demo:ExposeOtp). Normally the code is e-mailed.
-                    const { otp } = splitOtpMarker(res.data.message);
-                    state.demo = !!otp;
-                    state.step = "2fa";
-                    showOtpToast(otp);
-                    applyStep(true);
-                    return;
-                }
-                fail(messageFromResponse(res));
-                return;
-            }
+            const res = await withWakeHint(() => api("/auth/verify-2fa", { method: "POST", auth: false, timeoutMs: AUTH_TIMEOUT_MS, body: { tckn, code } }));
+            if (!res.ok) { fail(messageFromResponse(res), "login-2fa-code"); return; }
             finishLogin(res.data);
         });
     });
+
+    resendButton.addEventListener("click", () => withBusy(resendButton, () => signIn(true)));
 }
 
 function initRegisterForm() {
@@ -2011,12 +2197,15 @@ function initRegisterForm() {
             if (!NAME_PATTERN.test(firstName)) { fail(t("register.firstNameInvalid"), "reg-firstname"); return; }
             if (!NAME_PATTERN.test(lastName)) { fail(t("register.lastNameInvalid"), "reg-lastname"); return; }
             if (!username) { fail(t("register.usernameRequired"), "reg-username"); return; }
+            if (username.length < 3) { fail(t("register.usernameShort"), "reg-username"); return; }
             if (!EMAIL_PATTERN.test(email)) { fail(t("register.emailInvalid"), "reg-email"); return; }
             // The same check-digit rule as the server (docs/DEFENSE.md, T15): catches a mistyped number before the request.
             if (!isValidTckn(tckn)) { fail(t("register.tcknInvalid"), "reg-tckn"); return; }
             if (!/^\d{6}$/.test(password)) { fail(t("register.passwordInvalid"), "reg-password"); return; }
 
-            const res = await api("/auth/register", { method: "POST", auth: false, body: { firstName, lastName, username, email, tckn, password } });
+            const res = await withWakeHint(() => api("/auth/register", {
+                method: "POST", auth: false, timeoutMs: AUTH_TIMEOUT_MS, body: { firstName, lastName, username, email, tckn, password }
+            }));
             if (!res.ok) { showMessage(errorDiv, messageFromResponse(res), "error"); return; }
             if (!res.data || !res.data.token) { showMessage(errorDiv, t("err.Generic"), "error"); return; }
 
@@ -2036,13 +2225,31 @@ function initForgotForm() {
     const hideAll = () => { hideMessage(errorDiv); hideMessage(successDiv); };
     const fail = (text, focusId) => { hideAll(); showMessage(errorDiv, text, "error"); if (focusId) byId(focusId).focus(); };
 
+    // The server also throttles repeats; the button counts the minute down so nobody has to guess why it is grey.
+    const COOLDOWN_MS = 60000;
+    let cooldownUntil = 0;
+    let cooldownTimer = null;
+    const renderSendButton = () => {
+        const left = Math.ceil((cooldownUntil - Date.now()) / 1000);
+        if (left > 0) {
+            btnSend.disabled = true;
+            btnSend.textContent = t("forgot.resendIn", { seconds: left });
+        } else {
+            clearInterval(cooldownTimer);
+            cooldownTimer = null;
+            if (btnSend.dataset.busy !== "1") btnSend.disabled = false;
+            btnSend.textContent = t("forgot.sendCode");
+        }
+    };
+    onLanguageChange(renderSendButton);
+
     btnSend.addEventListener("click", async () => {
         const tckn = byId("forgot-tckn").value.trim();
         hideAll();
         if (!/^\d{11}$/.test(tckn)) { fail(t("forgot.tcknInvalid"), "forgot-tckn"); return; }
 
         const sent = await withBusy(btnSend, async () => {
-            const res = await api("/auth/forgot-password", { method: "POST", auth: false, body: { tckn } });
+            const res = await withWakeHint(() => api("/auth/forgot-password", { method: "POST", auth: false, timeoutMs: AUTH_TIMEOUT_MS, body: { tckn } }));
             if (!res.ok) { fail(messageFromResponse(res)); return false; }
             // The answer is the same whether or not the T.C. number is registered.
             showMessage(successDiv, t("forgot.codeSent"), "success");
@@ -2051,9 +2258,10 @@ function initForgotForm() {
         });
 
         if (sent) {
-            // The server also throttles repeats; this just keeps the button from being hammered.
-            btnSend.disabled = true;
-            setTimeout(() => { btnSend.disabled = false; }, 60000);
+            cooldownUntil = Date.now() + COOLDOWN_MS;
+            clearInterval(cooldownTimer);
+            cooldownTimer = setInterval(renderSendButton, 1000);
+            renderSendButton();
         }
     });
 
@@ -2069,7 +2277,7 @@ function initForgotForm() {
             if (!/^\d{6}$/.test(code)) { fail(t("login.codeInvalid"), "forgot-code"); return; }
             if (!/^\d{6}$/.test(newPassword)) { fail(t("register.passwordInvalid"), "forgot-new-password"); return; }
 
-            const res = await api("/auth/reset-password", { method: "POST", auth: false, body: { tckn, code, newPassword } });
+            const res = await withWakeHint(() => api("/auth/reset-password", { method: "POST", auth: false, timeoutMs: AUTH_TIMEOUT_MS, body: { tckn, code, newPassword } }));
             if (!res.ok) { fail(messageFromResponse(res)); return; }
 
             showMessage(successDiv, t("forgot.success"), "success");
@@ -2131,7 +2339,7 @@ function renderAccounts(accounts) {
             h("div", { class: "account-meta" }, `${t("accounts.code")} `, h("span", { class: "account-meta-value", text: acc.accountCode || "-" })));
 
         if (acc.accountType === "TimeDeposit" && Number(acc.interestRate) > 0) {
-            card.append(h("div", { class: "account-extra", text: t("accounts.timeInfo", { rate: formatNumber(acc.interestRate, 2) }) }));
+            card.append(h("div", { class: "account-extra", text: t("accounts.timeInfo", { rate: formatPercent(acc.interestRate) }) }));
         }
 
         const deleteButton = h("button", { type: "button", class: "btn btn-danger btn-xs account-delete", text: t("accounts.delete"),
@@ -2193,6 +2401,7 @@ async function startAccountDeletion(acc, button) {
         notify(t("accounts.deleted"), "success");
         if (activeAccountId === acc.id) activeAccountId = null;
         await accountsStore.refresh(true);
+        if (activeAccountId) loadTransactions(activeAccountId);
         return true;
     };
 
@@ -2231,25 +2440,29 @@ function transactionIcon(tx) {
     return CATEGORY_ICONS[tx.category] || "💸";
 }
 
-// Is this movement money leaving the given account? Uses the structured fields; the description is only a last resort.
+// Is this movement money leaving the given account? The server's types are Deposit, Withdrawal and Transfer (an exchange is a
+// Transfer between two of the customer's own accounts), so the account numbers decide.
 function isOutgoingTransaction(tx, accountNumber) {
     switch (tx.type) {
         case "Deposit":
-        case "DepositMoney":
             return false;
         case "Transfer":
             if (tx.destinationAccountNumber === accountNumber) return false;
             return tx.sourceAccountNumber === accountNumber;
-        case "Exchange":
-        case "ExchangeMoney": {
-            if (tx.sourceAccountNumber === accountNumber && tx.destinationAccountNumber !== accountNumber) return true;
-            if (tx.destinationAccountNumber === accountNumber && tx.sourceAccountNumber !== accountNumber) return false;
-            const description = String(tx.description ?? "").toLocaleLowerCase("tr-TR");
-            return description.includes("alım") || description.includes("alim") || description.includes("buy");
-        }
         default:
             return tx.sourceAccountNumber === accountNumber;
     }
+}
+
+// The amount and currency the viewed account sees. The server sends one amount and one currency per side (an exchange moves
+// TRY on one side and dollars or grams on the other); an older answer without them falls back to amount + the account's currency.
+function transactionSide(tx, outgoing, fallbackCurrency) {
+    const amount = outgoing ? tx.sourceAmount : tx.destinationAmount;
+    const currency = outgoing ? tx.sourceCurrency : tx.destinationCurrency;
+    return {
+        amount: amount !== null && amount !== undefined ? amount : tx.amount,
+        currency: currency || tx.currency || fallbackCurrency
+    };
 }
 
 async function loadTransactions(accountId) {
@@ -2292,13 +2505,14 @@ function renderTransactions() {
     const visible = showAllTransactions ? items : items.slice(0, 5);
     visible.forEach(tx => {
         const outgoing = isOutgoingTransaction(tx, accountNumber);
+        const side = transactionSide(tx, outgoing, acc && acc.currency);
         const typeLabel = hasKey(`txType.${tx.type}`) ? t(`txType.${tx.type}`) : String(tx.type ?? "-");
         const row = h("tr", { class: "clickable-row", tabindex: "0", title: t("history.openReceipt") },
             h("td", { text: formatShortDateTime(tx.createdAt) }),
             h("td", null, h("span", { class: "badge-role", text: typeLabel })),
-            h("td", null, h("span", { class: "tx-icon", "aria-hidden": "true", text: transactionIcon(tx) }), tx.description || "-"),
+            h("td", null, h("span", { class: "tx-icon", "aria-hidden": "true", text: transactionIcon(tx) }), serverDescription(tx.description) || "-"),
             h("td", { class: `text-right ${outgoing ? "tx-amount-negative" : "tx-amount-positive"}`,
-                text: `${outgoing ? "-" : "+"}${formatMoney(tx.amount, tx.currency || (acc && acc.currency))}` }));
+                text: `${outgoing ? "-" : "+"}${formatMoney(side.amount, side.currency)}` }));
         row.addEventListener("click", () => showTransactionSlip(tx));
         row.addEventListener("keydown", event => {
             if (event.key === "Enter" || event.key === " ") { event.preventDefault(); showTransactionSlip(tx); }
@@ -2326,8 +2540,15 @@ function showTransactionSlip(tx) {
     byId("slip-sender-acc").textContent = tx.sourceAccountNumber || "-";
     byId("slip-receiver-name").textContent = tx.destinationAccountOwnerName || t("slip.customer");
     byId("slip-receiver-acc").textContent = tx.destinationAccountNumber || "-";
-    byId("slip-amount").textContent = formatMoney(tx.amount, tx.currency || (acc && acc.currency));
-    byId("slip-desc").textContent = tx.description || "-";
+    // A conversion shows both sides ("100.00 USD -> 3,450.00 TRY"); everything else the amount of the viewed account.
+    const outgoing = isOutgoingTransaction(tx, acc ? acc.accountNumber : "");
+    const side = transactionSide(tx, outgoing, acc && acc.currency);
+    const converted = tx.sourceCurrency && tx.destinationCurrency && tx.sourceCurrency !== tx.destinationCurrency
+        && tx.sourceAmount !== null && tx.sourceAmount !== undefined && tx.destinationAmount !== null && tx.destinationAmount !== undefined;
+    byId("slip-amount").textContent = converted
+        ? `${formatMoney(tx.sourceAmount, tx.sourceCurrency)} -> ${formatMoney(tx.destinationAmount, tx.destinationCurrency)}`
+        : formatMoney(side.amount, side.currency);
+    byId("slip-desc").textContent = serverDescription(tx.description) || "-";
 
     openModal(modal, { initialFocus: "#btn-close-slip" });
 }
@@ -2346,7 +2567,7 @@ function initHistoryAndSlip() {
 let currentOtpCallback = null;
 
 // Shows the one-time code dialog. confirmCallback(code) resolves to { success, message }.
-function showOTPModal(reasonMessage, confirmCallback) {
+function showOTPModal(reasonMessage, confirmCallback, onClosed) {
     const modal = byId("otp-modal");
     const inputEl = byId("otp-code-input");
     if (!modal || !inputEl) return;
@@ -2358,7 +2579,7 @@ function showOTPModal(reasonMessage, confirmCallback) {
     byId("btn-submit-otp").disabled = false;
 
     currentOtpCallback = confirmCallback;
-    openModal(modal, { initialFocus: inputEl, closeOnBackdrop: false, onClose: () => { currentOtpCallback = null; } });
+    openModal(modal, { initialFocus: inputEl, closeOnBackdrop: false, onClose: () => { currentOtpCallback = null; if (onClosed) onClosed(); } });
 }
 
 function initOTPModalEvents() {
@@ -2421,13 +2642,14 @@ async function handleTransferSubmit() {
     hideMessage(msgEl);
 
     const sourceAccountNumber = byId("transfer-source").value;
-    const destinationAccountNumber = byId("transfer-dest").value.trim();
+    const destinationAccountNumber = normalizeAccountNumber(byId("transfer-dest").value);
     const description = byId("transfer-desc-input").value.trim();
     const category = byId("transfer-category-input").value;
     const amount = parseAmount(byId("transfer-amount").value);
 
     if (!sourceAccountNumber) { showMessage(msgEl, t("transfer.noSource"), "error"); byId("transfer-source").focus(); return; }
     if (!destinationAccountNumber) { showMessage(msgEl, t("transfer.noDest"), "error"); byId("transfer-dest").focus(); return; }
+    if (destinationAccountNumber.length < 10 || destinationAccountNumber.length > 30) { showMessage(msgEl, t("transfer.destInvalid"), "error"); byId("transfer-dest").focus(); return; }
     if (!amount.ok) { showMessage(msgEl, errorText(amount.errorKey), "error"); byId("transfer-amount").focus(); return; }
 
     const payload = { sourceAccountNumber, destinationAccountNumber, amount: amount.value, description, category };
@@ -2463,14 +2685,30 @@ function initTransferForm() {
    ========================================================================== */
 let activeMarketRates = [];
 
+// The rate row of the selected asset (null while the rates have not arrived).
+function selectedRateInfo() {
+    const select = byId("exchange-asset");
+    return select ? activeMarketRates.find(rate => rate.code === select.value) || null : null;
+}
+
 function updateExchangeRateDisplay() {
     const rateEl = byId("exchange-current-rate");
     const totalEl = byId("exchange-total-cost");
     if (!rateEl || !totalEl) return;
 
-    const asset = byId("exchange-asset").value;
     const action = byId("exchange-action").value;
-    const info = activeMarketRates.find(rate => rate.code === asset);
+    const info = selectedRateInfo();
+
+    // A stand-in price (the live feed is down) is shown as indicative and the form is paused: the server refuses to trade at it.
+    const indicative = !!(info && info.isFallback);
+    const hint = byId("exchange-rate-hint");
+    const submitButton = byId("btn-exchange-submit");
+    if (hint) {
+        hint.classList.toggle("hidden", !indicative);
+        hint.textContent = indicative ? t("exchange.indicativeHint") : "";
+    }
+    if (submitButton && submitButton.dataset.busy !== "1") submitButton.disabled = indicative;
+
     if (!info) {
         rateEl.textContent = "-";
         totalEl.textContent = formatMoney(0, "TRY");
@@ -2523,6 +2761,9 @@ function initExchangeWidget() {
             const action = byId("exchange-action").value;
             const amount = parseAmount(byId("exchange-amount").value);
 
+            const info = selectedRateInfo();
+            if (info && info.isFallback) { showMessage(msgEl, t("exchange.indicativeHint"), "error"); return; }
+
             if (!sourceAccountId) { showMessage(msgEl, t("exchange.noAccount"), "error"); byId("exchange-source").focus(); return; }
             if (!amount.ok) { showMessage(msgEl, errorText(amount.errorKey), "error"); byId("exchange-amount").focus(); return; }
 
@@ -2533,7 +2774,7 @@ function initExchangeWidget() {
             byId("exchange-amount").value = "";
             await accountsStore.refresh(true);
             if (activeAccountId) loadTransactions(activeAccountId);
-        });
+        }).then(updateExchangeRateDisplay); // withBusy re-enables the button: apply the indicative-price lock again
     });
 }
 
@@ -2636,6 +2877,7 @@ function initSavedContacts() {
         else aliasInput.focus();
     });
     selectEl.addEventListener("change", () => { if (selectEl.value) byId("transfer-dest").value = selectEl.value; });
+    byId("transfer-dest").addEventListener("blur", event => { event.currentTarget.value = normalizeAccountNumber(event.currentTarget.value); });
     byId("btn-manage-contacts").addEventListener("click", openManageContacts);
     onLanguageChange(renderContactSelect);
     loadSavedContacts();
@@ -2646,6 +2888,8 @@ function initSavedContacts() {
    Credit cards, statements and the card panel (dashboard.html)
    ========================================================================== */
 let currentStatement = null;   // the newest statement of the selected card (null while loading or when there is none)
+let chosenTheme = null;        // the theme the customer picked in the preview (kept across refreshes and language changes)
+let simulationDisabled = false;
 
 function maskedCardNumber(card) {
     return `**** **** **** ${String(card.cardNumber || "").slice(-4) || "0000"}`;
@@ -2656,10 +2900,10 @@ function updateCardPreview(card) {
     if (!numberEl) return;
     numberEl.textContent = card ? maskedCardNumber(card) : "**** **** **** ****";
     byId("preview-card-expiry").textContent = `EXP ${(card && card.expiryDate) || "12/31"}`;
-    // The CVV is never stored: it only arrives in the response that issues the card.
-    byId("preview-card-cvv").textContent = (card && card.cardCvv) || "•••";
+    // The CVV is never stored or listed: it is shown once, in a dialog, when the card is issued (see showIssuedCardDialog).
+    byId("preview-card-cvv").textContent = "•••";
     byId("preview-card-type-badge").textContent = "CREDIT CARD";
-    setCardTheme((card && card.cardTheme) || "theme-neon-blue");
+    setCardTheme(chosenTheme || (card && card.cardTheme) || "theme-neon-blue");
 }
 
 function setCardTheme(theme) {
@@ -2763,7 +3007,7 @@ function renderStatement() {
         return;
     }
 
-    byId("val-cc-stmt-period").textContent = stmt.periodName || "-";
+    byId("val-cc-stmt-period").textContent = stmt.periodName ? localizePeriodName(stmt.periodName) : "-";
     byId("val-cc-stmt-debt").textContent = formatMoney(stmt.periodDebt, "TRY");
     byId("val-cc-stmt-min").textContent = formatMoney(stmt.minimumPayment, "TRY");
     byId("val-cc-stmt-due").textContent = formatBusinessDate(stmt.dueDate);
@@ -2790,7 +3034,7 @@ function renderStatement() {
     transactions.forEach(tx => {
         tbody.append(h("tr", null,
             h("td", { text: formatShortDateTime(tx.createdAt) }),
-            h("td", { text: tx.description || "-" }),
+            h("td", { text: serverDescription(tx.description) || "-" }),
             h("td", { class: "text-right tx-amount-negative", text: `-${formatMoney(tx.amount, "TRY")}` })));
     });
 }
@@ -2837,6 +3081,30 @@ function populatePaymentSources() {
     if (previous && Array.from(select.options).some(option => option.value === previous)) select.value = previous;
 }
 
+// The server shows the CVV exactly once, in the answer that issues the card. It lives in this dialog only (never in the store,
+// storage or the card list) and is gone when the dialog closes.
+function showIssuedCardDialog(card) {
+    const dialog = createDialog({ title: t("cards.issuedTitle"), description: t("cards.issuedDesc") });
+    dialog.body.append(
+        h("div", { class: "cvv-card-no", text: maskedCardNumber(card) }),
+        h("p", { class: "dialog-text", text: t("cards.cvvLabel") }),
+        h("div", { class: "cvv-box", text: String(card.cardCvv) }));
+    const ok = h("button", { type: "button", class: "btn btn-primary btn-block", text: t("common.ok") });
+    ok.addEventListener("click", () => dialog.close());
+    dialog.footer.append(ok);
+    dialog.open({ initialFocus: ok, closeOnBackdrop: false });
+}
+
+// The charge and advance-period simulations can be switched off on the server (404 SimulationDisabled): their widgets go away.
+function isSimulationDisabled(res) {
+    return !!(res && !res.ok && res.data && res.data.errorKey === "SimulationDisabled");
+}
+
+function hideSimulationWidgets() {
+    simulationDisabled = true;
+    ["cc-sim-advance", "cc-sim-charge"].forEach(id => { const el = byId(id); if (el) el.classList.add("hidden"); });
+}
+
 function initCreditCardEvents() {
     cardsStore.subscribe(renderCreditCards);
     accountsStore.subscribe(populatePaymentSources);
@@ -2877,6 +3145,7 @@ function initCreditCardEvents() {
             showMessage(payMsg, t("cards.paySuccess"), "success");
             amountInput.value = "";
             await Promise.all([accountsStore.refresh(true), refreshCreditCardPanel()]);
+            if (activeAccountId) loadTransactions(activeAccountId); // the payment left the TRY account
         });
     });
 
@@ -2894,7 +3163,11 @@ function initCreditCardEvents() {
             if (!amount.ok) { showMessage(chargeMsg, errorText(amount.errorKey), "error"); byId("cc-charge-amount").focus(); return; }
 
             const res = await api(`/banking/credit-cards/${encodeURIComponent(activeCreditCardId)}/charge?amount=${encodeURIComponent(String(amount.value))}&description=${encodeURIComponent(description)}`, { method: "POST" });
-            if (!res.ok) { showMessage(chargeMsg, messageFromResponse(res), "error"); return; }
+            if (!res.ok) {
+                if (isSimulationDisabled(res)) hideSimulationWidgets();
+                showMessage(chargeMsg, messageFromResponse(res), "error");
+                return;
+            }
 
             showMessage(chargeMsg, t("cards.chargeSuccess"), "success");
             chargeForm.reset();
@@ -2909,7 +3182,11 @@ function initCreditCardEvents() {
         if (!(await uiConfirm(t("cards.advanceConfirm"), { danger: true, confirmText: t("cards.advanceBtn") }))) return;
         await withBusy(button, async () => {
             const res = await api(`/banking/credit-cards/${encodeURIComponent(activeCreditCardId)}/advance-period`, { method: "POST" });
-            if (!res.ok) { notify(messageFromResponse(res), "error"); return; }
+            if (!res.ok) {
+                if (isSimulationDisabled(res)) hideSimulationWidgets();
+                notify(messageFromResponse(res), "error");
+                return;
+            }
             notify(t("cards.advanceDone"), "success");
             await Promise.all([accountsStore.refresh(true), refreshCreditCardPanel()]);
         });
@@ -2925,6 +3202,7 @@ function initCreditCardEvents() {
             notify(t("cards.applyDone"), "success");
             celebrate();
             await refreshCreditCardPanel();
+            if (res.data && res.data.cardCvv) showIssuedCardDialog(res.data);
         });
     });
 }
@@ -2971,7 +3249,7 @@ function renderDepositTiers() {
             : t("newacc.rangeOver", { from: formatNumber(from, 0, 0) });
         body.append(h("tr", null,
             h("td", { text: range }),
-            h("td", { class: "text-right value-positive", text: `%${formatNumber(tier.rate, 2)}` })));
+            h("td", { class: "text-right value-positive", text: formatPercent(tier.rate) })));
         from = tier.upTo;
     });
 }
@@ -3014,7 +3292,7 @@ function initCreateAccountEvent() {
         const tier = DEPOSIT_TIERS.find(candidate => principal.value < candidate.upTo) || DEPOSIT_TIERS[DEPOSIT_TIERS.length - 1];
         const gross = principal.value * (tier.rate / 100) * (DEPOSIT_TERM_DAYS / 365);
         const net = gross - gross * DEPOSIT_WITHHOLDING_TAX;
-        byId("calc-rate").textContent = `%${formatNumber(tier.rate, 2)}`;
+        byId("calc-rate").textContent = formatPercent(tier.rate);
         byId("calc-net-profit").textContent = formatMoney(net, "TRY");
         byId("calc-result").classList.remove("hidden");
     });
@@ -3073,21 +3351,24 @@ function renderStandingOrders() {
     }
 
     standingOrders.forEach(order => {
-        const isCard = order.type === "CreditCardAutoPay";
+        // The API names the kind "orderType" ("Transfer" or "CreditCardAutoPay"); the card's last four digits come with it.
+        const isCard = order.orderType === "CreditCardAutoPay";
+        const inactive = order.isActive === false;
         const description = isCard
-            ? t("orders.descCard")
+            ? `${t("orders.descCard")}${order.creditCardLast4 ? ` (**** ${order.creditCardLast4})` : ""}`
             : t("orders.descTransfer", { freq: frequencyLabel(order.frequency), amount: formatMoney(order.amount, "TRY"), dest: order.destinationAccountNumber });
-        const cancelButton = h("button", { type: "button", class: "btn btn-danger btn-xs so-cancel", text: t("orders.cancel") });
+        const cancelButton = h("button", { type: "button", class: "btn btn-danger btn-xs so-cancel", text: inactive ? t("common.delete") : t("orders.cancel") });
 
         cancelButton.addEventListener("click", async () => {
-            if (!(await uiConfirm(t("orders.cancelConfirm"), { danger: true, confirmText: t("orders.cancel") }))) return;
+            if (!(await uiConfirm(t(inactive ? "orders.deleteConfirm" : "orders.cancelConfirm"), { danger: true, confirmText: inactive ? t("common.delete") : t("orders.cancel") }))) return;
             const res = await withBusy(cancelButton, () => api(`/banking/standing-orders/${encodeURIComponent(order.id)}`, { method: "DELETE" }));
             if (!res) return;
             if (res.ok) loadStandingOrders();
             else notify(messageFromResponse(res), "error");
         });
 
-        listEl.append(h("div", { class: "account-card glassmorphism so-item" },
+        listEl.append(h("div", { class: `account-card glassmorphism so-item${inactive ? " so-inactive" : ""}` },
+            inactive ? h("span", { class: "so-inactive-badge", text: t("orders.inactive") }) : null,
             h("div", { class: "so-item-title", text: isCard ? t("orders.titleCard") : t("orders.titleTransfer") }),
             h("div", { class: "so-item-desc", text: description }),
             h("div", { class: "so-item-source", text: t("orders.sourceLabel") + ": " + order.sourceAccountNumber }),
@@ -3147,10 +3428,11 @@ function initStandingOrders() {
             if (!sourceAccountNumber) { showMessage(msgEl, t("orders.noSource"), "error"); return; }
 
             if (type === "Transfer") {
-                destinationAccountNumber = byId("so-dest-acc").value.trim();
+                destinationAccountNumber = normalizeAccountNumber(byId("so-dest-acc").value);
                 frequency = byId("so-frequency").value;
-                const parsed = parseAmount(byId("so-amount").value);
+                const parsed = parseAmount(byId("so-amount").value, MAX_STANDING_ORDER_AMOUNT);
                 if (!destinationAccountNumber) { showMessage(msgEl, t("transfer.noDest"), "error"); byId("so-dest-acc").focus(); return; }
+                if (destinationAccountNumber.length < 10 || destinationAccountNumber.length > 30) { showMessage(msgEl, t("transfer.destInvalid"), "error"); byId("so-dest-acc").focus(); return; }
                 if (!parsed.ok) { showMessage(msgEl, errorText(parsed.errorKey), "error"); byId("so-amount").focus(); return; }
                 amount = parsed.value;
             } else {
@@ -3181,11 +3463,19 @@ let twoFactorEnabled = null; // unknown until the status request answers
 async function load2FAStatus() {
     const toggle = byId("switch-2fa");
     if (!toggle) return;
+    const retryBox = byId("twofa-retry");
     const res = await api("/auth/2fa-status");
     if (res.ok && res.data && typeof res.data.enabled === "boolean") {
         twoFactorEnabled = res.data.enabled;
         toggle.checked = twoFactorEnabled;
         toggle.disabled = false;
+        if (retryBox) retryBox.classList.add("hidden");
+        return;
+    }
+    // The switch stays locked until the real state is known, but it says why and offers a retry.
+    if (retryBox) {
+        byId("twofa-retry-text").textContent = messageFromResponse(res);
+        retryBox.classList.remove("hidden");
     }
 }
 
@@ -3194,6 +3484,7 @@ function init2FASettings() {
     const toggle = byId("switch-2fa");
     if (!toggle) return;
     toggle.disabled = true; // until the current status is known
+    byId("btn-twofa-retry").addEventListener("click", event => withBusy(event.currentTarget, load2FAStatus));
 
     toggle.addEventListener("click", async event => {
         event.preventDefault(); // the switch only moves once the server accepted the change
@@ -3209,7 +3500,10 @@ function init2FASettings() {
             validate: value => (/^\d{6}$/.test(value) ? null : t("twofa.pinInvalid")),
             submit: async (value) => {
                 const res = await api("/auth/toggle-2fa", { method: "POST", body: { enable, password: value } });
-                return res.ok ? { ok: true } : { ok: false, message: messageFromResponse(res) };
+                if (res.ok) return { ok: true };
+                // "Invalid T.C. number or password" would be confusing here: the person only typed a password.
+                const wrongPin = res.data && res.data.errorKey === "InvalidCredentials";
+                return { ok: false, message: wrongPin ? t("twofa.pinWrong") : messageFromResponse(res) };
             }
         });
 
@@ -3270,11 +3564,12 @@ function initCardCustomizer() {
     }
 
     document.querySelectorAll(".theme-btn").forEach(btn => {
-        btn.addEventListener("click", () => setCardTheme(btn.dataset.theme));
+        btn.addEventListener("click", () => { chosenTheme = btn.dataset.theme; setCardTheme(chosenTheme); });
     });
 
     // The card flips on hover (CSS), on click and on Enter / Space.
     const flip = () => {
+        wrapper.classList.add("flip-touched"); // from now on hover no longer decides (see styles.css), so click and hover cannot fight
         const flipped = wrapper.classList.toggle("flipped");
         wrapper.setAttribute("aria-pressed", flipped ? "true" : "false");
     };
@@ -3340,6 +3635,14 @@ function initDashboard() {
 let selectedSessionId = null;   // the one conversation the agent is looking at (chat.js ignores messages for any other)
 let activeSessions = [];
 let copilotSuggestion = "";
+let agentChatBaseTitle = "";    // "customer - title" of the open conversation (a hand-over adds the department)
+const unreadSessions = new Set();   // ids of sessions that got a message while another one was open
+const closingSessionIds = new Set(); // sessions this agent is closing right now (their SessionClosed event needs no extra notice)
+
+// "customer name - chat title": what the header of an open conversation says (the title alone is the same for every customer).
+function sessionDisplayTitle(session) {
+    return session.username ? `${session.username} - ${session.title}` : String(session.title ?? "");
+}
 
 function renderActiveSessions() {
     const listEl = byId("active-sessions-list");
@@ -3353,14 +3656,15 @@ function renderActiveSessions() {
 
     activeSessions.forEach(session => {
         const isActive = selectedSessionId === session.id;
+        const unread = !isActive && unreadSessions.has(String(session.id));
         const item = h("div", {
-            class: `session-item${isActive ? " active" : ""}`, role: "button", tabindex: "0",
+            class: `session-item${isActive ? " active" : ""}${unread ? " has-unread" : ""}`, role: "button", tabindex: "0",
             "aria-pressed": isActive ? "true" : "false", dataset: { sessionId: session.id }
         },
             h("h5", { text: session.title }),
             h("p", null, `${t("agent.userLabel")} `, h("strong", { text: session.username }), ` | ${formatTime(session.createdAt)}`));
 
-        const open = () => loadAgentChat(session.id, session.title);
+        const open = () => loadAgentChat(session.id, sessionDisplayTitle(session));
         item.addEventListener("click", open);
         item.addEventListener("keydown", event => {
             if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); }
@@ -3390,10 +3694,12 @@ async function loadActiveSessions() {
     renderActiveSessions();
 }
 
-// Back to the "select a session" state.
+// Back to the "select a session" state. The room of the conversation that was open is left.
 function resetAgentChatView() {
+    const previous = selectedSessionId;
     selectedSessionId = null;
     copilotSuggestion = "";
+    agentChatBaseTitle = "";
     if (typeof clearChatLog === "function") clearChatLog();
     byId("agent-chat-header").classList.add("hidden");
     byId("agent-chat-form").classList.add("hidden");
@@ -3406,11 +3712,18 @@ function resetAgentChatView() {
         h("h3", { "data-i18n": "agent.selectChat", text: t("agent.selectChat") }),
         h("p", { class: "text-muted", "data-i18n": "agent.selectChatDesc", text: t("agent.selectChatDesc") })));
     renderActiveSessions();
+    if (previous && typeof leaveAgentChatSession === "function") leaveAgentChatSession(previous);
 }
 
 async function loadAgentChat(sessionId, title) {
+    const previous = selectedSessionId;
+    if (previous && previous !== sessionId && typeof leaveAgentChatSession === "function") leaveAgentChatSession(previous);
+
     selectedSessionId = sessionId;
+    unreadSessions.delete(String(sessionId));
+    agentChatBaseTitle = title;
     const seq = ++requestSeq.agentChat;
+    clearChatLog();
 
     byId("agent-chat-header").classList.remove("hidden");
     byId("agent-chat-form").classList.remove("hidden");
@@ -3428,8 +3741,12 @@ async function loadAgentChat(sessionId, title) {
     clearChildren(box);
     box.append(h("div", { class: "loading-spinner", text: t("agent.loadingConversation") }));
 
-    const res = await api(`/chat/messages/${encodeURIComponent(sessionId)}`);
+    // Join the room first and read the history afterwards: a message sent in between is pushed live and kept by renderChatHistory.
+    await joinAgentChatSession(sessionId);
     if (seq !== requestSeq.agentChat || selectedSessionId !== sessionId) return; // the agent already opened another chat
+
+    const res = await api(`/chat/messages/${encodeURIComponent(sessionId)}`);
+    if (seq !== requestSeq.agentChat || selectedSessionId !== sessionId) return;
 
     if (!res.ok || !Array.isArray(res.data)) {
         clearChildren(box);
@@ -3438,7 +3755,6 @@ async function loadAgentChat(sessionId, title) {
     }
 
     renderChatHistory(res.data);
-    joinAgentChatSession(sessionId);
     fetchCoPilotSuggestion(sessionId);
 }
 
@@ -3449,17 +3765,20 @@ function initAgentEvents() {
         withBusy(event.currentTarget, async () => {
             const sessionId = selectedSessionId;
             if (!sessionId) return;
+            if (!(await uiConfirm(t("agent.closeConfirm"), { danger: true, confirmText: t("agent.closeSession") }))) return;
 
             // Only report success when the server really closed it.
-            if (!(await ensureConnected())) { notify(t("agent.closeOffline"), "error"); return; }
-            try {
-                await signalRConnection.invoke("CloseSessionAsync", sessionId);
-            } catch (err) {
-                notify(t("agent.closeFailed"), "error");
+            closingSessionIds.add(String(sessionId));
+            const result = await hubInvoke("CloseSessionAsync", sessionId);
+            if (!result.ok) {
+                closingSessionIds.delete(String(sessionId));
+                notify(result.offline ? t("agent.closeOffline") : (result.message || t("agent.closeFailed")), "error");
                 return;
             }
             if (selectedSessionId === sessionId) resetAgentChatView();
             await loadActiveSessions();
+            loadAgentMetrics();
+            closingSessionIds.delete(String(sessionId));
         });
     });
 
@@ -3472,14 +3791,15 @@ function initAgentEvents() {
             const sessionId = selectedSessionId;
             if (!text || !sessionId) return;
 
-            if (!(await ensureConnected())) { notify(t("chat.offline"), "error"); return; }
-            try {
-                await signalRConnection.invoke("SendMessageAsync", sessionId, text);
-                input.value = "";
-                input.focus();
-            } catch (err) {
-                notify(t("chat.sendFailed"), "error");
+            const result = await hubInvoke("SendMessageAsync", sessionId, text);
+            if (!result.ok) {
+                // The typed reply stays in the box.
+                notify(result.offline ? t("chat.offline") : (result.message || t("chat.sendFailed")), "error");
+                if (result.sessionClosed && selectedSessionId === sessionId) { resetAgentChatView(); loadActiveSessions(); }
+                return;
             }
+            input.value = "";
+            input.focus();
         });
     });
 }
@@ -3495,7 +3815,8 @@ async function loadAgentMetrics() {
         el.textContent = value === null || value === undefined || value === "" ? "—" : (formatter ? formatter(value) : String(value));
     };
     show("val-metric-resolved", res.data.resolvedCount, v => formatNumber(v, 0, 0));
-    show("val-metric-time", res.data.avgResponseTime);
+    // "42s" from the server: the unit is written in the page language.
+    show("val-metric-time", res.data.avgResponseTime, v => String(v).replace(/^(\d+)s$/, (m, seconds) => `${seconds} ${t("unit.seconds")}`));
     show("val-metric-csat", res.data.csatScore);
 }
 
@@ -3504,7 +3825,7 @@ function initAgentStatusControl() {
     const dot = byId("status-indicator-dot");
     if (!select || !dot) return;
 
-    // The status is a local indicator: the API has no endpoint for it yet.
+    // The status is a local indicator only (the label says "display only"): the API has no endpoint for it, so it changes nothing for customers.
     select.addEventListener("change", () => {
         dot.className = `status-dot ${select.value === "Busy" ? "busy" : select.value === "Break" ? "break" : "online"}`;
     });
@@ -3626,7 +3947,8 @@ function renderMarketRates(rates) {
                 h("div", { class: `rate-symbol-badge ${cssToken(rate.code)}`, "aria-hidden": "true", text: icon }),
                 h("div", { class: "rate-name-wrapper" },
                     h("span", { class: "rate-code", text: rate.code }),
-                    h("span", { class: "rate-name", text: displayName }))),
+                    h("span", { class: "rate-name", text: displayName }),
+                    rate.isFallback ? h("span", { class: "indicative-badge", text: t("market.indicative") }) : null)),
             h("div", { class: "rate-prices" },
                 h("div", { class: "price-box" },
                     h("span", { class: "price-label", text: t("market.buy") }),
@@ -3635,7 +3957,7 @@ function renderMarketRates(rates) {
                     h("span", { class: "price-label", text: t("market.sell") }),
                     h("span", { class: `price-val ${flash}`.trim(), text: formatNumber(rate.sell, digits, digits) }))),
             h("div", { class: "rate-trend" },
-                h("span", { class: `trend-badge ${direction}`.trim(), text: `${symbol} ${formatNumber(Math.abs(rate.change), 2, 2)}%` }))));
+                h("span", { class: `trend-badge ${direction}`.trim(), text: `${symbol} ${formatPercent(Math.abs(rate.change))}` }))));
     });
 }
 
@@ -3659,7 +3981,7 @@ function applyMarketRates(rates) {
     const updated = byId("txt-rates-updated");
     if (updated) updated.textContent = `${t("market.updated")} ${new Date().toLocaleTimeString(locale())}`;
 
-    const signature = `${currentLanguage}|${JSON.stringify(rates.map(rate => [rate.code, rate.buy, rate.sell, rate.change]))}`;
+    const signature = `${currentLanguage}|${JSON.stringify(rates.map(rate => [rate.code, rate.buy, rate.sell, rate.change, !!rate.isFallback]))}`;
     if (signature !== market.signature && byId("market-rates-list")) {
         market.signature = signature;
         renderMarketRates(rates);
@@ -3672,6 +3994,7 @@ function scheduleMarketPoll(delay) {
 }
 
 async function pollMarketRates() {
+    clearTimeout(market.timer); // a manual Retry must not leave the scheduled poll running next to the new chain
     market.timer = null;
     if (document.hidden || market.loading) return; // the visibilitychange handler restarts polling
     market.loading = true;
@@ -3711,6 +4034,7 @@ function startMarketRates() {
    ========================================================================== */
 document.addEventListener("DOMContentLoaded", () => {
     translatePage();
+    ensureToastRegion();
 
     const langBtn = byId("lang-toggle");
     if (langBtn) langBtn.addEventListener("click", () => setLanguage(currentLanguage === "en" ? "tr" : "en"));
