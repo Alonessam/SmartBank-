@@ -63,7 +63,7 @@
             <div class="metric-card glassmorphism status-card">
                 <span class="status-dot online" id="status-indicator-dot" aria-hidden="true"></span>
                 <div class="metric-details">
-                    <label id="lbl-metric-status" for="agent-status-select" class="metric-label" data-i18n="agent.metricStatus">Your Status</label>
+                    <label id="lbl-metric-status" for="agent-status-select" class="metric-label" data-i18n="agent.metricStatus">Your Status (display only)</label>
                     <select id="agent-status-select" class="metric-status-select">
                         <option value="Active" data-i18n="agent.statusActive">Active</option>
                         <option value="Busy" data-i18n="agent.statusBusy">Busy</option>
@@ -80,13 +80,13 @@
                     <h3 id="title-active-chats" data-i18n="agent.activeChats">Active Support Chats</h3>
                     <button type="button" id="btn-refresh-sessions" class="btn btn-secondary btn-sm" data-i18n-aria-label="agent.refresh" data-i18n-title="agent.refresh" aria-label="Refresh" title="Refresh">&#8634;</button>
                 </div>
-                <div id="active-sessions-list" class="sessions-list" aria-live="polite">
+                <div id="active-sessions-list" class="sessions-list">
                     <div class="text-muted text-center py-4" data-i18n="agent.noActive">No active chats at the moment</div>
                 </div>
             </aside>
 
             <!-- Main Chat Area -->
-            <section class="agent-chat-area card glassmorphism" aria-label="Chat">
+            <section class="agent-chat-area card glassmorphism" data-i18n-aria-label="agent.chatLabel" aria-label="Chat">
                 <div id="agent-chat-header" class="agent-chat-header hidden">
                     <div class="chat-info">
                         <h4 id="agent-chat-title">...</h4>
