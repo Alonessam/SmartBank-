@@ -23,6 +23,10 @@ using FluentValidation;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Every request body of this API is a small JSON document; the Kestrel default of 30 MB would let an anonymous caller make the
+// server read and parse that much on /api/auth/login. (SignalR messages have their own limit below.)
+builder.WebHost.ConfigureKestrel(kestrel => kestrel.Limits.MaxRequestBodySize = 64 * 1024);
+
 // Card-data encryption key (base64, 32 bytes) comes from user-secrets / Encryption__Key, never from the repo.
 EncryptionHelper.Configure(builder.Configuration["Encryption:Key"]);
 
@@ -196,6 +200,7 @@ builder.Services.AddRateLimiter(options =>
     options.AddPolicy(RateLimitPolicies.Refresh, http => RateLimitPartition.GetFixedWindowLimiter(ClientKey(http), _ => Window("Refresh", 60, 60)));
     options.AddPolicy(RateLimitPolicies.Banking, http => RateLimitPartition.GetFixedWindowLimiter(UserOrClientKey(http), _ => Window("Banking", 60, 60)));
     options.AddPolicy(RateLimitPolicies.Transfer, http => RateLimitPartition.GetFixedWindowLimiter("transfer:" + UserOrClientKey(http), _ => Window("Transfer", 10, 60)));
+    options.AddPolicy(RateLimitPolicies.Chat, http => RateLimitPartition.GetFixedWindowLimiter(UserOrClientKey(http), _ => Window("Chat", 60, 60)));
     options.AddPolicy(RateLimitPolicies.Market, http => RateLimitPartition.GetFixedWindowLimiter(ClientKey(http), _ => Window("Market", 60, 60)));
 
     options.OnRejected = async (context, cancellationToken) =>
@@ -257,6 +262,11 @@ var allowedHosts = app.Configuration["AllowedHosts"];
 if (app.Environment.IsProduction() && (string.IsNullOrWhiteSpace(allowedHosts) || allowedHosts == "*"))
 {
     app.Logger.LogWarning("AllowedHosts is \"*\": the API answers to any Host header. Set the AllowedHosts environment variable to this API's host name(s).");
+}
+
+if (app.Environment.IsProduction() && app.Configuration.GetValue("Demo:ExposeOtp", false))
+{
+    app.Logger.LogWarning("Demo:ExposeOtp is ON in Production: one-time codes are returned in API responses and written to the log. This removes the second factor; turn it off wherever real data lives.");
 }
 
 app.UseMiddleware<GlobalExceptionMiddleware>();

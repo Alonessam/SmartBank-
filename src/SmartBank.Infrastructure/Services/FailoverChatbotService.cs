@@ -51,7 +51,10 @@ namespace SmartBank.Infrastructure.Services
         public async Task<string> GetResponseAsync(List<ChatMessageDto> history, CancellationToken cancellationToken = default)
         {
             var messages = new List<ChatMessageDto>(history);
-            var lastUserMessage = messages.LastOrDefault(m => m.Sender.Equals(ChatSenders.User, StringComparison.OrdinalIgnoreCase))?.Content;
+            // The server appends its own notes to the conversation as "User" turns ("SYSTEM UPDATE: ... balances ...", "SYSTEM
+            // INSTRUCTION: ..."). The FAQ is searched, and the canned answer's language chosen, from what the customer wrote.
+            var lastUserMessage = messages.LastOrDefault(m => m.Sender.Equals(ChatSenders.User, StringComparison.OrdinalIgnoreCase)
+                                                              && !m.Content.StartsWith("SYSTEM ", StringComparison.Ordinal))?.Content;
 
             // FAQ retrieval: a failure here only means the model gets no extra context.
             if (!string.IsNullOrWhiteSpace(lastUserMessage))

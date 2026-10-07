@@ -53,6 +53,13 @@ namespace SmartBank.Infrastructure.Services
 
         private string ClientIp => _clientInfo?.IpAddress ?? "unknown";
 
+        /// <summary>
+        /// The canonical form of an account number typed by a person: trimmed and upper-case ("tr12..." is "TR12..."). PostgreSQL
+        /// compares text case-sensitively and SQL Server does not, so without this the same input found an account on one and
+        /// not on the other, and "tr1"/"TR1" got past the same-account check on SQL Server.
+        /// </summary>
+        internal static string NormalizeAccountNumber(string? accountNumber) => (accountNumber ?? string.Empty).Trim().ToUpperInvariant();
+
         private static ServiceResult<T> Fail<T>(string errorKey, string message) => ServiceResult<T>.Failure(errorKey, message);
 
         private AuditLog NewAudit(Guid userId, string action, string details) => new()
@@ -118,6 +125,8 @@ namespace SmartBank.Infrastructure.Services
                     Id = t.Id,
                     SourceAccountNumber = t.SourceAccount != null ? t.SourceAccount.AccountNumber : null,
                     DestinationAccountNumber = t.DestinationAccount != null ? t.DestinationAccount.AccountNumber : null,
+                    SourceCurrency = t.SourceAccount != null ? t.SourceAccount.Currency : null,
+                    DestinationCurrency = t.DestinationAccount != null ? t.DestinationAccount.Currency : null,
                     SourceAccountOwnerName = t.SourceAccount != null && t.SourceAccount.User != null ? t.SourceAccount.User.FullName : null,
                     DestinationAccountOwnerName = t.DestinationAccount != null && t.DestinationAccount.User != null ? t.DestinationAccount.User.FullName : null,
                     Amount = t.Amount,
@@ -127,6 +136,8 @@ namespace SmartBank.Infrastructure.Services
                     CreatedAt = t.CreatedAt
                 })
                 .ToListAsync(cancellationToken);
+
+            foreach (var transaction in transactions) BankingMappers.WithSides(transaction);
 
             return ServiceResult<List<TransactionDto>>.Success(transactions);
         }
@@ -219,6 +230,7 @@ namespace SmartBank.Infrastructure.Services
             var invalid = ValidateAmount(amount);
             if (invalid != null) return Fail<TransactionDto>(invalid.Value.Key, invalid.Value.Message);
 
+            accountNumber = NormalizeAccountNumber(accountNumber);
             var account = await _context.Accounts.FirstOrDefaultAsync(a => a.AccountNumber == accountNumber && a.UserId == userId);
             if (account == null)
             {
@@ -245,11 +257,13 @@ namespace SmartBank.Infrastructure.Services
             _context.Transactions.Add(transaction);
             await _context.SaveChangesAsync();
 
-            return ServiceResult<TransactionDto>.Success(new TransactionDto
+            return ServiceResult<TransactionDto>.Success(BankingMappers.WithSides(new TransactionDto
             {
                 Id = transaction.Id,
                 SourceAccountNumber = accountNumber,
                 DestinationAccountNumber = accountNumber,
+                SourceCurrency = account.Currency,
+                DestinationCurrency = account.Currency,
                 SourceAccountOwnerName = userName,
                 DestinationAccountOwnerName = userName,
                 Type = transaction.Type.ToString(),
@@ -257,7 +271,7 @@ namespace SmartBank.Infrastructure.Services
                 Description = transaction.Description,
                 Category = transaction.Category,
                 CreatedAt = transaction.CreatedAt
-            });
+            }));
         }
 
         // ---- transfers ----------------------------------------------------------------------------------------
@@ -267,8 +281,8 @@ namespace SmartBank.Infrastructure.Services
             var invalid = ValidateAmount(transferRequest.Amount);
             if (invalid != null) return Fail<TransactionDto>(invalid.Value.Key, invalid.Value.Message);
 
-            var sourceNumber = transferRequest.SourceAccountNumber?.Trim() ?? string.Empty;
-            var destinationNumber = transferRequest.DestinationAccountNumber?.Trim() ?? string.Empty;
+            var sourceNumber = NormalizeAccountNumber(transferRequest.SourceAccountNumber);
+            var destinationNumber = NormalizeAccountNumber(transferRequest.DestinationAccountNumber);
             transferRequest.SourceAccountNumber = sourceNumber;
             transferRequest.DestinationAccountNumber = destinationNumber;
 
@@ -380,15 +394,18 @@ namespace SmartBank.Infrastructure.Services
                 return ("SuspectedFraudDuplicate", "Şüpheli işlem: Son 30 saniye içerisinde aynı hesaba aynı miktarda transfer denemesi.");
             }
 
-            // Rule B: far above the usual outgoing transfer. Only real outgoing transfers count: deposits, the incoming leg
-            // of a standing order and exchanges have the account on both sides or are not transfers, and used to drag the
-            // average up (one big deposit switched this rule off).
+            // Rule B: far above the usual outgoing transfer. Only real outgoing transfers count: a deposit has the account on both
+            // sides, and an exchange or a cross-currency closing transfer is booked as a Transfer between two accounts of the same
+            // customer in DIFFERENT currencies (a real transfer never is), so those are left out by the currency test. They used
+            // to drag the average up (one big deposit or one big purchase of dollars switched this rule off).
             var windowStart = now - AverageWindow;
             var average = await _context.Transactions.AsNoTracking()
                 .Where(t => t.SourceAccountId == source.Id &&
                             t.Type == TransactionType.Transfer &&
                             t.DestinationAccountId != null &&
                             t.DestinationAccountId != t.SourceAccountId &&
+                            t.SourceAccount != null && t.DestinationAccount != null &&
+                            t.SourceAccount.Currency == t.DestinationAccount.Currency &&
                             t.CreatedAt >= windowStart)
                 .Select(t => (decimal?)t.Amount)
                 .AverageAsync();
@@ -533,17 +550,19 @@ namespace SmartBank.Infrastructure.Services
                 await _context.SaveChangesAsync();
                 await dbTransaction.CommitAsync();
 
-                return ServiceResult<TransactionDto>.Success(new TransactionDto
+                return ServiceResult<TransactionDto>.Success(BankingMappers.WithSides(new TransactionDto
                 {
                     Id = transaction.Id,
                     SourceAccountNumber = sourceAccount.AccountNumber,
                     DestinationAccountNumber = destinationAccount.AccountNumber,
+                    SourceCurrency = sourceAccount.Currency,
+                    DestinationCurrency = destinationAccount.Currency,
                     Amount = transaction.Amount,
                     Description = transaction.Description,
                     Type = transaction.Type.ToString(),
                     Category = transaction.Category,
                     CreatedAt = transaction.CreatedAt
-                });
+                }));
             }
             catch (Exception ex) when (DatabaseConflict.IsRetryable(ex))
             {

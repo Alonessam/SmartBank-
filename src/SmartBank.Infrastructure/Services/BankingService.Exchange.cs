@@ -151,11 +151,13 @@ namespace SmartBank.Infrastructure.Services
             await _context.SaveChangesAsync();
 
             var ownerName = await _context.Users.AsNoTracking().Where(u => u.Id == userId).Select(u => u.FullName).FirstOrDefaultAsync();
-            return ServiceResult<TransactionDto>.Success(new TransactionDto
+            return ServiceResult<TransactionDto>.Success(BankingMappers.WithSides(new TransactionDto
             {
                 Id = transaction.Id,
                 SourceAccountNumber = sourceAcc.AccountNumber,
                 DestinationAccountNumber = targetAcc.AccountNumber,
+                SourceCurrency = sourceAcc.Currency,
+                DestinationCurrency = targetAcc.Currency,
                 SourceAccountOwnerName = ownerName,
                 DestinationAccountOwnerName = ownerName,
                 Amount = transaction.Amount,
@@ -163,7 +165,7 @@ namespace SmartBank.Infrastructure.Services
                 Type = transaction.Type.ToString(),
                 Category = transaction.Category,
                 CreatedAt = transaction.CreatedAt
-            });
+            }));
         }
 
         private Task<Account?> FindDemandAccountAsync(Guid userId, string currency) =>

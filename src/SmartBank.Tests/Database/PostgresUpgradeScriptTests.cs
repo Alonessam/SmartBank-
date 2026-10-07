@@ -256,6 +256,55 @@ namespace SmartBank.Tests.Database
                 VALUES ('00000000-0000-0000-0000-0000000000b9', '00000000-0000-0000-0000-0000000000a1', 'TR0000000000000002', 'again', now())"));
         }
 
+        [PostgresFact]
+        public async Task The_v1_3_2_script_relaxes_hand_made_constraints_the_code_trips_over_and_can_be_run_twice()
+        {
+            await using var modelDb = await TestDatabase.CreateAsync(TestProvider.PostgreSql);
+            await using var handMadeDb = await TestDatabase.CreateAsync(TestProvider.PostgreSql);
+
+            await using var modelConnection = new NpgsqlConnection(modelDb.NewContext().Database.GetConnectionString());
+            await using var handMadeConnection = new NpgsqlConnection(handMadeDb.NewContext().Database.GetConnectionString());
+            await modelConnection.OpenAsync();
+            await handMadeConnection.OpenAsync();
+
+            // What a hand-written schema can look like: NOT NULL where the model allows null, a list of allowed chat senders that
+            // predates "System", narrower text columns. (The tables are empty, so the changes cannot fail.)
+            await ExecuteAsync(handMadeConnection, @"
+                ALTER TABLE ""Transactions"" ALTER COLUMN ""SourceAccountId"" SET NOT NULL, ALTER COLUMN ""DestinationAccountId"" SET NOT NULL;
+                ALTER TABLE ""StandingOrders"" ALTER COLUMN ""DestinationAccountNumber"" SET NOT NULL, ALTER COLUMN ""Amount"" SET NOT NULL, ALTER COLUMN ""CreditCardId"" SET NOT NULL;
+                ALTER TABLE ""Accounts"" ALTER COLUMN ""InterestRate"" SET NOT NULL, ALTER COLUMN ""MaturityDate"" SET NOT NULL;
+                ALTER TABLE ""CreditCards"" ALTER COLUMN ""CardNumberHash"" SET NOT NULL;
+                ALTER TABLE ""ChatSessions"" ALTER COLUMN ""UserId"" SET NOT NULL;
+                ALTER TABLE ""Users"" ALTER COLUMN ""TwoFactorSecret"" SET NOT NULL, ALTER COLUMN ""PendingOtpPurpose"" SET NOT NULL, ALTER COLUMN ""LockoutEnd"" SET NOT NULL;
+                ALTER TABLE ""RefreshTokens"" ALTER COLUMN ""UsedAt"" SET NOT NULL, ALTER COLUMN ""RevokedAt"" SET NOT NULL;
+                ALTER TABLE ""ChatMessages"" ADD CONSTRAINT ""CK_ChatMessages_Sender"" CHECK (""Sender"" IN ('User', 'AI', 'Agent'));
+                ALTER TABLE ""ChatMessages"" ALTER COLUMN ""Sender"" TYPE varchar(5);
+                ALTER TABLE ""AuditLogs"" ALTER COLUMN ""Action"" TYPE varchar(10);");
+
+            Assert.NotEqual(await ColumnsAsync(modelConnection, AllTables), await ColumnsAsync(handMadeConnection, AllTables));
+
+            var script = await File.ReadAllTextAsync(RepositoryFile("docs/deploy/v1.3.2-postgres-upgrade.sql"));
+
+            await ExecuteAsync(handMadeConnection, script);
+            Assert.Equal(await ColumnsAsync(modelConnection, AllTables), await ColumnsAsync(handMadeConnection, AllTables));
+            Assert.Equal("0", await ScalarAsync(handMadeConnection,
+                @"SELECT count(*)::text FROM pg_constraint WHERE conrelid = 'public.""ChatMessages""'::regclass AND contype = 'c'"));
+
+            await ExecuteAsync(handMadeConnection, script); // idempotent
+            Assert.Equal(await ColumnsAsync(modelConnection, AllTables), await ColumnsAsync(handMadeConnection, AllTables));
+
+            // What the code writes now fits: a "System" message, and rows with the links of a closed account removed.
+            await ExecuteAsync(handMadeConnection, @"
+                INSERT INTO ""Users"" (""Id"", ""Version"", ""Username"", ""Tckn"", ""PasswordHash"", ""FirstName"", ""LastName"", ""FullName"", ""Email"", ""Role"", ""CreatedAt"", ""TwoFactorEnabled"", ""OtpFailedCount"", ""FailedLoginCount"")
+                VALUES ('00000000-0000-0000-0000-0000000000a1', 0, 'u', '11111111111', 'x', 'U', 'U', 'U U', 'u@u.test', 0, now(), false, 0, 0);
+                INSERT INTO ""ChatSessions"" (""Id"", ""UserId"", ""Title"", ""IsActive"", ""CreatedAt"")
+                VALUES ('00000000-0000-0000-0000-0000000000b1', NULL, 't', true, now());
+                INSERT INTO ""ChatMessages"" (""Id"", ""SessionId"", ""Sender"", ""Content"", ""CreatedAt"")
+                VALUES ('00000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-0000000000b1', 'System', '[TRANSFER_SUCCESS: x]', now());
+                INSERT INTO ""Transactions"" (""Id"", ""SourceAccountId"", ""DestinationAccountId"", ""Amount"", ""Description"", ""Type"", ""Category"", ""CreatedAt"")
+                VALUES ('00000000-0000-0000-0000-0000000000d1', NULL, NULL, 1.00, 'orphaned history row', 'Transfer', 'Diğer', now());");
+        }
+
         // Indexes of the tables the v1.3 script touches (names and definitions).
         private const string IndexSql =
             "SELECT indexname || ' ' || indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename IN " +
