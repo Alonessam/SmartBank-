@@ -48,7 +48,9 @@ builder.Services.AddDbContext<SmartBankDbContext>(options =>
         options.UseSqlServer(connectionString);
     }
 
-    // Ignore EF Core 9+ pending model changes warning to allow database migrations to run smoothly on startup
+    // The app never migrates the database itself (production is changed by hand with the scripts in docs/deploy, local
+    // development with "dotnet ef database update"). Without this line EF Core 9+ would throw at the first query when the model
+    // and the last migration differ; CI checks that case separately ("dotnet ef migrations has-pending-model-changes").
     options.ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning));
 });
 

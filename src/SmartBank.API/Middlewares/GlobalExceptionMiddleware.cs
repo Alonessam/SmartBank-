@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Primitives;
 
 namespace SmartBank.API.Middlewares
 {
@@ -66,7 +67,17 @@ namespace SmartBank.API.Middlewares
 
         private async Task HandleExceptionAsync(HttpContext context, Exception exception)
         {
+            // The CORS middleware adds its headers BEFORE the request reaches the endpoint, and Clear() would drop them with
+            // everything else. Without them the browser reports a 500 from the web app (another origin) as a CORS failure and the
+            // page cannot even read the error. Keep them (and Vary, which tells caches the answer depends on the Origin).
+            var kept = context.Response.Headers
+                .Where(h => h.Key.StartsWith("Access-Control-", StringComparison.OrdinalIgnoreCase) || h.Key.Equals("Vary", StringComparison.OrdinalIgnoreCase))
+                .Select(h => new KeyValuePair<string, StringValues>(h.Key, h.Value))
+                .ToList();
+
             context.Response.Clear();
+            foreach (var header in kept) context.Response.Headers[header.Key] = header.Value;
+
             context.Response.ContentType = "application/problem+json";
             context.Response.StatusCode = StatusCodes.Status500InternalServerError;
 
