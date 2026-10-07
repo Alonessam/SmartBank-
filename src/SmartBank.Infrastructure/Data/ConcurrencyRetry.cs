@@ -14,6 +14,10 @@ namespace SmartBank.Infrastructure.Data
     {
         public const int MaxAttempts = 10;
 
+        // A foreign-key error is retried only a couple of times: a race (the other account was just closed) clears at once,
+        // while a constraint the code does not expect would otherwise be repeated ten times before the caller hears about it.
+        public const int MaxForeignKeyAttempts = 3;
+
         public static async Task<ServiceResult<T>> RunAsync<T>(DbContext context, Func<Task<ServiceResult<T>>> operation, string conflictMessage = "The data was changed by another operation at the same time. Please try again.")
         {
             for (var attempt = 1; ; attempt++)
@@ -29,7 +33,8 @@ namespace SmartBank.Infrastructure.Data
                 {
                     context.ChangeTracker.Clear();
 
-                    if (attempt >= MaxAttempts)
+                    var limit = DatabaseConflict.IsForeignKeyViolation(ex) ? MaxForeignKeyAttempts : MaxAttempts;
+                    if (attempt >= limit)
                     {
                         return ServiceResult<T>.Failure("ConcurrentModification", conflictMessage);
                     }

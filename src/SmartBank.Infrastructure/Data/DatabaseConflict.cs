@@ -41,6 +41,20 @@ namespace SmartBank.Infrastructure.Data
             return false;
         }
 
+        /// <summary>
+        /// A foreign key rejected the write (SQL Server 547, PostgreSQL 23503). Usually the other row was deleted a moment ago,
+        /// so one or two fresh attempts settle it; if it keeps happening it is a schema or ordering problem, not a race.
+        /// </summary>
+        public static bool IsForeignKeyViolation(Exception exception)
+        {
+            for (var current = exception; current != null; current = current.InnerException)
+            {
+                if (current is PostgresException { SqlState: "23503" } || current is SqlException { Number: 547 }) return true;
+            }
+
+            return false;
+        }
+
         /// <summary>A unique index or constraint rejected the write (SQL Server 2601/2627, PostgreSQL 23505).</summary>
         public static bool IsUniqueViolation(Exception exception) => UniqueViolation(exception) != null;
 
