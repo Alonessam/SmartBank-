@@ -61,7 +61,7 @@ namespace SmartBank.API.Controllers
         public static int StatusFor(string? errorKey) => errorKey switch
         {
             "AccountNotFound" or "SourceAccountNotFound" or "DestinationAccountNotFound" or "TargetAccountNotFound" or
-            "CreditCardNotFound" or "ContactNotFound" or "OrderNotFound" or "SessionNotFound" or "UserNotFound" => StatusCodes.Status404NotFound,
+            "CreditCardNotFound" or "ContactNotFound" or "OrderNotFound" or "SessionNotFound" or "UserNotFound" or "SimulationDisabled" => StatusCodes.Status404NotFound,
 
             "UnauthorizedSessionAccess" or "UnauthorizedAccountAccess" => StatusCodes.Status403Forbidden,
 

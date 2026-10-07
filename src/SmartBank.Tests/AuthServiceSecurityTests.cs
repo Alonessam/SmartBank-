@@ -236,8 +236,9 @@ namespace SmartBank.Tests
             var last = await service.Verify2FaAsync(new Verify2FaDto { Tckn = Tckn, Code = wrong }, ClientIp);
             var afterwards = await service.Verify2FaAsync(new Verify2FaDto { Tckn = Tckn, Code = real }, ClientIp);
 
-            Assert.Equal("TooManyOtpAttempts", last.ErrorKey);
+            Assert.Equal("InvalidOrExpiredCode", last.ErrorKey); // not "too many": that would reveal that the number is registered
             Assert.False(afterwards.IsSuccess);
+            Assert.Equal("InvalidOrExpiredCode", afterwards.ErrorKey);
         }
 
         [Fact]

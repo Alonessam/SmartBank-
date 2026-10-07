@@ -67,6 +67,15 @@ namespace SmartBank.Infrastructure.Services
             await using var dbTransaction = await _context.Database.BeginTransactionAsync();
             try
             {
+                // "A customer keeps at least one account" is checked by counting, and two parallel closes of two different accounts
+                // would both count two. The customer's own row is bumped in the same transaction, so the second of two simultaneous
+                // closes collides on it (a version conflict, retried from fresh reads, where the count is right).
+                var owner = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId);
+                if (owner != null)
+                {
+                    _context.Entry(owner).Property(u => u.Version).IsModified = true;
+                }
+
                 if (target != null)
                 {
                     target.Balance += credited;

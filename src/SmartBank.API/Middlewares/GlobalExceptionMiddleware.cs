@@ -33,6 +33,21 @@ namespace SmartBank.API.Middlewares
                     context.Response.StatusCode = ClientClosedRequest;
                 }
             }
+            catch (BadHttpRequestException bad)
+            {
+                // The client sent something the server refuses to read (body too large, malformed framing): its own status
+                // (400, 413, 408...), not a 500 and not an error in the log.
+                _logger.LogWarning("Request {TraceId} was refused: {Reason}", context.TraceIdentifier, bad.Message);
+                if (context.Response.HasStarted)
+                {
+                    context.Abort();
+                    return;
+                }
+
+                context.Response.StatusCode = bad.StatusCode;
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync("{\"isSuccess\":false,\"errorKey\":\"BadRequest\",\"message\":\"The request could not be read.\"}");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Unhandled exception for request {TraceId}.", context.TraceIdentifier);
