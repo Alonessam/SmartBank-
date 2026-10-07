@@ -1,6 +1,12 @@
 # Creates local development secrets for SmartBank.API (never written to the repository).
 # Values live in the per-user "user-secrets" store and are only read when ASPNETCORE_ENVIRONMENT=Development.
 # Existing values are kept; pass -Rotate to replace them.
+#
+# On a fresh Windows machine the default execution policy blocks scripts. Run it like this (no setting is changed):
+#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev-secrets.ps1
+# (or once: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned).
+#
+# Keep this file ASCII-only: Windows PowerShell 5.1 reads a file without a byte order mark in the ANSI code page.
 param([switch]$Rotate)
 
 $ErrorActionPreference = "Stop"
@@ -13,7 +19,15 @@ function New-RandomBase64([int]$byteCount) {
     [Convert]::ToBase64String($bytes)
 }
 
+# $ErrorActionPreference does not catch a native command that exits with an error, so every dotnet call is checked.
+function Assert-NativeSuccess([string]$what) {
+    if ($LASTEXITCODE -ne 0) {
+        throw "$what failed (exit code $LASTEXITCODE). Is the .NET SDK installed (dotnet --version)?"
+    }
+}
+
 $existing = (dotnet user-secrets list --project $project) -join "`n"
+Assert-NativeSuccess "dotnet user-secrets list"
 
 $secrets = @{
     "JwtSettings:Key"  = 48   # 48 random bytes -> 64 base64 chars (HS256 needs >= 32 bytes)
@@ -27,6 +41,7 @@ foreach ($name in $secrets.Keys) {
         continue
     }
     dotnet user-secrets set $name (New-RandomBase64 $secrets[$name]) --project $project | Out-Null
+    Assert-NativeSuccess "dotnet user-secrets set $name"
     Write-Host "[set]    $name"
 }
 
