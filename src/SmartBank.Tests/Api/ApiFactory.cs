@@ -57,6 +57,7 @@ namespace SmartBank.Tests.Api
             builder.UseSetting("RateLimiting:Banking:PermitLimit", "100000");
             builder.UseSetting("RateLimiting:Transfer:PermitLimit", "100000");
             builder.UseSetting("RateLimiting:Market:PermitLimit", "100000");
+            builder.UseSetting("RateLimiting:Chat:PermitLimit", "100000");
             builder.UseSetting("ConnectionStrings:DefaultConnection", "Server=unused;Database=unused");
             foreach (var (key, value) in ExtraSettings)
             {

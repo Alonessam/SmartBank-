@@ -49,7 +49,7 @@ namespace SmartBank.Infrastructure.Services
                 return Fail<StandingOrderDto>("InvalidFrequency", "Frequency must be Daily, Weekly or Monthly.");
             }
 
-            var sourceNumber = orderDto.SourceAccountNumber?.Trim() ?? string.Empty;
+            var sourceNumber = NormalizeAccountNumber(orderDto.SourceAccountNumber);
             var source = await _context.Accounts.AsNoTracking().FirstOrDefaultAsync(a => a.AccountNumber == sourceNumber && a.UserId == userId);
             if (source == null)
             {
@@ -76,7 +76,7 @@ namespace SmartBank.Infrastructure.Services
                 if (invalid != null) return Fail<StandingOrderDto>(invalid.Value.Key, invalid.Value.Message);
                 amount = orderDto.Amount.Value;
 
-                destinationNumber = orderDto.DestinationAccountNumber?.Trim();
+                destinationNumber = NormalizeAccountNumber(orderDto.DestinationAccountNumber);
                 if (string.IsNullOrEmpty(destinationNumber))
                 {
                     return Fail<StandingOrderDto>("DestinationAccountNotFound", "A transfer order needs a destination account.");
@@ -167,7 +167,7 @@ namespace SmartBank.Infrastructure.Services
 
         public async Task<ServiceResult<SavedContactDto>> SaveContactAsync(Guid userId, CreateSavedContactDto contactDto)
         {
-            var accountNumber = contactDto.AccountNumber?.Trim() ?? string.Empty;
+            var accountNumber = NormalizeAccountNumber(contactDto.AccountNumber);
             var alias = contactDto.Alias?.Trim() ?? string.Empty;
             if (accountNumber.Length < 10 || accountNumber.Length > 30)
             {
@@ -221,7 +221,15 @@ namespace SmartBank.Infrastructure.Services
             }
 
             _context.SavedContacts.Remove(contact);
-            await _context.SaveChangesAsync();
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // A double click or a second tab removed it first: the wanted state (it is gone) is reached either way.
+                _context.ChangeTracker.Clear();
+            }
 
             return ServiceResult<bool>.Success(true);
         }
