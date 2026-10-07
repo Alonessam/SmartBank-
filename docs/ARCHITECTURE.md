@@ -37,8 +37,8 @@ flowchart LR
 
 - The frontend is published with `scripts/deploy-pages.ps1` (or `.sh`) from `src/SmartBank.Web`; it is not served by the API.
 - The API image is built from the `Dockerfile` (non-root, port 8080, forwarded headers on because Render terminates TLS).
-- The production schema is **not** created by the application (`MigrateAsync` is deliberately off behind Supabase's
-  connection pooler). It is created with `docs/deploy/00-baseline-postgres.sql` and upgraded with the numbered scripts in
+- The production schema is **not** created by the application (it never calls `MigrateAsync`; with hand-made tables behind
+  Supabase's connection pooler that would not be safe). It is created with `docs/deploy/00-baseline-postgres.sql` and upgraded with the numbered scripts in
   `docs/deploy`. `docs/deploy/schema-check.sql` lists the production columns for comparison with the model.
 - Local development uses SQL Server LocalDB (the EF migrations target SQL Server) or the PostgreSQL container from
   `docker-compose.yml`. CI runs the real-database tests on PostgreSQL 16 and SQL Server 2022.
@@ -51,9 +51,15 @@ Every HTTP request passes through the same pipeline (`Program.cs`):
 2. `SecurityHeadersMiddleware`: `nosniff`, `X-Frame-Options`, CSP `default-src 'none'`, `no-referrer`, `no-store` on `/api` and `/hubs`.
 3. HSTS (production only), HTTPS redirection.
 4. CORS with an explicit origin allow-list.
-5. Rate limiting (per client IP; separate policies for auth, refresh and the other endpoint groups).
-6. Authentication (JWT bearer) and authorization (roles `Customer` and `Agent`).
-7. Controller or SignalR hub, which calls a service in `Infrastructure`.
+5. Authentication (JWT bearer): who is calling.
+6. Rate limiting, after authentication on purpose so that per-user policies can see the user: per client IP for auth,
+   refresh and market rates, per signed-in user (IP when anonymous) for the banking endpoints, and a stricter per-user
+   policy for money-moving calls.
+7. Authorization (roles `Customer` and `Agent`).
+8. Controller or SignalR hub, which calls a service in `Infrastructure`.
+
+Behind Render's proxy the client address comes from the forwarded headers (`ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` in the
+image, applied before the pipeline above); without it every client would share one rate-limit bucket.
 
 Money movements (transfer, deposit, exchange, card payment and charge, account closing) go through one retry wrapper
 in `BankingService`: every update is `WHERE Id = @id AND Version = @read`, and a conflict repeats the operation from fresh
@@ -84,8 +90,10 @@ sequenceDiagram
     A->>D: revoke the family
 ```
 
-Roles live in the database and in the token; an `Agent` can only be created by an administrator with SQL. Password reset and
-lockout also revoke refresh tokens. The SignalR connection takes the access token through `accessTokenFactory` (query string
+Roles live in the database and in the token; an `Agent` can only be created by an administrator with SQL. Logout revokes the
+one session (family) it belongs to; a password reset revokes all of the user's sessions. Failed sign-ins and the account
+lockout do **not** revoke sessions (v1.3): otherwise anyone who knew a T.C. number could keep signing its owner out. The
+SignalR connection takes the access token through `accessTokenFactory` (query string
 `access_token`, accepted only on `/hubs`).
 
 ## Support chat

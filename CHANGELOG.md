@@ -20,8 +20,8 @@ with the sections Added, Changed, Fixed and Security in each release. "T10", "T1
 ## [1.3.0] - 2026-10-06
 
 A repository-wide audit pass: money-correctness fixes, security hardening, frontend fixes and a more reproducible,
-better-guarded repository. It was found by reading the code and the running app, and every fix has a test (the suite grew from
-about 330 to about 990 tests, including real-database tests on PostgreSQL and SQL Server).
+better-guarded repository. It was found by reading the code and the running app, and every fix has a test (the suite grew
+several times over, including real-database tests on PostgreSQL and SQL Server).
 
 ### Upgrade notes (v1.3)
 
@@ -81,8 +81,9 @@ Do these in this order. The first two matter: the new API needs the new columns,
   - Closing an account converted one to one when a rate was missing and would have failed on the foreign key. It is now one
     database transaction (closing row, credit, detaching old rows, standing orders switched off, recipients removed, audit) and
     never converts without a live rate.
-  - Fraud rule B averaged deposits as spending and loaded every amount into memory; it now averages outgoing transfers of the
-    last 90 days in SQL. Thresholds use the real currency.
+  - The "unusually high transfer" fraud rule compared a transfer with the average of the user's deposits (not spending) and
+    loaded every amount into memory; it now compares with the average of the user's outgoing transfers of the
+    last 90 days, computed in SQL. Thresholds use the real currency.
   - A second tab or a parallel request could create a second credit card or duplicate recipients; unique indexes and clean
     errors now. Parallel registrations map to clear errors instead of a 500.
 - **Registration with a taken e-mail address** (v1.2) could throw on a real database because the duplicate check was not
@@ -120,7 +121,7 @@ Do these in this order. The first two matter: the new API needs the new columns,
   (index), `README.tr.md` (the Turkish README, now a separate file), an English summary at the top of `docs/DEFENSE.md`,
   Bash equivalents of the helper scripts (`scripts/dev-secrets.sh`, `scripts/deploy-pages.sh`), authentication examples in
   `SmartBank.API.http`.
-- **API:** `GET /api/banking/transactions?take=` (default 200, at most 500), bounded lists elsewhere (statements 24, chat messages
+- **API:** `GET /api/banking/transactions/{accountId}?take=` (default 200, at most 500), bounded lists elsewhere (statements 24, chat messages
   500, active sessions 200), indexes for the common lookups, and one error contract: not found or not yours is 404, a
   concurrency conflict 409, everything else 400, always `{isSuccess, errorKey, message}`.
 
@@ -198,8 +199,8 @@ These were the steps for the v1.2 release; they are kept for reference.
   inert on the server, and the web app only turns a marker into a card when it comes from the right sender, so nobody can put
   a fake "confirm this transfer" card into someone's chat. Limits are configurable under `Chat:*`. Details: `docs/DEFENSE.md` (T13).
 - **Access tokens now last 15 minutes instead of 7 days, and sessions can be ended.** A single-use refresh token (stored only as
-  a SHA-256 hash, rotated on every use) renews the access token. Logging out, resetting the password or locking the account
-  revokes the sessions, and presenting an already-used refresh token revokes the whole session family. The web app refreshes
+  a SHA-256 hash, rotated on every use) renews the access token. Logging out or resetting the password
+  revokes the sessions (locking the account does not, since 1.3.0), and presenting an already-used refresh token revokes the whole session family. The web app refreshes
   silently and signs the user out when the refresh token is refused. Config: `JwtSettings__AccessTokenMinutes`,
   `JwtSettings__RefreshTokenDays`. Details: `docs/DEFENSE.md` (T12).
 - **Fixed a stored cross-site-scripting hole in the web app.** Text from other users (transfer descriptions, contact aliases,
@@ -300,9 +301,9 @@ v1.1 needed configuration and a database change. Deploying it without them made 
   Card numbers, CVVs, OTPs and account numbers come from a cryptographic random generator instead of `System.Random`.
 - **CORS** accepted every origin together with credentials; it now uses an allow-list.
 
-## [1.0.0]
+## [1.0.0] - 2026-06-27
 
-Initial portfolio release.
+Initial portfolio release (first commit 2026-06-27).
 
 [1.3.1]: https://github.com/Alonessam/SmartBank-/compare/v1.3.0...main
 [1.3.0]: https://github.com/Alonessam/SmartBank-/compare/v1.2.0...v1.3.0

@@ -12,28 +12,60 @@ A simulated digital bank: an **ASP.NET Core (.NET 10) Web API** with a vanilla H
 
 **Live demo:** <https://alonessam.github.io/SmartBank-/> (frontend on GitHub Pages). The API runs on a free tier, so the **first request after a quiet period takes about a minute** while the service wakes up.
 
+## Engineering highlights
+
+* **Money stays correct under concurrency.** Every balance and card update is an optimistic-concurrency write (`WHERE Version = @read`) with a retry; real-database tests on PostgreSQL and SQL Server fire parallel transfers, deposits and card charges at the same rows ([`ConcurrentTransferTests`](src/SmartBank.Tests/Database/ConcurrentTransferTests.cs)). The bug that created money before v1.1 is told in [`docs/DEFENSE.md`](docs/DEFENSE.md) (T6).
+* **Security decisions are written down with their limits.** AES-256-GCM card data, lockout, single-use purpose-bound one-time codes, 15-minute access tokens with rotating refresh tokens, roles kept in the database, a Content-Security-Policy with pinned scripts. Each has a problem / change / why / limits note in [`docs/DEFENSE.md`](docs/DEFENSE.md) (Turkish, plus [English notes for v1.3](docs/DEFENSE.md#v13-engineering-notes-english)), and cross-customer access (IDOR) is covered by [integration tests](src/SmartBank.Tests/Api).
+* **Tests that can fail for real.** Several hundred tests: unit tests, the whole application driven over HTTP and SignalR, and real-database tests on two engines. CI also checks that the EF model has a migration, that the PostgreSQL baseline script builds the model's schema ([`BaselineSchemaTests`](src/SmartBank.Tests/Database/BaselineSchemaTests.cs)), and that the Docker image starts and answers `/health`.
+* **The production database is handled, not hidden.** It was created by hand, so the repository carries a baseline script, upgrade scripts tested against a real PostgreSQL, a [`schema-check.sql`](docs/deploy/schema-check.sql), an owner [runbook](docs/RUNBOOK.md) and an honest list of [known limitations](#known-limitations).
+
 ## Try the demo
 
 1. Open the live demo and choose **Register**.
 2. Use any username, a 6-digit PIN, an e-mail address and a made-up T.C. Kimlik No with valid check digits, for example `11111111110` or `10000000146` (they belong to nobody).
-3. Sign in. Your first TRY account is opened for you. Try a transfer, a currency purchase, a credit card or the support chat.
+3. Sign in. A TRY account with 1,000 TRY and a demo credit card (limit 10,000 TRY) are created for you. Try a transfer, a currency purchase, a credit card or the support chat.
 
 One-time codes (2FA, password reset) are e-mailed. They are shown on screen only when the API runs with `Demo__ExposeOtp=true`, which the public demo may use so the flow can be shown without a mailbox. The support-agent dashboard needs the `Agent` role, which only an administrator can grant (see [Create a support agent](#6-create-a-support-agent)).
 
-## Quick start (Windows, SQL Server LocalDB)
+## Quick start
 
-Prerequisites: [.NET 10 SDK](https://dotnet.microsoft.com/download), and PowerShell for the helper scripts (a bash equivalent exists for Linux and macOS, see below).
+You need the [.NET 10 SDK](https://dotnet.microsoft.com/download) and one database. Pick a route.
+
+**Route A: PostgreSQL in Docker** (any OS, the same engine as production; needs [Docker](https://www.docker.com/)):
+
+```bash
+./scripts/dev-secrets.sh                      # one-time: random local keys into user-secrets
+docker compose up -d db
+docker compose exec -T db psql -U postgres -d smartbank < docs/deploy/00-baseline-postgres.sql   # creates the tables (once)
+export ConnectionStrings__DefaultConnection="Host=localhost;Port=5432;Database=smartbank;Username=postgres;Password=postgres"
+dotnet run --project src/SmartBank.API --launch-profile http   # API on http://localhost:5038
+```
+
+The same in Windows PowerShell:
 
 ```powershell
-./scripts/dev-secrets.ps1                                   # one-time: random local keys into user-secrets
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev-secrets.ps1
+docker compose up -d db
+Get-Content docs/deploy/00-baseline-postgres.sql | docker compose exec -T db psql -U postgres -d smartbank
+$env:ConnectionStrings__DefaultConnection = "Host=localhost;Port=5432;Database=smartbank;Username=postgres;Password=postgres"
+dotnet run --project src/SmartBank.API --launch-profile http
+```
+
+**Route B: Windows with SQL Server LocalDB.** LocalDB is not part of the .NET SDK: it comes with Visual Studio (the data workload) or the SQL Server Express LocalDB installer (check with `sqllocaldb info`).
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev-secrets.ps1   # one-time: random local keys into user-secrets
 dotnet tool restore; dotnet ef database update --project src/SmartBank.Infrastructure --startup-project src/SmartBank.API
 dotnet run --project src/SmartBank.API --launch-profile http   # API on http://localhost:5038
 ```
 
-Then serve `src/SmartBank.Web` with any static server (VS Code *Live Server*, or `npx serve src/SmartBank.Web -l 5500`) and open it on `http://127.0.0.1:5500`. On Linux, macOS or without LocalDB, use the PostgreSQL route in [Setup](#1-database).
+`baslat.bat` in the repository root does all of route B in one go. Windows blocks a plain `./scripts/dev-secrets.ps1` with its default execution policy ("running scripts is disabled"); the `-ExecutionPolicy Bypass` form above changes no setting.
+
+Then serve `src/SmartBank.Web` with any static server (VS Code *Live Server*, or `npx serve src/SmartBank.Web -l 5500`) and open it on `http://127.0.0.1:5500`. To run the API in Docker too (after creating the tables): `docker compose --profile api up`, the API is then on `http://localhost:5038` as well.
 
 ## What is new
 
+* **1.3.1** (hotfix): registration failed on the live site right after 1.3 because the hand-made production tables have a foreign key that the test databases did not; fixed, with real-database tests that add such a constraint, and `schema-check.sql` now lists foreign keys too. Details in [`CHANGELOG.md`](CHANGELOG.md).
 * **1.3** (audit pass): money-correctness fixes, security hardening, frontend fixes, and repository, CI and Docker polish (CodeQL, SQL Server and Docker jobs in CI, a baseline PostgreSQL schema, docker-compose, community files). Details in [`CHANGELOG.md`](CHANGELOG.md).
 * **1.2**: stored-XSS fix and a Content-Security-Policy, 15-minute access tokens with rotating refresh tokens, e-mail through Brevo's HTTPS API, support-chat limits and forged-transfer-card protection, API security headers, T.C. Kimlik No check digits, production schema fixes.
 * **1.1**: security and reliability pass (role-based chat authorization, no secrets in the repository, AES-GCM card data, brute-force protection, concurrency-safe money movements). The reasoning behind each fix, with the alternatives that were rejected, is in [`docs/DEFENSE.md`](docs/DEFENSE.md) (Turkish, English summary at the top).
@@ -93,7 +125,7 @@ Layers: `SmartBank.Core` (entities, DTOs, interfaces and the pure security rules
 3. **Audit trail.** Sensitive actions (registration, sign-in, failed sign-in and lockout, password reset, transfers, exchange, account closing) are written to an `AuditLogs` table with a detail text, the caller's real IP address and a timestamp. The application only inserts audit rows, but the database does not enforce it: append-only by convention, **not tamper-proof**.
 4. **Global exception middleware (RFC 7807-style problem details).** Unhandled exceptions become problem-details JSON (`type`, `title`, `status`, `detail`, `instance`) plus a `traceId`. Outside Development the `detail` is generic and the real exception goes to the log.
 5. **Validation (FluentValidation).** `RegisterDtoValidator` and `TransferRequestDtoValidator` hold the request rules (T.C. Kimlik No check digits, 6-digit PIN, amount range) apart from the business logic.
-6. **Concurrency-safe money movement (optimistic concurrency).** `Account` and `CreditCard` carry an integer `Version`; every update is `WHERE Id = @id AND Version = @read`. If the row changed in between, nothing is written and the operation is repeated from fresh reads (up to 10 times, with a short random back-off). SQL Server deadlock victims and PostgreSQL serialization failures are retried the same way. A plain integer behaves the same on both databases, unlike `rowversion` or `xmin`. Before v1.1 this race created money out of thin air.
+6. **Concurrency-safe money movement (optimistic concurrency).** `Account` and `CreditCard` carry an integer `Version`; every update is `WHERE Id = @id AND Version = @read`. If the row changed in between, nothing is written and the operation is repeated from fresh reads (up to 10 times, with a short random back-off; a foreign-key error is retried only 3 times). SQL Server deadlock victims and PostgreSQL serialization failures are retried the same way. A plain integer behaves the same on both databases, unlike `rowversion` or `xmin`. Before v1.1 this race created money out of thin air.
 7. **Automated tests** (xUnit, Moq, WebApplicationFactory, SignalR client; several hundred tests):
    * *Unit tests:* pure rules (one-time codes, lockout, encryption, CORS policy, error middleware) and services against EF Core's in-memory provider.
    * *Real-database tests:* concurrent transfers, deposits and card charges, the standing-order worker and the PostgreSQL upgrade scripts run against PostgreSQL and/or SQL Server (the in-memory provider cannot reproduce races). CI runs them on both.
@@ -105,7 +137,7 @@ Layers: `SmartBank.Core` (entities, DTOs, interfaces and the pure security rules
 ## Technology stack
 
 * **Backend:** .NET 10 (C#), EF Core, SignalR, BCrypt.NET, FluentValidation. **PostgreSQL in production, SQL Server LocalDB or PostgreSQL for local development**
-* **Frontend:** semantic HTML5, vanilla CSS3 (custom properties, keyframes, glassmorphism), ES6+ JavaScript, Chart.js
+* **Frontend:** semantic HTML5, vanilla CSS3 (custom properties, keyframes, glassmorphism), ES6+ JavaScript, the SignalR JavaScript client and canvas-confetti (both pinned with Subresource Integrity)
 * **AI:** Ollama (Llama 3, local) and the Gemini API, with FAQ retrieval (RAG)
 * **Testing:** xUnit, Moq, EF Core InMemory, `Microsoft.AspNetCore.Mvc.Testing`, SignalR client; PostgreSQL and SQL Server for the real-database tests
 * **Delivery:** Docker, GitHub Actions (build, tests on PostgreSQL and SQL Server, dependency audit, CodeQL, Docker build), Dependabot
@@ -118,11 +150,11 @@ Layers: `SmartBank.Core` (entities, DTOs, interfaces and the pure security rules
 * **API (Render, Docker):** `https://smartbank-fintech-api.onrender.com`, built from the root `Dockerfile`. Set the service's health-check path to `/health`.
 * **Database (Supabase PostgreSQL):** through the session connection pooler.
 
-To deploy your own copy: create an empty PostgreSQL database and run [`docs/deploy/00-baseline-postgres.sql`](docs/deploy/00-baseline-postgres.sql); create a Render *Web Service* from the repository with the Docker runtime and set the environment variables from the [table below](#2-configure-secrets); then publish the frontend with the deploy script. The frontend talks to a hard-coded API address (`API_URL` in `src/SmartBank.Web/app.js` and the hub URL in `chat.js`): change both for a fork, and put the Pages origin into `Cors__AllowedOrigins__0`.
+To deploy your own copy: create an empty PostgreSQL database and run [`docs/deploy/00-baseline-postgres.sql`](docs/deploy/00-baseline-postgres.sql); create a Render *Web Service* from the repository with the Docker runtime and set the environment variables from the [table below](#2-configure-secrets); then publish the frontend with the deploy script. The frontend knows the API address in three places, and a fork has to change all of them: (1) the `API_ORIGIN` constant in `src/SmartBank.Web/app.js` (the hub URL in `chat.js` is derived from it); (2) the `connect-src` list of the Content-Security-Policy `<meta>` tag in `index.html`, `dashboard.html` and `agent.html` (the browser blocks every call to an address that is not listed); (3) the test `FrontendXssGuardTests` that spells out the allowed `connect-src` origins, which fails until it is updated. Put the Pages origin (for example `https://<user>.github.io`) into `Cors__AllowedOrigins__0`. Day-to-day operation (environment checklist, key rotation, a paused Supabase project, backups, free-tier limits) is in the [runbook](docs/RUNBOOK.md).
 
 ### Upgrading a PostgreSQL deployment
 
-The production tables were created by hand, so the application does **not** migrate the database (`MigrateAsync` is off behind Supabase's pooler). Upgrade scripts live in [`docs/deploy`](docs/deploy). Run them **in order, once each, before deploying the matching API version**:
+The production tables were created by hand, so the application does **not** migrate the database (it never calls `MigrateAsync`; with hand-made tables behind Supabase's pooler that would not be safe). Upgrade scripts live in [`docs/deploy`](docs/deploy). Run them **in order, once each, before deploying the matching API version**:
 
 1. [`v1.1-postgres-upgrade.sql`](docs/deploy/v1.1-postgres-upgrade.sql): card hardening (the CVV is no longer stored; card numbers stored by v1.0 cannot be decrypted under the new key), lockout and one-time-code columns, concurrency versions, roles.
 2. [`v1.2-postgres-upgrade.sql`](docs/deploy/v1.2-postgres-upgrade.sql): the `RefreshTokens` table and schema fixes (`ChatSessions.IsActive`, nullable `StandingOrders.Amount`, `timestamptz` columns).
@@ -142,7 +174,7 @@ The production tables were created by hand, so the application does **not** migr
 | Account takeover | Password reset needs a code e-mailed to the owner; the 2FA code is not returned by the API (unless the demo flag is on). |
 | Typos in the identity number | Registration checks the T.C. Kimlik Numarası check digits (server and form). This is a format check, **not** identity verification (that needs MERNIS). |
 | Browser-side attacks on the API | Every response has `nosniff`, `X-Frame-Options: DENY`, a `default-src 'none'` CSP and `no-referrer`; `/api` responses are `no-store`; HSTS is sent over HTTPS in production. |
-| A stolen token | Access tokens live 15 minutes. The refresh token is single-use (rotated on every refresh, stored only as a hash); presenting a used one again revokes the whole session. Logout and password reset end every session. Failed sign-ins and lockouts do not: otherwise anyone who knows a T.C. number could keep signing its owner out. |
+| A stolen token | Access tokens live 15 minutes. The refresh token is single-use (rotated on every refresh, stored only as a hash); presenting a used one again revokes the whole session. Logout ends that one session; password reset ends all of them. Failed sign-ins and lockouts do not: otherwise anyone who knows a T.C. number could keep signing its owner out. |
 | Who may do what | Roles live in the database and in the token. Customers reach only their own accounts, cards and chats; support-agent endpoints and hub methods need the `Agent` role, which only an administrator can grant. Verified with cross-customer (IDOR) integration tests. |
 | Browser access | CORS accepts only the origins listed in configuration. |
 | Concurrent requests | Optimistic concurrency with retry on every money movement. |
@@ -159,10 +191,16 @@ SmartBank is a portfolio project with a simulated bank. In particular:
 * **Cards are simulated:** numbers carry no check digit, the credit card number is returned in full by the API (the UI masks it), and nothing here is PCI-certified.
 * **The audit trail is append-only by convention**, not tamper-proof (see above).
 * **Registration reveals whether a username, a T.C. number or an e-mail address is already taken.**
+* **Money-moving calls have no idempotency key.** A client that retries after a timeout can repeat a transfer, a deposit or a card payment.
+* **Standing orders skip the one-time-code step.** They run with the permission the customer gave when creating them.
+* **The ledger is not double-entry.** A transaction row holds one amount with a source and a destination account; there is no balanced journal and no job that reconciles balances against it.
+* **Standing orders only run while the API instance is awake.** The worker is a background service of the API process. On a free Render instance that has spun down, due orders wait until a request wakes it (they run late, they are not lost).
+* **`Demo__ExposeOtp` logs codes of every purpose.** With the flag on, a warning line with the user id and the code is written for login, transfer and password-reset codes alike (the first two are also returned in the API response). Never enable it where real data lives.
+* **API messages are in two languages.** Error responses carry a stable `errorKey` and a `message` that is partly Turkish and partly English; the web app translates by key, so API clients should rely on the key.
 * **Market rates are a third-party scrape with simulated fallback prices.** `MarketRateService` reads an unofficial public JSON feed; when it is unreachable the service invents prices (a small random drift around fixed values), and those prices are used for currency purchases and sales.
 * **Time deposit interest is displayed, not accrued.** The tiered rate and the maturity date are shown, but no job ever adds interest to the balance.
 * **The AI chat:** the model sees only the conversation and, on request, the balances of the session's own owner, and it can only *propose* a transfer that the customer must confirm (the transfer itself goes through the normal ownership, limit and one-time-code checks). What remains: the text and those balances are sent to an external model provider (Gemini when the local Ollama is down), and a user can still talk the model into odd answers in their own chat (prompt injection), which is why nothing the model writes is trusted as a command.
-* **Two database providers.** The EF migrations target SQL Server; production is PostgreSQL, created from a generated baseline script and upgraded with hand-run scripts (tested against a real PostgreSQL). A single-provider setup would be cleaner.
+* **Two database providers.** The EF migrations target SQL Server; production is PostgreSQL, created from a generated baseline script and upgraded with hand-run scripts (the baseline and upgrade scripts are tested against a real PostgreSQL). A single-provider setup would be cleaner.
 
 ---
 
@@ -173,14 +211,15 @@ SmartBank is a portfolio project with a simulated bank. In particular:
 * [.NET 10 SDK](https://dotnet.microsoft.com/download) (`global.json` pins the SDK band).
 * `dotnet tool restore` installs `dotnet-ef` from `.config/dotnet-tools.json`; no global install is needed.
 * PowerShell is optional: `scripts/dev-secrets.sh` and `scripts/deploy-pages.sh` do the same on Linux and macOS.
+* SQL Server LocalDB is needed only for the LocalDB route (it comes with Visual Studio or the SQL Server Express LocalDB installer); with Docker you do not need it.
 * Docker is optional: `docker-compose.yml` starts a local PostgreSQL (and, on request, the API).
 * Node.js is optional (only to syntax-check the frontend scripts or to use `npx serve`).
 
 ### 1. Database
 
-The API validates its secrets at startup and `dotnet ef` starts the API to find the `DbContext`, so run `./scripts/dev-secrets.ps1` first (step 2).
+The API validates its secrets at startup and `dotnet ef` starts the API to find the `DbContext`, so run the secrets script first (step 2).
 
-**SQL Server LocalDB (Windows).** `appsettings.json` defaults to LocalDB:
+**SQL Server LocalDB (Windows; needs LocalDB, see the quick start).** `appsettings.json` defaults to LocalDB:
 ```bash
 dotnet tool restore
 dotnet ef database update --project src/SmartBank.Infrastructure --startup-project src/SmartBank.API
@@ -201,7 +240,7 @@ Secrets are **never** stored in `appsettings.json`. The API refuses to start wit
 
 **Local development** (uses .NET user-secrets, nothing is written to the repository):
 ```powershell
-./scripts/dev-secrets.ps1        # Linux/macOS: ./scripts/dev-secrets.sh
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev-secrets.ps1   # Linux/macOS: ./scripts/dev-secrets.sh
 ```
 This generates random values for `JwtSettings:Key` and `Encryption:Key` (`-Rotate` / `--rotate` replaces existing ones). To add a Gemini key: `dotnet user-secrets set GeminiSettings:ApiKey <your-key> --project src/SmartBank.API`.
 
@@ -213,20 +252,22 @@ This generates random values for `JwtSettings:Key` and `Encryption:Key` (`-Rotat
 | `JwtSettings__Issuer`, `JwtSettings__Audience` | Optional. Token issuer and audience (defaults `SmartBankAPI` and `SmartBankApp`) |
 | `JwtSettings__AccessTokenMinutes`, `JwtSettings__RefreshTokenDays` | Optional. Access token lifetime (default 15, 1-1440) and refresh token lifetime (default 7, 1-90). Out-of-range values stop the API from starting |
 | `Encryption__Key` | AES-256 key, base64 of exactly 32 random bytes. **Required** |
-| `ConnectionStrings__DefaultConnection` | Database connection string (`Host=...` selects PostgreSQL, otherwise SQL Server) |
+| `ConnectionStrings__DefaultConnection` | Database connection string. PostgreSQL is selected by a key=value string with `Host=` (or `Username=`, `Port=`, `SSL Mode=`) **or by a `postgresql://user:password@host:5432/database` URI** (the form Supabase shows); anything else is SQL Server. For Supabase use the session pooler on port 5432, see the [runbook](docs/RUNBOOK.md) |
 | `GeminiSettings__ApiKey`, `GeminiSettings__Model` | Optional. Gemini API key; model name (default `gemini-2.5-flash`) |
 | `OllamaSettings__BaseUrl`, `OllamaSettings__Model` | Optional. Local Ollama server (defaults `http://localhost:11434` and `llama3`). Not available on Render; the chat then uses Gemini |
 | `Brevo__ApiKey`, `Brevo__SenderEmail`, `Brevo__SenderName` | **Recommended on Render.** E-mails one-time codes through the [Brevo](https://www.brevo.com) HTTPS API (free tier: 300 mails/day). `SenderEmail` must be a sender address verified in Brevo; the API refuses to start if only the key is set. `SenderName` defaults to "SmartBank Güvenlik". Free hosts block SMTP ports, which is why this goes over HTTPS. A free-mail sender such as `@gmail.com` cannot be signed by Brevo, so some providers may put the mail in spam |
-| `SmtpSettings__Host`, `__Port`, `__Username`, `__Password`, `__EnableSsl`, `__FromAddress` | Plain SMTP, used only when `Brevo__ApiKey` is not set (local development, or a host that allows SMTP). With neither Brevo nor `Host`, no e-mail is sent and **password reset cannot be completed** |
-| `Demo__ExposeOtp` | `false` by default. If `true`, 2FA/transfer codes are also returned in API responses and written to the log so the demo works without a mailbox. **This removes the value of the second factor. Never enable it where real data lives.** The local `http`/`https` launch profiles enable it |
+| `SmtpSettings__Host`, `__Port`, `__Username`, `__Password`, `__EnableSsl`, `__FromAddress` | Plain SMTP (defaults: port 587, `EnableSsl` true, `FromAddress` no-reply@smartbank.com), used only when `Brevo__ApiKey` is not set (local development, or a host that allows SMTP). With neither Brevo nor `Host`, no e-mail is sent and **password reset cannot be completed** |
+| `Demo__ExposeOtp` | `false` by default. If `true`, login and transfer codes are also returned in API responses, and the codes of every purpose (password reset included) are written to the log, so the demo works without a mailbox. **This removes the value of the second factor. Never enable it where real data lives.** The local `http`/`https` launch profiles enable it |
 | `Demo__EnableSimulationEndpoints` | `true` by default. Set to `false` to switch off the demo-only simulation endpoints (the credit-card test charge and the statement-period advance; the deposit faucet stays) |
-| `RateLimiting__Auth__PermitLimit`, `__WindowSeconds` | Per-IP limit on `/api/auth/*` (default 10 requests per 60 s) |
+| `RateLimiting__Auth__PermitLimit`, `__WindowSeconds` | Per-IP limit on `/api/auth/*` (default 10 requests per 60 s). Every `RateLimiting` policy below takes the same two keys; the window is 60 s unless `__WindowSeconds` says otherwise (for example `RateLimiting__Banking__WindowSeconds`) |
 | `RateLimiting__Refresh__PermitLimit` | Per-IP limit on token refresh and logout (default 60 per minute) |
 | `RateLimiting__Banking__PermitLimit` | Per-user limit (per IP when the caller is not identified) on the banking endpoints (default 60 per minute) |
 | `RateLimiting__Transfer__PermitLimit` | Per-user limit on money-moving calls: transfer, exchange, deposit and card payment (default 10 per minute); replaces the banking limit for those calls |
 | `RateLimiting__Market__PermitLimit` | Per-IP limit on the public market-rates endpoint (default 60 per minute) |
 | `Chat__MessagesPerMinute`, `Chat__MessagesPerHour`, `Chat__SessionsPerHour`, `Chat__TransfersPerMinute` | Per-user support-chat limits (defaults 10, 100, 10 and 5; agents get three times the per-minute allowance). Whole numbers from 1 to 100000 |
 | `Cors__AllowedOrigins__0`, `__1`, ... | Browser origins allowed to call the API (default `https://alonessam.github.io`). Anything else is rejected. In Development, pages opened from disk and `localhost` are also accepted |
+| `AllowedHosts` | Host headers the API answers to (default `*`). In Production the API logs a warning while it is `*`; set it to the API's host name (semicolon-separated for several), then check that the platform health check still passes |
+| `Logging__LogLevel__<Category>` | Log levels (default `Information`; ASP.NET, EF SQL commands and outgoing HTTP are `Warning`). For example `Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command=Information` shows every SQL statement |
 | `ASPNETCORE_ENVIRONMENT` | `Production` by default in the container; `Development` enables detailed errors, OpenAPI and the local CORS rules |
 
 Health endpoints: `GET /health` (liveness, touches nothing) and `GET /health/ready` (readiness, checks the database). Both answer only `Healthy`/`Unhealthy`; point the platform's health check at `/health`.
@@ -237,7 +278,7 @@ Behind a reverse proxy (Render, etc.) the container image sets `ASPNETCORE_FORWA
 ```bash
 dotnet run --project src/SmartBank.API --launch-profile http
 ```
-The API listens on `http://localhost:5038`. On Windows, `baslat.bat` in the repository root creates the secrets and starts the API in one go. With Docker: `docker compose --profile api up` builds the image and starts it with the database on `http://localhost:8080` (create the tables first, see step 1).
+The API listens on `http://localhost:5038`. On Windows, `baslat.bat` in the repository root creates the secrets and the LocalDB database and starts the API in one go. With Docker: `docker compose --profile api up` builds the image and starts it with the database; the API is on `http://localhost:5038` as well, because that is the address the web app calls (create the tables first, see step 1). Both ports are published on `127.0.0.1` only.
 
 ### 4. Run the client portal
 Serve `src/SmartBank.Web` from a local web server, for example VS Code's **Live Server** (right-click `index.html`, *Open with Live Server*, usually `http://127.0.0.1:5500`) or `npx serve src/SmartBank.Web -l 5500`.
@@ -276,7 +317,7 @@ UPDATE Users   SET Role   = 1 WHERE Username   = 'agent1';   -- SQL Server
 
 ## More documentation
 
-[`docs/README.md`](docs/README.md) is the index: [architecture](docs/ARCHITECTURE.md), [engineering notes](docs/DEFENSE.md), [changelog](CHANGELOG.md), [security policy](SECURITY.md) and [contributing](CONTRIBUTING.md).
+[`docs/README.md`](docs/README.md) is the index: [architecture](docs/ARCHITECTURE.md), [engineering notes](docs/DEFENSE.md), [runbook](docs/RUNBOOK.md), [changelog](CHANGELOG.md), [security policy](SECURITY.md) and [contributing](CONTRIBUTING.md).
 
 ---
 Author: Alonessam. Released under the [MIT License](LICENSE).

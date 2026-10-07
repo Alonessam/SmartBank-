@@ -4,7 +4,8 @@
 |---|---|---|
 | [`../README.md`](../README.md) / [`../README.tr.md`](../README.tr.md) | Overview, quick start, configuration, security model, known limitations | English / Turkish |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Layers, request pipeline, auth and refresh-token flow, deployment topology | English |
-| [`DEFENSE.md`](DEFENSE.md) | Engineering notes (T1-T15): problem, change, reasoning, rejected alternatives, limits | Turkish (English summary at the top) |
+| [`RUNBOOK.md`](RUNBOOK.md) | Owner's notes: Render environment, key rotation, Supabase and Render free-tier behaviour, backups, health checks, Brevo limits | English |
+| [`DEFENSE.md`](DEFENSE.md) | Engineering notes (T1-T15 in Turkish, "v1.3 engineering notes" in English): problem, change, reasoning, rejected alternatives, limits | Turkish (English summary at the top, English v1.3 section at the end) |
 | [`../CHANGELOG.md`](../CHANGELOG.md) | Changes per release, with upgrade checklists | English |
 | [`../SECURITY.md`](../SECURITY.md) | How to report a vulnerability | English |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | How to build, test and propose a change | English |
