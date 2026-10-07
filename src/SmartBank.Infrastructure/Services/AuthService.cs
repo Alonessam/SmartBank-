@@ -497,7 +497,6 @@ namespace SmartBank.Infrastructure.Services
                 AccessTokenExpiresAt = accessTokenExpiresAt,
                 UserId = user.Id,
                 Username = user.Username,
-                Tckn = user.Tckn, // the web app shows it; it is not part of the token
                 FullName = user.FullName,
                 Role = user.Role.ToString()
             };

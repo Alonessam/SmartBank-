@@ -105,6 +105,7 @@ namespace SmartBank.API.Controllers
             => ToActionResult(await _authService.ResetPasswordAsync(resetPasswordDto, ClientIp()), _ => new { Message = "Password reset successfully." });
 
         [Authorize]
+        [EnableRateLimiting(RateLimitPolicies.Banking)] // asked on every dashboard load: the per-user banking limit, not the per-address auth one
         [HttpGet("2fa-status")]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]

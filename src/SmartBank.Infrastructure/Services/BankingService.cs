@@ -118,6 +118,8 @@ namespace SmartBank.Infrastructure.Services
                     Id = t.Id,
                     SourceAccountNumber = t.SourceAccount != null ? t.SourceAccount.AccountNumber : null,
                     DestinationAccountNumber = t.DestinationAccount != null ? t.DestinationAccount.AccountNumber : null,
+                    SourceCurrency = t.SourceAccount != null ? t.SourceAccount.Currency : null,
+                    DestinationCurrency = t.DestinationAccount != null ? t.DestinationAccount.Currency : null,
                     SourceAccountOwnerName = t.SourceAccount != null && t.SourceAccount.User != null ? t.SourceAccount.User.FullName : null,
                     DestinationAccountOwnerName = t.DestinationAccount != null && t.DestinationAccount.User != null ? t.DestinationAccount.User.FullName : null,
                     Amount = t.Amount,
@@ -127,6 +129,8 @@ namespace SmartBank.Infrastructure.Services
                     CreatedAt = t.CreatedAt
                 })
                 .ToListAsync(cancellationToken);
+
+            foreach (var transaction in transactions) BankingMappers.WithSides(transaction);
 
             return ServiceResult<List<TransactionDto>>.Success(transactions);
         }
@@ -245,11 +249,13 @@ namespace SmartBank.Infrastructure.Services
             _context.Transactions.Add(transaction);
             await _context.SaveChangesAsync();
 
-            return ServiceResult<TransactionDto>.Success(new TransactionDto
+            return ServiceResult<TransactionDto>.Success(BankingMappers.WithSides(new TransactionDto
             {
                 Id = transaction.Id,
                 SourceAccountNumber = accountNumber,
                 DestinationAccountNumber = accountNumber,
+                SourceCurrency = account.Currency,
+                DestinationCurrency = account.Currency,
                 SourceAccountOwnerName = userName,
                 DestinationAccountOwnerName = userName,
                 Type = transaction.Type.ToString(),
@@ -257,7 +263,7 @@ namespace SmartBank.Infrastructure.Services
                 Description = transaction.Description,
                 Category = transaction.Category,
                 CreatedAt = transaction.CreatedAt
-            });
+            }));
         }
 
         // ---- transfers ----------------------------------------------------------------------------------------
@@ -533,17 +539,19 @@ namespace SmartBank.Infrastructure.Services
                 await _context.SaveChangesAsync();
                 await dbTransaction.CommitAsync();
 
-                return ServiceResult<TransactionDto>.Success(new TransactionDto
+                return ServiceResult<TransactionDto>.Success(BankingMappers.WithSides(new TransactionDto
                 {
                     Id = transaction.Id,
                     SourceAccountNumber = sourceAccount.AccountNumber,
                     DestinationAccountNumber = destinationAccount.AccountNumber,
+                    SourceCurrency = sourceAccount.Currency,
+                    DestinationCurrency = destinationAccount.Currency,
                     Amount = transaction.Amount,
                     Description = transaction.Description,
                     Type = transaction.Type.ToString(),
                     Category = transaction.Category,
                     CreatedAt = transaction.CreatedAt
-                });
+                }));
             }
             catch (Exception ex) when (DatabaseConflict.IsRetryable(ex))
             {
