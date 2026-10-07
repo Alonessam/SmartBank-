@@ -4,7 +4,7 @@
 #
 #   ./scripts/deploy-pages.sh                # dry run: prepares the commit in a temporary worktree and shows the diff
 #   ./scripts/deploy-pages.sh --push         # publish to origin/gh-pages
-#   --version 1.3.0                          # cache-buster; default: latest git tag without the leading "v", else 1.3.0
+#   --version 1.3.2                          # cache-buster; default: latest git tag without the leading "v" (no tag: the script stops)
 #   --force                                  # skip the clean-tree and "on main" checks
 set -euo pipefail
 
@@ -31,11 +31,22 @@ if [ "$force" -eq 0 ]; then
     echo "You are on '$branch', not on main. Check out main first (or pass --force)." >&2
     exit 1
   fi
+  # The site should show what is on GitHub, not local commits that were never pushed.
+  git -C "$repo" fetch --quiet origin main
+  head_sha="$(git -C "$repo" rev-parse HEAD)"
+  remote_sha="$(git -C "$repo" rev-parse origin/main)"
+  if [ "$head_sha" != "$remote_sha" ]; then
+    echo "Local main ($head_sha) is not the same commit as origin/main ($remote_sha). Push or pull first (or pass --force)." >&2
+    exit 1
+  fi
 fi
 
 if [ -z "$version" ]; then
-  version="1.3.0"
   if tag="$(git -C "$repo" describe --tags --abbrev=0 2>/dev/null)"; then version="${tag#v}"; fi
+  if [ -z "$version" ]; then
+    echo "No version: the repository has no tag like v1.3.2 and --version was not given. Tag the release first (git tag -a v1.3.2 -m ...) or pass --version 1.3.2." >&2
+    exit 1
+  fi
 fi
 echo "Publishing version $version from branch $branch."
 

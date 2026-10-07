@@ -2,7 +2,11 @@
 #
 #   docker compose up -d db          # just the database, on localhost:5432
 #   docker compose exec -T db psql -U postgres -d smartbank < docs/deploy/00-baseline-postgres.sql   # create the tables (once)
-#   docker compose --profile api up  # database + the API image built from this Dockerfile, on http://localhost:8080
+#   docker compose --profile api up  # database + the API image built from this Dockerfile, on http://localhost:5038
+#
+# The API listens on 5038 on the host (the same address as "dotnet run"), because the web app in src/SmartBank.Web calls
+# http://localhost:5038 whenever it is served from localhost or 127.0.0.1 (inside the container it is port 8080).
+# Both ports are published on 127.0.0.1 only: the database password below is public, so nobody else on the network may reach it.
 #
 # These credentials are for a throw-away local container only. Never reuse them anywhere else.
 services:
@@ -13,7 +17,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: smartbank
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - smartbank-pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -29,7 +33,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "8080:8080"
+      - "127.0.0.1:5038:8080"
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__DefaultConnection: "Host=db;Port=5432;Database=smartbank;Username=postgres;Password=postgres"
