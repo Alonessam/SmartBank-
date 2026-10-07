@@ -1,7 +1,9 @@
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.SignalR;
+using SmartBank.API.Security;
 using SmartBank.API.Hubs;
 using SmartBank.Core.Common;
 using SmartBank.Core.DTOs;
@@ -18,8 +20,10 @@ namespace SmartBank.API.Controllers
     [Authorize]
     [ApiController]
     [Route("api/[controller]")]
+    [EnableRateLimiting(RateLimitPolicies.Chat)]
     [Produces("application/json")]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public class ChatController : SmartBankControllerBase
     {
         private static readonly Regex ActionTag = new(@"\[ACTION:[^\]]*\]", RegexOptions.CultureInvariant | RegexOptions.Compiled, TimeSpan.FromSeconds(1));
