@@ -6,13 +6,14 @@
 # Safety rules (override with -Force only when you know why):
 #   - the working tree must be clean (no uncommitted changes), because the site is built from src/SmartBank.Web as it is
 #     on disk and an uncommitted edit would be published without ever being in git;
-#   - the current branch must be main.
+#   - the current branch must be main, and it must be exactly origin/main (after a fetch): the site is meant to show what
+#     is on GitHub, not local commits that were never pushed.
 #
 # Without -Push it only prepares the commit in a temporary worktree, prints what would change and cleans up, so it is
 # safe to try. With -Push it publishes to origin/gh-pages (which updates the live demo).
 #
 # -Version is the cache-buster appended to the script URLs (app.js, chat.js and styles.css ?v=...). It defaults to the latest git tag without the
-# leading "v" (so tag the release first), or 1.3.0 when the repository has no tag.
+# leading "v" (so tag the release first); with no tag and no -Version the script stops instead of guessing a number.
 #
 #   ./scripts/deploy-pages.ps1            # dry run
 #   ./scripts/deploy-pages.ps1 -Push      # publish
@@ -46,13 +47,22 @@ if (-not $Force) {
     if ($branch -ne "main") {
         throw "You are on '$branch', not on main. Check out main first (or pass -Force)."
     }
+
+    Invoke-Git -C $repo fetch --quiet origin main | Out-Null
+    $head = (Invoke-Git -C $repo rev-parse HEAD | Select-Object -First 1).Trim()
+    $remote = (Invoke-Git -C $repo rev-parse origin/main | Select-Object -First 1).Trim()
+    if ($head -ne $remote) {
+        throw "Local main ($head) is not the same commit as origin/main ($remote). Push or pull first (or pass -Force)."
+    }
 }
 
 # --- Version -----------------------------------------------------------------------------------------------------
 if ([string]::IsNullOrWhiteSpace($Version)) {
-    $Version = "1.3.0"
     & git -C $repo describe --tags --abbrev=0 2>$null | ForEach-Object {
         if ($_ -match '^v?(\d+\.\d+\.\d+.*)$') { $Version = $Matches[1] }
+    }
+    if ([string]::IsNullOrWhiteSpace($Version)) {
+        throw "No version: the repository has no tag like v1.3.2 and -Version was not given. Tag the release first (git tag -a v1.3.2 -m ...) or pass -Version 1.3.2."
     }
 }
 Write-Host "Publishing version $Version from branch $branch."

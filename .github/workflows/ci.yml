@@ -1,8 +1,10 @@
 name: CI
 
+# Pushes to main and release branches, and every pull request. (Topic branches are covered by their pull request; listing
+# them under "push" as well would run every check twice.)
 on:
   push:
-    branches: [main, "release/**", "v1.*/**"]
+    branches: [main, "release/**"]
   pull_request:
   # Weekly run: the vulnerability audit can start failing without any commit (a new advisory), so it also runs on a timer.
   schedule:
@@ -20,6 +22,8 @@ concurrency:
 env:
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
+  # The guards below read the English test summary ("Passed: n", "Failed: n"); keep the runner output in English.
+  DOTNET_CLI_UI_LANGUAGE: en
 
 jobs:
   # ---------------------------------------------------------------------------------------------------------------
@@ -70,7 +74,7 @@ jobs:
         run: dotnet restore SmartBank.slnx
 
       - name: Build
-        run: dotnet build SmartBank.slnx --configuration Release --no-restore
+        run: dotnet build SmartBank.slnx --configuration Release --no-restore -warnaserror
 
       - name: Test
         run: |
@@ -151,7 +155,7 @@ jobs:
         run: dotnet restore SmartBank.slnx
 
       - name: Build
-        run: dotnet build SmartBank.slnx --configuration Release --no-restore
+        run: dotnet build SmartBank.slnx --configuration Release --no-restore -warnaserror
 
       - name: Real-database tests on SQL Server
         run: |
@@ -159,9 +163,10 @@ jobs:
           dotnet test src/SmartBank.Tests --configuration Release --no-build \
             --filter "FullyQualifiedName~SmartBank.Tests.Database" | tee test-sqlserver.log
 
-          # A run that executed nothing (for example because the variable was not picked up) must not count as a pass.
-          if grep -qE "Passed: +0," test-sqlserver.log; then
-            echo "::error::No SQL Server test ran."
+          # A run that executed nothing (for example because the variable was not picked up, or a filter matched nothing)
+          # must not count as a pass: the summary line has to say "Failed: 0" and at least one "Passed".
+          if ! grep -qE "Failed: +0," test-sqlserver.log || ! grep -qE "Passed: +[1-9]" test-sqlserver.log; then
+            echo "::error::The SQL Server run did not report 'Failed: 0' together with at least one passed test."
             exit 1
           fi
 
@@ -190,7 +195,7 @@ jobs:
           dotnet restore SmartBank.slnx
 
       - name: Build the API
-        run: dotnet build src/SmartBank.API/SmartBank.API.csproj --configuration Release --no-restore
+        run: dotnet build src/SmartBank.API/SmartBank.API.csproj --configuration Release --no-restore -warnaserror
 
       - name: Check for pending model changes
         run: >
@@ -247,6 +252,76 @@ jobs:
           fi
 
   # ---------------------------------------------------------------------------------------------------------------
+  # The image really starts and serves: build it, start PostgreSQL, create the tables from the baseline script, run the
+  # container with throw-away keys and wait for /health (liveness) and /health/ready (database) to answer 200.
+  # The container uses the host network so that "localhost" is the PostgreSQL service (ubuntu runner only).
+  # ---------------------------------------------------------------------------------------------------------------
+  docker-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: smartbank
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the image
+        run: docker build -t smartbank:ci .
+
+      # Also proves that the baseline script runs on an empty database (ON_ERROR_STOP: any error fails the step).
+      - name: Create the tables from the baseline script
+        run: |
+          docker run --rm --network host -e PGPASSWORD=postgres -v "$PWD/docs/deploy:/sql:ro" postgres:16 \
+            psql -h localhost -U postgres -d smartbank -v ON_ERROR_STOP=1 -f /sql/00-baseline-postgres.sql
+
+      - name: Start the container
+        run: |
+          # Throw-away values, only for this job. The key is 48 characters; the AES key is base64 of 32 bytes.
+          docker run -d --name smartbank --network host \
+            -e JwtSettings__Key=ci-docker-run-jwt-signing-key-0123456789abcdef \
+            -e Encryption__Key=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY= \
+            -e "ConnectionStrings__DefaultConnection=Host=localhost;Port=5432;Database=smartbank;Username=postgres;Password=postgres" \
+            smartbank:ci
+
+      - name: Wait for /health and /health/ready
+        run: |
+          wait_for() {
+            local path="$1" code="000"
+            for _ in $(seq 1 45); do
+              code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:8080$path" || true)
+              if [ "$code" = "200" ]; then echo "$path answered 200"; return 0; fi
+              if [ -z "$(docker ps -q --filter name=smartbank)" ]; then echo "The container stopped."; return 1; fi
+              sleep 2
+            done
+            echo "$path answered $code after 90 seconds"
+            return 1
+          }
+          wait_for /health
+          wait_for /health/ready
+          # The security headers of the API pipeline are in place on a real response.
+          curl -s -D - -o /dev/null http://localhost:8080/health | tr -d '\r' | grep -iE "^(x-content-type-options|x-frame-options|content-security-policy):"
+
+      - name: Container log (on failure)
+        if: failure()
+        run: |
+          docker ps -a
+          docker logs smartbank 2>&1 | tail -n 200
+
+  # ---------------------------------------------------------------------------------------------------------------
   # Fails when a NuGet package (direct or transitive) has a known vulnerability.
   # ---------------------------------------------------------------------------------------------------------------
   dependency-audit:
@@ -264,11 +339,46 @@ jobs:
       - name: Restore
         run: dotnet restore SmartBank.slnx
 
-      # `dotnet list package --vulnerable` exits 0 even when it finds something, so grep its report.
+      # `dotnet list package --vulnerable` exits 0 even when it finds something, so grep its report. The report must also
+      # exist: if the vulnerability feed cannot be read, nothing is "clean", so that fails too.
       - name: Fail on known-vulnerable packages
         run: |
-          dotnet list SmartBank.slnx package --vulnerable --include-transitive | tee vulnerable.txt
+          set +e
+          dotnet list SmartBank.slnx package --vulnerable --include-transitive 2>&1 | tee vulnerable.txt
+          list_status=${PIPESTATUS[0]}
+          set -e
           if grep -q "has the following vulnerable packages" vulnerable.txt; then
             echo "::error::Vulnerable NuGet packages found, see the report above."
             exit 1
           fi
+          if [ "$list_status" -ne 0 ] || grep -qiE "unable to load the service index|failed to retrieve|NU1301|NU1900" vulnerable.txt; then
+            echo "::error::The vulnerability report could not be produced (exit code $list_status); the feed may be unreachable."
+            exit 1
+          fi
+          if ! grep -q "has no vulnerable packages" vulnerable.txt; then
+            echo "::error::The report does not say that any project was checked."
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------------------------------------------------
+  # One check to require in the branch protection rules instead of listing every job: it fails unless all jobs above
+  # succeeded (a skipped or cancelled job counts as a failure).
+  # ---------------------------------------------------------------------------------------------------------------
+  all-checks:
+    if: always()
+    needs: [build-test, test-sqlserver, ef-model, frontend-check, docker-build, docker-run, dependency-audit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Every job must have succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: $RESULTS"
+          for result in $RESULTS; do
+            if [ "$result" != "success" ]; then
+              echo "::error::At least one job did not succeed ($result)."
+              exit 1
+            fi
+          done
