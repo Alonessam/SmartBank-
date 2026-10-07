@@ -299,14 +299,14 @@ namespace SmartBank.Tests.Api
         }
 
         [Fact]
-        public async Task The_token_response_still_carries_the_tckn_for_the_web_app_but_the_token_does_not()
+        public async Task Neither_the_token_nor_the_token_response_carries_the_tckn()
         {
             var user = await _factory.RegisterCustomerAsync();
             using var client = _factory.CreateClient();
 
             var login = await JsonOf(await client.PostAsJsonAsync("/api/auth/login", new { tckn = user.Tckn, password = "123456" }));
 
-            Assert.Equal(user.Tckn, login.GetProperty("tckn").GetString());
+            Assert.False(login.TryGetProperty("tckn", out _));
             var jwt = new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler().ReadJwtToken(login.GetProperty("token").GetString());
             Assert.DoesNotContain(jwt.Claims, c => c.Value == user.Tckn);
         }
@@ -518,8 +518,16 @@ namespace SmartBank.Tests.Api
             var account = await _factory.GetFirstAccountAsync(user);
             using var client = _factory.ClientFor(user);
 
-            Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsync($"/api/banking/credit-cards/{card}/charge?amount=10", null)).StatusCode);
-            Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsync($"/api/banking/credit-cards/{card}/advance-period", null)).StatusCode);
+            var charge = await client.PostAsync($"/api/banking/credit-cards/{card}/charge?amount=10", null);
+            var advance = await client.PostAsync($"/api/banking/credit-cards/{card}/advance-period", null);
+            Assert.Equal(HttpStatusCode.NotFound, charge.StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, advance.StatusCode);
+            foreach (var response in new[] { charge, advance })
+            {
+                using var body = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                Assert.False(body.RootElement.GetProperty("isSuccess").GetBoolean());
+                Assert.Equal("SimulationDisabled", body.RootElement.GetProperty("errorKey").GetString());
+            }
 
             Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/api/banking/deposit", new { accountNumber = account.AccountNumber, amount = 5m })).StatusCode);
             Assert.Equal(HttpStatusCode.OK, (await client.GetAsync($"/api/banking/credit-cards/{card}/statements")).StatusCode);

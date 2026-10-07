@@ -91,6 +91,21 @@ namespace SmartBank.API.Hubs
             await Clients.Group(sessionId.ToString()).SendAsync("UserJoined", new { username, sessionId });
         }
 
+        /// <summary>
+        /// Stops the pushes of a conversation to this connection (the web app calls it when it switches to another one).
+        /// Owner or support agent only; leaving a group the connection is not in is not an error.
+        /// </summary>
+        public async Task LeaveSessionAsync(Guid sessionId)
+        {
+            if (!await CanAccessSessionAsync(sessionId))
+            {
+                await Clients.Caller.SendAsync("Error", "Access denied to this chat session.");
+                return;
+            }
+
+            await Groups.RemoveFromGroupAsync(Context.ConnectionId, sessionId.ToString());
+        }
+
         public async Task SendMessageAsync(Guid sessionId, string content)
         {
             var userId = GetUserId();
@@ -234,6 +249,7 @@ namespace SmartBank.API.Hubs
             await Clients.Caller.SendAsync("ReceiveMessage", new ChatMessageDto
             {
                 Id = Guid.NewGuid(),
+                SessionId = sessionId,
                 Sender = ChatSenders.System,
                 Content = $"[TRANSFER_FAILED: errorKey={errorKey}, message={message}]",
                 CreatedAt = stored.Data.CreatedAt
