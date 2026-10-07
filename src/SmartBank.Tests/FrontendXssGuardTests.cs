@@ -89,17 +89,44 @@ namespace SmartBank.Tests
         }
 
         [Fact]
-        public void The_escaping_helper_exists_and_escapes_quotes_as_well_as_angle_brackets()
+        public void There_is_no_html_escaping_helper_because_nothing_is_parsed_as_html()
         {
+            // v1.3 builds all dynamic DOM with h() / textContent; the old esc() helper for innerHTML templates was removed.
+            // If a template-based sink ever comes back, this test has to be replaced by the escaping tests again.
+            Assert.DoesNotMatch(@"function esc\(", Read("app.js"));
+            Assert.DoesNotMatch(@"\.innerHTML\s*=", Read("app.js"));
+            Assert.DoesNotMatch(@"\.innerHTML\s*=", Read("chat.js"));
+        }
+
+        [Fact]
+        public void A_page_that_is_framed_by_another_site_hides_itself()
+        {
+            // A <meta> CSP cannot carry frame-ancestors, so the script does what the header would do.
             var app = Read("app.js");
 
-            var helper = Regex.Match(app, @"function esc\(value\)\s*\{(?<body>.*?)\n\}", RegexOptions.Singleline);
-            Assert.True(helper.Success, "app.js must define function esc(value).");
+            Assert.Contains("window.top !== window.self", app);
+            Assert.Contains("document.documentElement.hidden = true", app);
+        }
 
-            foreach (var entity in new[] { "&amp;", "&lt;", "&gt;", "&quot;", "&#39;" })
-            {
-                Assert.Contains(entity, helper.Groups["body"].Value);
-            }
+        [Fact]
+        public void The_confetti_script_is_pinned_to_the_hash_that_was_checked_against_the_file()
+        {
+            // Verified by downloading dist/confetti.browser.min.js of canvas-confetti 1.6.0 and hashing it (sha384). If the version is
+            // changed, recompute the hash: a wrong one blocks the script and the celebration silently never plays.
+            var html = Read("dashboard.html");
+
+            Assert.Contains("canvas-confetti@1.6.0/dist/confetti.browser.min.js\" integrity=\"sha384-HAH79XdRvHr6axVGh4xQWVCp14kcd32bNk4Xu0sHDHtFQ42n6BAM8ykvB47dGz6D\"", html);
+            Assert.Contains("useWorker: false", Read("app.js")); // a blob: worker would be blocked by the CSP
+        }
+
+        [Fact]
+        public void The_signalr_client_does_not_log_the_websocket_address_with_the_token()
+        {
+            // At the default level the client prints "WebSocket connected to wss://...?access_token=<jwt>" to the console.
+            var chat = Read("chat.js");
+
+            Assert.Contains("configureLogging(signalR.LogLevel.Warning)", chat);
+            Assert.DoesNotMatch(@"console\.(log|debug|info)\(", chat);
         }
 
         [Theory]
