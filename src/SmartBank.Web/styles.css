@@ -21,6 +21,8 @@
     --accent-red: hsl(355, 80%, 50%);
     
     --gradient-primary: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-purple) 100%);
+    /* Darker stops for surfaces that carry white text: at least 4.5:1 along the whole gradient (the bright one is only for gradient text and accents). */
+    --gradient-solid: linear-gradient(135deg, hsl(212, 100%, 38%) 0%, hsl(268, 70%, 44%) 100%);
     --gradient-glow: radial-gradient(circle, rgba(0, 122, 255, 0.15) 0%, rgba(138, 43, 226, 0.05) 50%, transparent 100%);
     
     /* Effects & Shadows */
@@ -136,7 +138,7 @@ h1, h2, h3, h4, h5, h6, .logo {
 .badge-role {
     font-size: 0.75rem;
     padding: 0.2rem 0.5rem;
-    background: var(--gradient-primary);
+    background: var(--gradient-solid);
     color: white;
     /* .logo paints its text with a transparent fill (gradient text) and children inherit it: without this the label was invisible. */
     -webkit-text-fill-color: white;
@@ -182,7 +184,7 @@ h1, h2, h3, h4, h5, h6, .logo {
 }
 
 .btn-primary {
-    background: var(--gradient-primary);
+    background: var(--gradient-solid);
     color: white;
     box-shadow: 0 4px 15px rgba(0, 122, 255, 0.3);
 }
@@ -205,7 +207,7 @@ h1, h2, h3, h4, h5, h6, .logo {
 
 .btn-danger {
     background-color: hsla(355, 80%, 50%, 0.2);
-    color: var(--accent-red);
+    color: hsl(355, 100%, 74%);
     border: 1px solid hsla(355, 80%, 50%, 0.4);
 }
 
@@ -596,7 +598,7 @@ h1, h2, h3, h4, h5, h6, .logo {
 
 .message-bubble.user {
     align-self: flex-end;
-    background: var(--gradient-primary);
+    background: var(--gradient-solid);
     color: white;
     border-bottom-right-radius: 2px;
 }
@@ -1834,7 +1836,7 @@ h1, h2, h3, h4, h5, h6, .logo {
 }
 
 .trend-badge.down {
-    color: var(--accent-red);
+    color: hsl(355, 100%, 74%);
     background: rgba(244, 67, 54, 0.1);
 }
 
@@ -2093,7 +2095,8 @@ h1, h2, h3, h4, h5, h6, .logo {
 }
 
 /* Hover or clicked (.flipped) triggers flip */
-.debit-card-wrapper:hover .debit-card-inner,
+/* Once the card was clicked (flip-touched) only the .flipped class decides, so hover and click no longer fight. */
+.debit-card-wrapper:not(.flip-touched):hover .debit-card-inner,
 .debit-card-wrapper.flipped .debit-card-inner {
     transform: rotateY(180deg);
 }
@@ -2620,7 +2623,7 @@ main[tabindex="-1"]:focus {
 .btn-warning {
     background: rgba(255, 75, 92, 0.1);
     border: 1px solid rgba(255, 75, 92, 0.3);
-    color: #ff4b5c;
+    color: #ff8a96;
     font-weight: 600;
 }
 
@@ -2629,8 +2632,9 @@ main[tabindex="-1"]:focus {
 }
 
 .btn-charge {
-    background: #ff4b5c;
-    border-color: #ff4b5c;
+    background: #c8182b;
+    border-color: #c8182b;
+    color: white;
 }
 
 /* Header and auth page bits */
@@ -3566,5 +3570,94 @@ main[tabindex="-1"]:focus {
         animation-iteration-count: 1 !important;
         transition-duration: 0.01ms !important;
         scroll-behavior: auto !important;
+    }
+}
+
+/* ==========================================================================
+   v1.3.2 additions
+   ========================================================================== */
+/* Unread marker on the floating chat button (a reply arrived while the window was closed) */
+.chat-toggle { position: relative; }
+
+.chat-unread-dot {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: hsl(355, 80%, 50%);
+    border: 2px solid var(--bg-primary);
+}
+
+/* One-time CVV dialog */
+.cvv-box {
+    font-family: 'Outfit', sans-serif;
+    font-size: 2rem;
+    letter-spacing: 0.4rem;
+    text-align: center;
+    padding: 0.75rem;
+    margin: 0.5rem 0 1rem;
+    border-radius: 12px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px dashed var(--border-hover);
+}
+
+.cvv-card-no {
+    text-align: center;
+    color: var(--text-muted);
+    letter-spacing: 0.15rem;
+}
+
+/* Stand-in market prices are labelled, not presented as live */
+.indicative-badge {
+    display: inline-block;
+    margin-left: 0.4rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: #f5af19;
+    border: 1px solid rgba(245, 175, 25, 0.5);
+    vertical-align: middle;
+}
+
+/* A standing order that was switched off (for example because its account was closed) */
+.so-item.so-inactive { opacity: 0.65; }
+
+.so-inactive-badge {
+    align-self: flex-start;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 0.1rem 0.5rem;
+    border-radius: 4px;
+    color: var(--text-muted);
+    border: 1px solid var(--border-color);
+}
+
+/* Retry line under the 2FA switch when its status could not be loaded */
+.twofa-retry {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+    font-size: 0.75rem;
+}
+
+.field-hint { font-size: 0.75rem; margin-top: 0.4rem; }
+
+.btn-resend { margin-top: 0.5rem; }
+
+/* The support panel header carries a badge: on narrow screens it wraps instead of pushing the buttons out of view */
+@media (max-width: 480px) {
+    .agent-page .main-header {
+        flex-wrap: wrap;
+        row-gap: 0.4rem;
+    }
+
+    .agent-page .logo {
+        flex-wrap: wrap;
+        min-width: 0;
     }
 }

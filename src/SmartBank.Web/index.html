@@ -52,14 +52,14 @@
                     <h2 id="login-title" data-i18n="login.title">Sign In</h2>
                     <p id="login-subtitle" class="text-muted" data-i18n="login.subtitle">Access your financial dashboard</p>
 
-                    <form id="login-form" novalidate>
+                    <form id="login-form" method="post" novalidate>
                         <div class="form-group">
                             <label for="login-tckn" data-i18n="field.tckn">T.C. Identity Number</label>
-                            <input type="text" id="login-tckn" class="form-control" required maxlength="11" pattern="\d*" inputmode="numeric" autocomplete="username" data-i18n-placeholder="ph.tckn" placeholder="11 digits">
+                            <input type="text" id="login-tckn" name="username" class="form-control" required maxlength="11" pattern="\d*" inputmode="numeric" autocomplete="username" data-i18n-placeholder="ph.tckn" placeholder="11 digits">
                         </div>
                         <div class="form-group">
                             <label for="login-password" data-i18n="field.password">Password (6 digits)</label>
-                            <input type="password" id="login-password" class="form-control" required maxlength="6" pattern="\d*" inputmode="numeric" autocomplete="current-password" data-i18n-placeholder="ph.password" placeholder="6-digit password">
+                            <input type="password" id="login-password" name="password" class="form-control" required maxlength="6" pattern="\d*" inputmode="numeric" autocomplete="current-password" data-i18n-placeholder="ph.password" placeholder="6-digit password">
                             <div class="forgot-row">
                                 <a href="#" id="link-to-forgot" class="link-highlight small-link" role="button" data-i18n="login.forgot">Forgot Password?</a>
                             </div>
@@ -70,6 +70,7 @@
                             <p id="login-2fa-hint" class="text-muted small-hint" data-i18n="login.twofaHint">Enter the code that was sent to your e-mail address.</p>
                         </div>
                         <button type="submit" id="btn-login-submit" class="btn btn-primary btn-block" data-i18n="login.submit">Sign In</button>
+                        <button type="button" id="btn-login-resend" class="btn btn-secondary btn-block hidden btn-resend" data-i18n="login.resend">Send a new code</button>
                         <button type="button" id="btn-login-back" class="btn btn-secondary btn-block hidden back-btn" data-i18n="login.back">Use a different account</button>
                     </form>
 
@@ -86,7 +87,7 @@
                     <h2 id="register-title" data-i18n="register.title">Create Account</h2>
                     <p id="register-subtitle" class="text-muted" data-i18n="register.subtitle">Start your smart banking journey today</p>
 
-                    <form id="register-form" novalidate>
+                    <form id="register-form" method="post" novalidate>
                         <div class="form-row-flex">
                             <div class="form-group flex-1">
                                 <label for="reg-firstname" data-i18n="field.firstName">First Name</label>
@@ -103,7 +104,7 @@
                         </div>
                         <div class="form-group">
                             <label for="reg-email" data-i18n="field.email">Email Address</label>
-                            <input type="email" id="reg-email" class="form-control" required maxlength="100" autocomplete="email" inputmode="email" data-i18n-placeholder="ph.email" placeholder="name@example.com">
+                            <input type="email" id="reg-email" name="email" class="form-control" required maxlength="100" autocomplete="email" inputmode="email" data-i18n-placeholder="ph.email" placeholder="name@example.com">
                         </div>
                         <div class="form-group">
                             <label for="reg-tckn" data-i18n="field.tckn">T.C. Identity Number</label>
@@ -111,7 +112,7 @@
                         </div>
                         <div class="form-group">
                             <label for="reg-password" data-i18n="field.password">Password (6 digits)</label>
-                            <input type="password" id="reg-password" class="form-control" required maxlength="6" pattern="\d*" inputmode="numeric" autocomplete="new-password" data-i18n-placeholder="ph.newPassword" placeholder="Create a 6-digit password">
+                            <input type="password" id="reg-password" name="new-password" class="form-control" required maxlength="6" pattern="\d*" inputmode="numeric" autocomplete="new-password" data-i18n-placeholder="ph.newPassword" placeholder="Create a 6-digit password">
                         </div>
                         <button type="submit" id="btn-register-submit" class="btn btn-primary btn-block" data-i18n="register.submit">Register</button>
                     </form>
@@ -129,7 +130,7 @@
                     <h2 id="forgot-title" data-i18n="forgot.title">Reset Password</h2>
                     <p id="forgot-subtitle" class="text-muted" data-i18n="forgot.subtitle">Reset your password using your T.C. Identity Number</p>
 
-                    <form id="forgot-form" novalidate>
+                    <form id="forgot-form" method="post" novalidate>
                         <div class="form-group">
                             <label for="forgot-tckn" data-i18n="field.tckn">T.C. Identity Number</label>
                             <div class="input-with-button">
@@ -143,7 +144,7 @@
                         </div>
                         <div class="form-group">
                             <label for="forgot-new-password" data-i18n="field.newPassword">New Password (6 digits)</label>
-                            <input type="password" id="forgot-new-password" class="form-control" required maxlength="6" pattern="\d*" inputmode="numeric" autocomplete="new-password" data-i18n-placeholder="ph.newPassword" placeholder="Create a 6-digit password">
+                            <input type="password" id="forgot-new-password" name="new-password" class="form-control" required maxlength="6" pattern="\d*" inputmode="numeric" autocomplete="new-password" data-i18n-placeholder="ph.newPassword" placeholder="Create a 6-digit password">
                         </div>
                         <button type="submit" id="btn-forgot-submit" class="btn btn-primary btn-block" data-i18n="forgot.submit">Reset Password</button>
                     </form>
@@ -167,7 +168,7 @@
                     <div class="loading-spinner" data-i18n="common.loading">Loading...</div>
                 </div>
                 <div class="market-footer">
-                    <span id="txt-rates-updated" role="status">--:--:--</span>
+                    <span id="txt-rates-updated">--:--:--</span>
                     <button type="button" id="btn-market-retry" class="btn btn-secondary btn-xs hidden" data-i18n="common.retry">Retry</button>
                 </div>
             </section>
