@@ -43,7 +43,7 @@ namespace SmartBank.Tests.Database
             ORDER BY tablename, indexname";
 
         private const string ConstraintSql = @"
-            SELECT conrelid::regclass::text || ' ' || conname || ' ' || contype || ' ' || pg_get_constraintdef(oid)
+            SELECT conrelid::regclass::text || ' ' || conname || ' ' || contype::text || ' ' || pg_get_constraintdef(oid)
             FROM pg_constraint
             WHERE connamespace = 'public'::regnamespace
             ORDER BY 1";
