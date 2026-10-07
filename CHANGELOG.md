@@ -4,7 +4,20 @@ All notable changes are listed here, newest first. The format follows [Keep a Ch
 with the sections Added, Changed, Fixed and Security in each release. "T10", "T11", ... refer to the sections of
 [`docs/DEFENSE.md`](docs/DEFENSE.md), which holds the reasoning behind each change.
 
-## [1.3.0] - unreleased
+## [1.3.1] - 2026-10-07
+
+### Fixed
+
+- **Registration failed for everybody on the live site** (found by registering on production after the v1.3 release; the
+  request returned 409 `ConcurrentModification` after 18 seconds). The v1.3 code saved the audit row together with the new user.
+  An audit row has no navigation to its user, so EF may insert it first, and a foreign key from `AuditLogs.UserId` to `Users`
+  (the hand-made production tables can have one; the tables the tests build from the model do not) rejected it. The user is now
+  saved first and the audit row afterwards. New real-database tests add such a foreign key to the test database and fail without
+  the fix.
+- A foreign-key error is retried at most three times instead of ten, so a constraint the code does not expect now fails in about
+  a second instead of after 18 seconds.
+
+## [1.3.0] - 2026-10-06
 
 A repository-wide audit pass: money-correctness fixes, security hardening, frontend fixes and a more reproducible,
 better-guarded repository. It was found by reading the code and the running app, and every fix has a test (the suite grew from
@@ -291,6 +304,7 @@ v1.1 needed configuration and a database change. Deploying it without them made 
 
 Initial portfolio release.
 
-[1.3.0]: https://github.com/Alonessam/SmartBank-/compare/v1.2.0...main
+[1.3.1]: https://github.com/Alonessam/SmartBank-/compare/v1.3.0...main
+[1.3.0]: https://github.com/Alonessam/SmartBank-/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/Alonessam/SmartBank-/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Alonessam/SmartBank-/releases/tag/v1.1.0

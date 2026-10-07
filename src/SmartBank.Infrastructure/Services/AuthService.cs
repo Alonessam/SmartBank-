@@ -157,9 +157,9 @@ namespace SmartBank.Infrastructure.Services
             user.CreditCards.Add(card);
             _context.Users.Add(user);
 
-            // The audit entry names the user but not the full T.C. number: an audit table is read by more people than the user table.
-            _context.AuditLogs.Add(NewAuditLog(user.Id, "UserRegistered", $"User registered with Username: {user.Username}, Tckn: {TcKimlikNo.Mask(user.Tckn)}", ipAddress));
-
+            // The user graph is saved first and the audit row afterwards. An AuditLog has no navigation to its user, so EF is free
+            // to insert it BEFORE the user in a shared SaveChanges; a database whose AuditLogs.UserId has a foreign key (the
+            // hand-made production tables may) then rejects it, and registration failed for everybody (found on the live site).
             try
             {
                 await _context.SaveChangesAsync();
@@ -176,6 +176,10 @@ namespace SmartBank.Infrastructure.Services
                     _ => ServiceResult<AuthResponseDto>.Failure("AlreadyExists", "An account with these details already exists.")
                 };
             }
+
+            // The audit entry names the user but not the full T.C. number: an audit table is read by more people than the user table.
+            // The user row exists now, so this row (saved together with the first refresh token) can reference it.
+            _context.AuditLogs.Add(NewAuditLog(user.Id, "UserRegistered", $"User registered with Username: {user.Username}, Tckn: {TcKimlikNo.Mask(user.Tckn)}", ipAddress));
 
             return ServiceResult<AuthResponseDto>.Success(await IssueSessionAsync(user, ipAddress));
         }
