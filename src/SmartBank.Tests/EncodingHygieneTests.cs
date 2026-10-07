@@ -62,6 +62,39 @@ namespace SmartBank.Tests
         }
 
         [Fact]
+        public void Scripts_are_ascii_only_or_start_with_a_byte_order_mark()
+        {
+            // Windows PowerShell 5.1 reads a .ps1 file without a byte order mark in the system ANSI code page, so any
+            // non-ASCII character in it turns into other characters (and cmd.exe does the same with .bat files).
+            // Keep the scripts pure ASCII (or give them a BOM on purpose).
+            var root = RepositoryRoot();
+            var extensions = new[] { ".ps1", ".sh", ".bat", ".cmd" };
+            var skipped = new[] { $"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", $"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}",
+                                  $"{Path.DirectorySeparatorChar}.git{Path.DirectorySeparatorChar}", $"{Path.DirectorySeparatorChar}node_modules{Path.DirectorySeparatorChar}" };
+
+            var scripts = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+                .Where(f => extensions.Contains(Path.GetExtension(f), StringComparer.OrdinalIgnoreCase))
+                .Where(f => !skipped.Any(s => f.Contains(s, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+
+            Assert.NotEmpty(scripts); // the scan itself must find the scripts
+
+            var offenders = new List<string>();
+            foreach (var file in scripts)
+            {
+                var bytes = File.ReadAllBytes(file);
+                var hasBom = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
+                var nonAscii = bytes.Count(b => b > 0x7F);
+                if (!hasBom && nonAscii > 0)
+                {
+                    offenders.Add($"{Path.GetRelativePath(root, file)}: {nonAscii} non-ASCII bytes and no byte order mark");
+                }
+            }
+
+            Assert.True(offenders.Count == 0, "Scripts must be ASCII-only or start with a BOM:\n" + string.Join("\n", offenders));
+        }
+
+        [Fact]
         public async Task A_transfer_without_a_category_is_filed_under_the_correct_Turkish_word()
         {
             await using var context = new SmartBankDbContext(new DbContextOptionsBuilder<SmartBankDbContext>()
