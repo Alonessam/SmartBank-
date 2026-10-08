@@ -74,11 +74,12 @@ namespace SmartBank.Tests.Database
 
             var card = await Run(s => s.CreateCreditCardAsync(alice.Id));
             Assert.True(card.IsSuccess, card.ErrorKey);
-            var statements = await Run(s => s.GetStatementsAsync(card.Data!.Id, alice.Id)); // a "from the beginning" date goes into the query
+            var cardId = card.Data!.Id;
+            var statements = await Run(s => s.GetStatementsAsync(cardId, alice.Id)); // a "from the beginning" date goes into the query
             Assert.True(statements.IsSuccess, statements.ErrorKey);
-            Assert.True((await Run(s => s.ChargeCreditCardAsync(alice.Id, card.Data.Id, 100m, "shop"))).IsSuccess);
+            Assert.True((await Run(s => s.ChargeCreditCardAsync(alice.Id, cardId, 100m, "shop"))).IsSuccess);
             Assert.True((await Run(s => s.AdvanceStatementPeriodAsync(alice.Id, card.Data.Id))).IsSuccess);
-            Assert.True((await Run(s => s.PayCreditCardDebtAsync(alice.Id, card.Data.Id, new PayCreditCardDebtDto { SourceAccountNumber = a.AccountNumber, Amount = 50m }))).IsSuccess);
+            Assert.True((await Run(s => s.PayCreditCardDebtAsync(alice.Id, cardId, new PayCreditCardDebtDto { SourceAccountNumber = a.AccountNumber, Amount = 50m }))).IsSuccess);
 
             var order = await Run(s => s.CreateStandingOrderAsync(alice.Id, new CreateStandingOrderDto { SourceAccountNumber = a.AccountNumber, DestinationAccountNumber = b.AccountNumber, Amount = 10m, Frequency = "Daily", OrderType = "Transfer" }));
             Assert.True(order.IsSuccess, order.ErrorKey);
