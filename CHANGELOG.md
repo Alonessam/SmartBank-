@@ -4,6 +4,62 @@ All notable changes are listed here, newest first. The format follows [Keep a Ch
 with the sections Added, Changed, Fixed and Security in each release. "T10", "T11", ... refer to the sections of
 [`docs/DEFENSE.md`](docs/DEFENSE.md), which holds the reasoning behind each change.
 
+## [1.3.2] - 2026-10-07
+
+A second full review (backend, frontend, docs, CI) and the fixes it found. Includes the 1.3.1 registration fix.
+
+### Upgrade notes (v1.3.2)
+
+1. **Run `docs/deploy/v1.3.2-postgres-upgrade.sql` first** in the Supabase SQL editor. It is idempotent: it drops `NOT NULL` on
+   columns the code writes as NULL, drops old `CHECK` constraints on `ChatMessages` that mention `Sender`, and widens narrow
+   `varchar` columns. `docs/deploy/schema-check.sql` now also lists the production foreign keys.
+2. Deploy the API (Render Manual Deploy).
+3. Tag the release (`git tag -a v1.3.2 -m "v1.3.2"` and `git push origin v1.3.2`) **before** running `scripts/deploy-pages.ps1 -Push`: the script takes the cache-buster for the scripts and styles from the latest tag, and a stale one would let browsers keep the old JavaScript.
+
+### Changed
+
+- API contract: every chat message carries `sessionId`; the hub has `LeaveSessionAsync(Guid)`; transactions expose
+  `sourceCurrency`, `destinationCurrency`, `sourceAmount` and `destinationAmount`; `AuthResponseDto` no longer returns `tckn`;
+  account numbers are trimmed and upper-cased; request bodies are limited to 64 KB.
+- Chat has its own rate-limit policy (`RateLimiting__Chat__PermitLimit`, `__WindowSeconds`).
+- Simulation endpoints answer 404 `SimulationDisabled` when switched off; the anonymous OTP endpoints always answer
+  `InvalidOrExpiredCode`; the 2FA status call uses the banking policy.
+
+### Fixed
+
+- Registration and login session creation run in one explicit transaction.
+- **Closing an account into one of another currency could create money.** The converted amount was rounded to the nearest
+  cent, so 50 TRY became 0.02 XAU (worth about 62 TRY); closing a few small accounts into a gold account and selling the gold
+  turned 1,000 TRY into 1,114 TRY. The credited amount is now rounded toward zero (an amount that rounds to nothing is refused).
+- Sending the same transfer several times at the same moment let all of them through the "same transfer within 30 seconds"
+  check. The step that moves the money now asks again on fresh reads.
+- SQL Server could answer a transfer with a 500 when the database chose it as a deadlock victim (error 1205) in one of the
+  checks before the money moves; those reads, and the one-time-code steps, are now repeated like the money step.
+- **A standing order could move what a transfer needs a code for.** With two-factor on, a transfer above 1,000 TRY asks for a
+  code, but a standing order for 4,000 TRY ran without one. A transfer order is now refused (`StandingOrderNeedsVerification`)
+  when the same amount would need a code as a normal transfer.
+- **The PIN lockout could be raced.** A correct PIN changed nothing on the user row, so requests sent together with many wrong PINs
+  were all judged "not locked" and the right one was accepted although the five-guess budget was spent. A successful sign-in now
+  writes the row, so it collides with the saved failures and re-reads the lockout.
+- After five wrong guesses on a password-reset code a new code could be requested at once (a fresh set of five guesses with every
+  request); the 60-second cooldown now also applies after the guesses ran out.
+- PostgreSQL treated user names as case-sensitive when two registrations arrived together (`Ali` and `ali` both got in). The
+  v1.3.2 script and the baseline add a unique index on `lower("Username")` (the script skips it with a notice if case-only
+  duplicates already exist).
+- A text with the NUL character was a 500 on PostgreSQL (and stored on SQL Server); it is now a 400 everywhere, for request bodies and
+  hub messages. Non-ASCII digits (for example Arabic-Indic) are no longer accepted in a PIN or T.C. number. A request body that is
+  not the expected JSON shape no longer echoes internal type names. `Retry-After` is exposed to browsers on a 429.
+- A transfer could be confirmed from a chat conversation that was already closed (the money moved and nothing told the customer).
+- Race when two requests close the last account of a user (now guarded through `User.Version`).
+- Rule B (daily limit) counts only same-currency transfers.
+- CORS headers survive the global exception handler, so browsers show the real error instead of a CORS failure.
+- Frontend: chat reconnects after an expired token and treats hub refusals as failures; chat history is filtered per session;
+  history shows the amount on each side of an exchange; standing orders show their type and active state; the CVV is shown once;
+  indicative (fallback) rates are badged and lock the exchange form; auth calls time out after 30 s with a "server waking up"
+  hint; a resend-code button; contrast and mobile overflow fixes; the `esc()` helper and `APP_VERSION` were removed (DOM APIs
+  are used instead).
+- Docs, CI and deploy scripts: baseline schema test (`BaselineSchemaTests`), RUNBOOK and deploy notes corrected.
+
 ## [1.3.1] - 2026-10-07
 
 ### Fixed
@@ -20,8 +76,8 @@ with the sections Added, Changed, Fixed and Security in each release. "T10", "T1
 ## [1.3.0] - 2026-10-06
 
 A repository-wide audit pass: money-correctness fixes, security hardening, frontend fixes and a more reproducible,
-better-guarded repository. It was found by reading the code and the running app, and every fix has a test (the suite grew from
-about 330 to about 990 tests, including real-database tests on PostgreSQL and SQL Server).
+better-guarded repository. It was found by reading the code and the running app, and every fix has a test (the suite grew
+several times over, including real-database tests on PostgreSQL and SQL Server).
 
 ### Upgrade notes (v1.3)
 
@@ -81,8 +137,9 @@ Do these in this order. The first two matter: the new API needs the new columns,
   - Closing an account converted one to one when a rate was missing and would have failed on the foreign key. It is now one
     database transaction (closing row, credit, detaching old rows, standing orders switched off, recipients removed, audit) and
     never converts without a live rate.
-  - Fraud rule B averaged deposits as spending and loaded every amount into memory; it now averages outgoing transfers of the
-    last 90 days in SQL. Thresholds use the real currency.
+  - The "unusually high transfer" fraud rule compared a transfer with the average of the user's deposits (not spending) and
+    loaded every amount into memory; it now compares with the average of the user's outgoing transfers of the
+    last 90 days, computed in SQL. Thresholds use the real currency.
   - A second tab or a parallel request could create a second credit card or duplicate recipients; unique indexes and clean
     errors now. Parallel registrations map to clear errors instead of a 500.
 - **Registration with a taken e-mail address** (v1.2) could throw on a real database because the duplicate check was not
@@ -120,7 +177,7 @@ Do these in this order. The first two matter: the new API needs the new columns,
   (index), `README.tr.md` (the Turkish README, now a separate file), an English summary at the top of `docs/DEFENSE.md`,
   Bash equivalents of the helper scripts (`scripts/dev-secrets.sh`, `scripts/deploy-pages.sh`), authentication examples in
   `SmartBank.API.http`.
-- **API:** `GET /api/banking/transactions?take=` (default 200, at most 500), bounded lists elsewhere (statements 24, chat messages
+- **API:** `GET /api/banking/transactions/{accountId}?take=` (default 200, at most 500), bounded lists elsewhere (statements 24, chat messages
   500, active sessions 200), indexes for the common lookups, and one error contract: not found or not yours is 404, a
   concurrency conflict 409, everything else 400, always `{isSuccess, errorKey, message}`.
 
@@ -198,8 +255,8 @@ These were the steps for the v1.2 release; they are kept for reference.
   inert on the server, and the web app only turns a marker into a card when it comes from the right sender, so nobody can put
   a fake "confirm this transfer" card into someone's chat. Limits are configurable under `Chat:*`. Details: `docs/DEFENSE.md` (T13).
 - **Access tokens now last 15 minutes instead of 7 days, and sessions can be ended.** A single-use refresh token (stored only as
-  a SHA-256 hash, rotated on every use) renews the access token. Logging out, resetting the password or locking the account
-  revokes the sessions, and presenting an already-used refresh token revokes the whole session family. The web app refreshes
+  a SHA-256 hash, rotated on every use) renews the access token. Logging out or resetting the password
+  revokes the sessions (locking the account does not, since 1.3.0), and presenting an already-used refresh token revokes the whole session family. The web app refreshes
   silently and signs the user out when the refresh token is refused. Config: `JwtSettings__AccessTokenMinutes`,
   `JwtSettings__RefreshTokenDays`. Details: `docs/DEFENSE.md` (T12).
 - **Fixed a stored cross-site-scripting hole in the web app.** Text from other users (transfer descriptions, contact aliases,
@@ -300,11 +357,13 @@ v1.1 needed configuration and a database change. Deploying it without them made 
   Card numbers, CVVs, OTPs and account numbers come from a cryptographic random generator instead of `System.Random`.
 - **CORS** accepted every origin together with credentials; it now uses an allow-list.
 
-## [1.0.0]
+## [1.0.0] - 2026-06-27
 
-Initial portfolio release.
+Initial portfolio release (first commit 2026-06-27).
 
-[1.3.1]: https://github.com/Alonessam/SmartBank-/compare/v1.3.0...main
+[1.3.2]: https://github.com/Alonessam/SmartBank-/compare/v1.3.1...v1.3.2
+[1.3.1]: https://github.com/Alonessam/SmartBank-/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/Alonessam/SmartBank-/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/Alonessam/SmartBank-/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Alonessam/SmartBank-/releases/tag/v1.1.0
+[1.0.0]: https://github.com/Alonessam/SmartBank-/releases/tag/v1.0.0

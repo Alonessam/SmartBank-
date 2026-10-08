@@ -24,3 +24,10 @@ select conrelid::regclass as table_name, conname as constraint_name, pg_get_cons
 from pg_constraint
 where contype = 'f' and connamespace = 'public'::regnamespace
 order by 1, 2;
+
+-- Third check: every index in the public schema. The code relies on UNIQUE indexes on Users (Username, Tckn, Email),
+-- Accounts (AccountNumber, AccountCode), RefreshTokens (TokenHash), CreditCards (UserId) and CardNumberHash.
+select tablename, indexname, indexdef
+from pg_indexes
+where schemaname = 'public'
+order by 1, 2;

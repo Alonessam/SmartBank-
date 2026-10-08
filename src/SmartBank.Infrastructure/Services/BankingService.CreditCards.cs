@@ -74,7 +74,7 @@ namespace SmartBank.Infrastructure.Services
                                                !index.Contains("CardNumberHash", StringComparison.OrdinalIgnoreCase))
             {
                 // Two requests passed the check above at the same moment; the unique index on the owner let only one in.
-                _context.Entry(creditCard).State = EntityState.Detached;
+                _context.ChangeTracker.Clear(); // the card AND the statement that was added with it
                 return Fail<CreditCardDto>("MaxCreditCardsLimitReached", "En fazla 1 adet kredi kartı sahibi olabilirsiniz.");
             }
 
@@ -153,7 +153,8 @@ namespace SmartBank.Infrastructure.Services
                 return Fail<bool>("PaymentExceedsDebt", $"The payment cannot be more than the current debt ({Money.Format(card.CurrentDebt)}).");
             }
 
-            var sourceAccount = await _context.Accounts.FirstOrDefaultAsync(a => a.AccountNumber == payRequest.SourceAccountNumber && a.UserId == userId);
+            var sourceNumber = NormalizeAccountNumber(payRequest.SourceAccountNumber);
+            var sourceAccount = await _context.Accounts.FirstOrDefaultAsync(a => a.AccountNumber == sourceNumber && a.UserId == userId);
             if (sourceAccount == null)
             {
                 return Fail<bool>("SourceAccountNotFound", "Source account not found.");

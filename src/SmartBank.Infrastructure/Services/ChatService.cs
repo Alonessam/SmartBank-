@@ -136,6 +136,9 @@ namespace SmartBank.Infrastructure.Services
         public Task<bool> IsSessionOwnerAsync(Guid sessionId, Guid userId, CancellationToken cancellationToken = default) =>
             _context.ChatSessions.AsNoTracking().AnyAsync(s => s.Id == sessionId && s.UserId == userId, cancellationToken);
 
+        public Task<bool> IsSessionOpenAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            _context.ChatSessions.AsNoTracking().AnyAsync(s => s.Id == sessionId && s.IsActive, cancellationToken);
+
         public async Task<ServiceResult<List<ChatMessageDto>>> GetSessionMessagesForOwnerAsync(Guid sessionId, Guid userId, int take = 500, CancellationToken cancellationToken = default)
         {
             var session = await _context.ChatSessions.AsNoTracking()
@@ -177,7 +180,7 @@ namespace SmartBank.Infrastructure.Services
                 .Where(m => m.SessionId == sessionId)
                 .OrderByDescending(m => m.CreatedAt)
                 .Take(take)
-                .Select(m => new ChatMessageDto { Id = m.Id, Sender = m.Sender, Content = m.Content, CreatedAt = m.CreatedAt })
+                .Select(m => new ChatMessageDto { Id = m.Id, SessionId = m.SessionId, Sender = m.Sender, Content = m.Content, CreatedAt = m.CreatedAt })
                 .ToListAsync(cancellationToken);
 
             newestFirst.Reverse();
@@ -282,6 +285,7 @@ namespace SmartBank.Infrastructure.Services
         private static ChatMessageDto ToDto(ChatMessage message) => new()
         {
             Id = message.Id,
+            SessionId = message.SessionId,
             Sender = message.Sender,
             Content = message.Content,
             CreatedAt = message.CreatedAt

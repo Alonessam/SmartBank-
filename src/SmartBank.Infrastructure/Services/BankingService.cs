@@ -53,6 +53,13 @@ namespace SmartBank.Infrastructure.Services
 
         private string ClientIp => _clientInfo?.IpAddress ?? "unknown";
 
+        /// <summary>
+        /// The canonical form of an account number typed by a person: trimmed and upper-case ("tr12..." is "TR12..."). PostgreSQL
+        /// compares text case-sensitively and SQL Server does not, so without this the same input found an account on one and
+        /// not on the other, and "tr1"/"TR1" got past the same-account check on SQL Server.
+        /// </summary>
+        internal static string NormalizeAccountNumber(string? accountNumber) => (accountNumber ?? string.Empty).Trim().ToUpperInvariant();
+
         private static ServiceResult<T> Fail<T>(string errorKey, string message) => ServiceResult<T>.Failure(errorKey, message);
 
         private AuditLog NewAudit(Guid userId, string action, string details) => new()
@@ -83,6 +90,26 @@ namespace SmartBank.Infrastructure.Services
 
         private Task<ServiceResult<T>> RunWithConcurrencyRetryAsync<T>(Func<Task<ServiceResult<T>>> operation) =>
             ConcurrencyRetry.RunAsync(_context, operation, "The account was changed by another operation at the same time. Please try again.");
+
+        /// <summary>
+        /// Runs a read-only step again when the database picked it as a deadlock victim (SQL Server 1205, PostgreSQL 40P01) or
+        /// asked for a retry. Reads take shared locks under SQL Server's default isolation, so a read can lose to a writer.
+        /// The step must not change anything.
+        /// </summary>
+        private static async Task<T> RetryReadAsync<T>(Func<Task<T>> read)
+        {
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    return await read();
+                }
+                catch (Exception ex) when (DatabaseConflict.IsRetryable(ex) && attempt < ConcurrencyRetry.MaxAttempts)
+                {
+                    await Task.Delay(SecureRandom.Next(2, 20 * attempt));
+                }
+            }
+        }
 
         // ---- accounts -----------------------------------------------------------------------------------------
 
@@ -118,6 +145,8 @@ namespace SmartBank.Infrastructure.Services
                     Id = t.Id,
                     SourceAccountNumber = t.SourceAccount != null ? t.SourceAccount.AccountNumber : null,
                     DestinationAccountNumber = t.DestinationAccount != null ? t.DestinationAccount.AccountNumber : null,
+                    SourceCurrency = t.SourceAccount != null ? t.SourceAccount.Currency : null,
+                    DestinationCurrency = t.DestinationAccount != null ? t.DestinationAccount.Currency : null,
                     SourceAccountOwnerName = t.SourceAccount != null && t.SourceAccount.User != null ? t.SourceAccount.User.FullName : null,
                     DestinationAccountOwnerName = t.DestinationAccount != null && t.DestinationAccount.User != null ? t.DestinationAccount.User.FullName : null,
                     Amount = t.Amount,
@@ -127,6 +156,8 @@ namespace SmartBank.Infrastructure.Services
                     CreatedAt = t.CreatedAt
                 })
                 .ToListAsync(cancellationToken);
+
+            foreach (var transaction in transactions) BankingMappers.WithSides(transaction);
 
             return ServiceResult<List<TransactionDto>>.Success(transactions);
         }
@@ -219,6 +250,7 @@ namespace SmartBank.Infrastructure.Services
             var invalid = ValidateAmount(amount);
             if (invalid != null) return Fail<TransactionDto>(invalid.Value.Key, invalid.Value.Message);
 
+            accountNumber = NormalizeAccountNumber(accountNumber);
             var account = await _context.Accounts.FirstOrDefaultAsync(a => a.AccountNumber == accountNumber && a.UserId == userId);
             if (account == null)
             {
@@ -245,11 +277,13 @@ namespace SmartBank.Infrastructure.Services
             _context.Transactions.Add(transaction);
             await _context.SaveChangesAsync();
 
-            return ServiceResult<TransactionDto>.Success(new TransactionDto
+            return ServiceResult<TransactionDto>.Success(BankingMappers.WithSides(new TransactionDto
             {
                 Id = transaction.Id,
                 SourceAccountNumber = accountNumber,
                 DestinationAccountNumber = accountNumber,
+                SourceCurrency = account.Currency,
+                DestinationCurrency = account.Currency,
                 SourceAccountOwnerName = userName,
                 DestinationAccountOwnerName = userName,
                 Type = transaction.Type.ToString(),
@@ -257,7 +291,7 @@ namespace SmartBank.Infrastructure.Services
                 Description = transaction.Description,
                 Category = transaction.Category,
                 CreatedAt = transaction.CreatedAt
-            });
+            }));
         }
 
         // ---- transfers ----------------------------------------------------------------------------------------
@@ -267,8 +301,8 @@ namespace SmartBank.Infrastructure.Services
             var invalid = ValidateAmount(transferRequest.Amount);
             if (invalid != null) return Fail<TransactionDto>(invalid.Value.Key, invalid.Value.Message);
 
-            var sourceNumber = transferRequest.SourceAccountNumber?.Trim() ?? string.Empty;
-            var destinationNumber = transferRequest.DestinationAccountNumber?.Trim() ?? string.Empty;
+            var sourceNumber = NormalizeAccountNumber(transferRequest.SourceAccountNumber);
+            var destinationNumber = NormalizeAccountNumber(transferRequest.DestinationAccountNumber);
             transferRequest.SourceAccountNumber = sourceNumber;
             transferRequest.DestinationAccountNumber = destinationNumber;
 
@@ -279,13 +313,13 @@ namespace SmartBank.Infrastructure.Services
 
             // 1. The source must exist and belong to the caller. "Not found" and "not yours" give the same answer, so this
             //    cannot be used to find out which account numbers exist.
-            var source = await _context.Accounts.AsNoTracking().FirstOrDefaultAsync(a => a.AccountNumber == sourceNumber);
+            var source = await RetryReadAsync(() => _context.Accounts.AsNoTracking().FirstOrDefaultAsync(a => a.AccountNumber == sourceNumber));
             if (source == null || source.UserId != userId)
             {
                 return Fail<TransactionDto>("SourceAccountNotFound", "Source account was not found.");
             }
 
-            var destination = await _context.Accounts.AsNoTracking().FirstOrDefaultAsync(a => a.AccountNumber == destinationNumber);
+            var destination = await RetryReadAsync(() => _context.Accounts.AsNoTracking().FirstOrDefaultAsync(a => a.AccountNumber == destinationNumber));
             if (destination == null)
             {
                 return Fail<TransactionDto>("DestinationAccountNotFound", "Destination account was not found.");
@@ -329,7 +363,7 @@ namespace SmartBank.Infrastructure.Services
 
             if (!approvedByCode)
             {
-                var challenge = await CheckStepUpAsync(userId, source, destination, transferRequest.Amount);
+                var challenge = await RetryReadAsync(() => CheckStepUpAsync(userId, source, destination, transferRequest.Amount));
                 if (challenge != null)
                 {
                     // One-time code, valid for 5 minutes, bound to this exact transfer.
@@ -354,7 +388,7 @@ namespace SmartBank.Infrastructure.Services
 
             // Everything above only decides whether this transfer is allowed. The money itself moves below, in a
             // step that is safe to repeat if another request touches the same accounts at the same moment.
-            return await RunWithConcurrencyRetryAsync(() => ExecuteTransferAsync(userId, transferRequest));
+            return await RunWithConcurrencyRetryAsync(() => ExecuteTransferAsync(userId, transferRequest, rejectDuplicate: !approvedByCode));
         }
 
         /// <summary>
@@ -363,32 +397,29 @@ namespace SmartBank.Infrastructure.Services
         /// any amount above 1000 TRY for a customer who turned two-factor on. Amounts in another currency are compared by
         /// their TRY value; when that value cannot be trusted (no live rate) the amount counts as above every limit.
         /// </summary>
-        private async Task<(string Key, string Message)?> CheckStepUpAsync(Guid userId, Account source, Account destination, decimal amount)
+        private async Task<(string Key, string Message)?> CheckStepUpAsync(Guid userId, Account source, Account destination, decimal amount, bool includeDuplicateRule = true)
         {
             var now = UtcNow;
             var tryAmount = await ToTryEquivalentAsync(amount, source.Currency);
 
             // Rule A: the same transfer again within 30 seconds.
-            var duplicateSince = now.AddSeconds(-DuplicateWindowSeconds);
-            var isDuplicate = await _context.Transactions.AsNoTracking()
-                .AnyAsync(t => t.SourceAccountId == source.Id &&
-                               t.DestinationAccountId == destination.Id &&
-                               t.Amount == amount &&
-                               t.CreatedAt >= duplicateSince);
-            if (isDuplicate)
+            if (includeDuplicateRule && await IsDuplicateTransferAsync(source.Id, destination.Id, amount))
             {
-                return ("SuspectedFraudDuplicate", "Şüpheli işlem: Son 30 saniye içerisinde aynı hesaba aynı miktarda transfer denemesi.");
+                return (DuplicateTransferKey, DuplicateTransferMessage);
             }
 
-            // Rule B: far above the usual outgoing transfer. Only real outgoing transfers count: deposits, the incoming leg
-            // of a standing order and exchanges have the account on both sides or are not transfers, and used to drag the
-            // average up (one big deposit switched this rule off).
+            // Rule B: far above the usual outgoing transfer. Only real outgoing transfers count: a deposit has the account on both
+            // sides, and an exchange or a cross-currency closing transfer is booked as a Transfer between two accounts of the same
+            // customer in DIFFERENT currencies (a real transfer never is), so those are left out by the currency test. They used
+            // to drag the average up (one big deposit or one big purchase of dollars switched this rule off).
             var windowStart = now - AverageWindow;
             var average = await _context.Transactions.AsNoTracking()
                 .Where(t => t.SourceAccountId == source.Id &&
                             t.Type == TransactionType.Transfer &&
                             t.DestinationAccountId != null &&
                             t.DestinationAccountId != t.SourceAccountId &&
+                            t.SourceAccount != null && t.DestinationAccount != null &&
+                            t.SourceAccount.Currency == t.DestinationAccount.Currency &&
                             t.CreatedAt >= windowStart)
                 .Select(t => (decimal?)t.Amount)
                 .AverageAsync();
@@ -414,6 +445,19 @@ namespace SmartBank.Infrastructure.Services
             }
 
             return null;
+        }
+
+        private const string DuplicateTransferKey = "SuspectedFraudDuplicate";
+        private const string DuplicateTransferMessage = "Şüpheli işlem: Son 30 saniye içerisinde aynı hesaba aynı miktarda transfer denemesi.";
+
+        private async Task<bool> IsDuplicateTransferAsync(Guid sourceId, Guid destinationId, decimal amount)
+        {
+            var duplicateSince = UtcNow.AddSeconds(-DuplicateWindowSeconds);
+            return await _context.Transactions.AsNoTracking()
+                .AnyAsync(t => t.SourceAccountId == sourceId &&
+                               t.DestinationAccountId == destinationId &&
+                               t.Amount == amount &&
+                               t.CreatedAt >= duplicateSince);
         }
 
         /// <summary>The TRY value of an amount, or null when it cannot be determined from a live (non-stand-in) rate.</summary>
@@ -448,7 +492,7 @@ namespace SmartBank.Infrastructure.Services
                     await _context.SaveChangesAsync(); // persists the failed-attempt counter, or the cleared code on success
                     return result;
                 }
-                catch (DbUpdateConcurrencyException)
+                catch (Exception ex) when (DatabaseConflict.IsRetryable(ex))
                 {
                     _context.ChangeTracker.Clear();
                     await Task.Delay(SecureRandom.Next(2, 20 * attempt));
@@ -474,7 +518,7 @@ namespace SmartBank.Infrastructure.Services
                     await _context.SaveChangesAsync();
                     return (code, user);
                 }
-                catch (DbUpdateConcurrencyException)
+                catch (Exception ex) when (DatabaseConflict.IsRetryable(ex))
                 {
                     _context.ChangeTracker.Clear();
                     await Task.Delay(SecureRandom.Next(2, 20 * attempt));
@@ -484,7 +528,7 @@ namespace SmartBank.Infrastructure.Services
             return null;
         }
 
-        private async Task<ServiceResult<TransactionDto>> ExecuteTransferAsync(Guid userId, TransferRequestDto transferRequest)
+        private async Task<ServiceResult<TransactionDto>> ExecuteTransferAsync(Guid userId, TransferRequestDto transferRequest, bool rejectDuplicate)
         {
             // Fresh reads on every attempt (the context was cleared first), so balances are current.
             var sourceAccount = await _context.Accounts.FirstOrDefaultAsync(a => a.AccountNumber == transferRequest.SourceAccountNumber);
@@ -503,6 +547,14 @@ namespace SmartBank.Infrastructure.Services
             if (sourceAccount.Balance < transferRequest.Amount)
             {
                 return Fail<TransactionDto>("InsufficientFunds", "Insufficient funds in the source account.");
+            }
+
+            // "The same transfer again within 30 seconds" was decided before this step; two identical requests that arrive together
+            // both pass that check. Asked again here, on fresh reads: the second one collides with the first on the account version,
+            // starts over, and now finds the first transfer.
+            if (rejectDuplicate && await IsDuplicateTransferAsync(sourceAccount.Id, destinationAccount.Id, transferRequest.Amount))
+            {
+                return Fail<TransactionDto>(DuplicateTransferKey, DuplicateTransferMessage);
             }
 
             // Using a DB transaction to guarantee atomicity of the money transfer
@@ -533,17 +585,19 @@ namespace SmartBank.Infrastructure.Services
                 await _context.SaveChangesAsync();
                 await dbTransaction.CommitAsync();
 
-                return ServiceResult<TransactionDto>.Success(new TransactionDto
+                return ServiceResult<TransactionDto>.Success(BankingMappers.WithSides(new TransactionDto
                 {
                     Id = transaction.Id,
                     SourceAccountNumber = sourceAccount.AccountNumber,
                     DestinationAccountNumber = destinationAccount.AccountNumber,
+                    SourceCurrency = sourceAccount.Currency,
+                    DestinationCurrency = destinationAccount.Currency,
                     Amount = transaction.Amount,
                     Description = transaction.Description,
                     Type = transaction.Type.ToString(),
                     Category = transaction.Category,
                     CreatedAt = transaction.CreatedAt
-                });
+                }));
             }
             catch (Exception ex) when (DatabaseConflict.IsRetryable(ex))
             {

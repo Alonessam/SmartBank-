@@ -280,6 +280,28 @@ namespace SmartBank.Tests.Api
         }
 
         [Fact]
+        public async Task A_transfer_cannot_be_confirmed_in_a_closed_conversation_and_no_money_moves()
+        {
+            var customer = await _factory.RegisterCustomerAsync();
+            var from = (await _factory.GetFirstAccountAsync(customer)).AccountNumber;
+            var to = await SecondAccountAsync(customer);
+            var session = await _factory.CreateChatSessionAsync(customer, "hello");
+            await using var hub = await HubTestClient.ConnectAsync(_factory, customer);
+            await hub.Connection.InvokeAsync("JoinSessionAsync", session);
+            await hub.Connection.InvokeAsync("CloseSessionAsync", session);
+            await hub.BarrierAsync();
+
+            await hub.Connection.InvokeAsync("ConfirmTransferFromChatAsync", session, from, to, 100m, "late", (string?)null);
+
+            Assert.True(await HubTestClient.WaitForAsync(() => hub.ErrorsSnapshot().Count == 1));
+            Assert.Contains("closed", hub.ErrorsSnapshot()[0], StringComparison.OrdinalIgnoreCase);
+            using var scope = _factory.Services.CreateScope();
+            var accounts = (await scope.ServiceProvider.GetRequiredService<IBankingService>().GetAccountsAsync(customer.Id)).Data!;
+            Assert.Equal(1000m, accounts.Single(a => a.AccountNumber == from).Balance);
+            Assert.Equal(0m, accounts.Single(a => a.AccountNumber == to).Balance);
+        }
+
+        [Fact]
         public async Task The_ping_method_answers_so_clients_can_use_it_as_a_barrier()
         {
             var (_, _, hub) = await ChatAsync();

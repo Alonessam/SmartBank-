@@ -63,7 +63,10 @@ namespace SmartBank.Infrastructure.Services
         {
             var username = registerDto.Username;
 
-            if (await _context.Users.AnyAsync(u => u.Username == username))
+            // PostgreSQL compares text case-sensitively and SQL Server does not: compare lower-cased on both, so "Ali" and "ali"
+            // are the same name everywhere (ToLower() translates to LOWER(); the in-memory provider accepts it too).
+            var usernameLower = username.ToLowerInvariant();
+            if (await _context.Users.AnyAsync(u => u.Username.ToLower() == usernameLower))
             {
                 return ServiceResult<AuthResponseDto>.Failure("UsernameAlreadyExists", "Username is already taken.");
             }
@@ -157,6 +160,11 @@ namespace SmartBank.Infrastructure.Services
             user.CreditCards.Add(card);
             _context.Users.Add(user);
 
+            // Both saves (the user graph, then the audit row with the first refresh token) are ONE transaction on a real database:
+            // a failure in the second must not leave a user behind whose registration the caller is told has failed (and a retry of
+            // the whole operation would then answer "user name taken" for the customer's own registration).
+            await using var registration = _context.SupportsBulkOperations() ? await _context.Database.BeginTransactionAsync() : null;
+
             // The user graph is saved first and the audit row afterwards. An AuditLog has no navigation to its user, so EF is free
             // to insert it BEFORE the user in a shared SaveChanges; a database whose AuditLogs.UserId has a foreign key (the
             // hand-made production tables may) then rejects it, and registration failed for everybody (found on the live site).
@@ -181,8 +189,19 @@ namespace SmartBank.Infrastructure.Services
             // The user row exists now, so this row (saved together with the first refresh token) can reference it.
             _context.AuditLogs.Add(NewAuditLog(user.Id, "UserRegistered", $"User registered with Username: {user.Username}, Tckn: {TcKimlikNo.Mask(user.Tckn)}", ipAddress));
 
-            return ServiceResult<AuthResponseDto>.Success(await IssueSessionAsync(user, ipAddress));
+            var session = await IssueSessionAsync(user, ipAddress);
+            if (registration != null) await registration.CommitAsync();
+
+            return ServiceResult<AuthResponseDto>.Success(session);
         }
+
+        /// <summary>
+        /// A correct PIN changes nothing on a user whose failure counter is already zero, so no UPDATE would run and the row's
+        /// version would not move. Parallel guesses that read the user before any failure was saved would then all see "not
+        /// locked", and the right one would be accepted although the budget was spent. Writing the row makes such a request collide
+        /// with the saved failures and start over from fresh reads, where the lockout is visible.
+        /// </summary>
+        private void ForceRowWrite(User user) => _context.Entry(user).Property(u => u.FailedLoginCount).IsModified = true;
 
         // ---- login --------------------------------------------------------------------------------------------
 
@@ -217,6 +236,7 @@ namespace SmartBank.Infrastructure.Services
             }
 
             LoginLockout.Reset(user);
+            ForceRowWrite(user); // see ForceRowWrite
 
             if (user.TwoFactorEnabled)
             {
@@ -286,6 +306,7 @@ namespace SmartBank.Infrastructure.Services
             if (check != OtpCheckResult.Valid)
             {
                 await _context.SaveChangesAsync(); // persists the failed-attempt counter or the destroyed code
+                BCrypt.Net.BCrypt.Verify(resetPasswordDto.NewPassword, DummyPasswordHash); // as much work as the unknown-number answer above
                 return OtpFailure<bool>(check);
             }
 
@@ -335,6 +356,7 @@ namespace SmartBank.Infrastructure.Services
             }
 
             LoginLockout.Reset(user);
+            ForceRowWrite(user);
             user.TwoFactorEnabled = enable;
             _context.AuditLogs.Add(NewAuditLog(user.Id, enable ? "TwoFactorEnabled" : "TwoFactorDisabled",
                 enable ? "Two-factor sign-in was turned on." : "Two-factor sign-in was turned off.", ipAddress));
@@ -446,9 +468,11 @@ namespace SmartBank.Infrastructure.Services
             await _context.SaveChangesAsync();
         }
 
-        private static ServiceResult<T> OtpFailure<T>(OtpCheckResult check) => check == OtpCheckResult.TooManyAttempts
-            ? ServiceResult<T>.Failure("TooManyOtpAttempts", "Too many wrong codes. Request a new code and try again.")
-            : ServiceResult<T>.Failure("InvalidOrExpiredCode", "Geçersiz veya süresi dolmuş doğrulama kodu.");
+        // These two endpoints are anonymous and name a person only by T.C. number. "Too many wrong codes" would be said only for a
+        // number that is registered and has a pending code (five wrong guesses in a row), so it would tell registered numbers
+        // from unknown ones. Every failure therefore gets the same answer; the customer asks for a new code either way.
+        private static ServiceResult<T> OtpFailure<T>(OtpCheckResult check) =>
+            ServiceResult<T>.Failure("InvalidOrExpiredCode", "Geçersiz veya süresi dolmuş doğrulama kodu.");
 
         private AuditLog NewAuditLog(Guid userId, string action, string details, string? ipAddress) => new()
         {
@@ -497,7 +521,6 @@ namespace SmartBank.Infrastructure.Services
                 AccessTokenExpiresAt = accessTokenExpiresAt,
                 UserId = user.Id,
                 Username = user.Username,
-                Tckn = user.Tckn, // the web app shows it; it is not part of the token
                 FullName = user.FullName,
                 Role = user.Role.ToString()
             };

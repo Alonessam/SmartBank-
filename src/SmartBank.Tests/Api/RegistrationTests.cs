@@ -40,6 +40,42 @@ namespace SmartBank.Tests.Api
             Assert.Contains("ValidationError", text);
         }
 
+        [Fact]
+        public async Task A_text_with_the_nul_character_is_a_clean_400_on_every_database()
+        {
+            using var client = _factory.CreateClient();
+            var body = new StringContent("{\"username\":\"nu\u0000ll\",\"tckn\":\"" + TestTckn.Next() + "\",\"password\":\"123456\",\"firstName\":\"Test\",\"lastName\":\"User\",\"email\":\"nul@example.com\"}", System.Text.Encoding.UTF8, "application/json");
+
+            var response = await client.PostAsync("/api/auth/register", body);
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal("ValidationError", await ErrorKeyAsync(response));
+        }
+
+        [Fact]
+        public async Task A_body_that_is_not_the_expected_shape_does_not_name_internal_types()
+        {
+            using var client = _factory.CreateClient();
+
+            var response = await client.PostAsync("/api/auth/login", new StringContent("[1,2,3]", System.Text.Encoding.UTF8, "application/json"));
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            var text = await response.Content.ReadAsStringAsync();
+            Assert.DoesNotContain("SmartBank.Core", text);
+            Assert.DoesNotContain("LineNumber", text);
+        }
+
+        [Fact]
+        public async Task A_pin_written_with_non_ascii_digits_is_refused()
+        {
+            using var client = _factory.CreateClient();
+
+            var response = await client.PostAsJsonAsync("/api/auth/login", new { tckn = TestTckn.Next(), password = "١٢٣٤٥٦" }); // Arabic-Indic 123456
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal("ValidationError", await ErrorKeyAsync(response));
+        }
+
         [Theory]
         [InlineData("reg.same@example.com", "REG.SAME@example.com")]
         [InlineData("reg.exact@example.com", "reg.exact@example.com")]

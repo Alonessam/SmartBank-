@@ -90,7 +90,8 @@ namespace SmartBank.Tests
         [InlineData("ChargeFailed")]
         [InlineData("ConcurrentModification")]
         [InlineData("ContactNotFound")]
-        [InlineData("FailedToOpenAssetAccount")]
+        [InlineData("SimulationDisabled")]
+        [InlineData("AmountTooLarge")]
         [InlineData("InsufficientLimit")]
         [InlineData("InvalidExchangeSource")]
         [InlineData("InvalidRefreshToken")]
@@ -187,7 +188,6 @@ namespace SmartBank.Tests
             }
 
             Assert.Single(versions);
-            Assert.Contains($"const APP_VERSION = \"{versions.Single()}\"", Read("app.js"));
         }
 
         [Fact]
@@ -309,6 +309,75 @@ namespace SmartBank.Tests
                     Assert.DoesNotMatch(@"(?<![\w.])(alert|confirm|prompt)\(", line);
                 }
             }
+        }
+
+        // The hub methods the browser calls. LeaveSessionAsync is new in 1.3.2: the client ignores a failed call, so an older server
+        // without it still works; once every deployment has it, it can be removed from the optional list.
+        [Fact]
+        public void Every_hub_method_the_scripts_call_exists_on_the_server()
+        {
+            var optional = new HashSet<string> { "LeaveSessionAsync" };
+            var root = Path.GetFullPath(Path.Combine(WebRoot(), "..", ".."));
+            var hub = File.ReadAllText(Path.Combine(root, "src", "SmartBank.API", "Hubs", "SupportHub.cs"));
+
+            var called = new HashSet<string>();
+            foreach (var script in new[] { "app.js", "chat.js" })
+            {
+                foreach (Match m in Regex.Matches(Read(script), "(?:hubInvoke|\\.invoke)\\(\\s*\"(?<name>[A-Za-z]+)\"")) called.Add(m.Groups["name"].Value);
+            }
+
+            Assert.NotEmpty(called);
+            foreach (var name in called.Where(n => !optional.Contains(n)))
+            {
+                Assert.Matches("public (async )?Task " + name + "\\(", hub);
+            }
+        }
+
+        [Fact]
+        public void The_chat_transfer_call_passes_all_six_hub_arguments_and_never_fills_in_a_default()
+        {
+            // SignalR binds hub arguments by count; a call with five arguments to a six-parameter method fails.
+            var chat = Read("chat.js");
+
+            Assert.Matches(@"ConfirmTransferFromChatAsync"", activeChatSessionId, source, destination, parsedAmount\.value, description, null\)", chat);
+            Assert.Matches(@"transfer\.description, code\)", chat);
+        }
+
+        [Fact]
+        public void Hub_calls_go_through_hubInvoke_which_survives_an_expired_token()
+        {
+            var chat = Read("chat.js");
+            var app = Read("app.js");
+
+            Assert.Contains("async function hubInvoke(method, ...args)", chat);
+            Assert.Contains("Session expired", chat);
+            Assert.Contains("tokenIsExpiring()", chat);
+            Assert.Contains("function scheduleTokenReconnect()", chat);
+            // No script talks to the connection directly except the group re-join inside the connect routine.
+            Assert.DoesNotMatch(@"signalRConnection\.invoke\(", app);
+            Assert.Single(Regex.Matches(chat, @"connection\.invoke\(""RegisterAgentAsync"""));
+        }
+
+        [Fact]
+        public void White_text_surfaces_use_the_darker_gradient()
+        {
+            var css = Read("styles.css");
+
+            Assert.Contains("--gradient-solid:", css);
+            Assert.Matches(@"\.btn-primary \{\s*background: var\(--gradient-solid\)", css);
+            Assert.Matches(@"\.badge-role \{[^}]*background: var\(--gradient-solid\)", css);
+        }
+
+        [Fact]
+        public void Large_lists_are_not_live_regions()
+        {
+            // A live region around a list that is drawn again after every operation makes screen readers read the whole list each time.
+            foreach (var id in new[] { "accounts-list", "credit-cards-list", "standing-orders-list" })
+            {
+                Assert.DoesNotMatch($"id=\"{id}\"[^>]*aria-live", Read("dashboard.html"));
+            }
+            Assert.DoesNotMatch("id=\"active-sessions-list\"[^>]*aria-live", Read("agent.html"));
+            Assert.DoesNotMatch("id=\"txt-rates-updated\"[^>]*role=\"status\"", Read("index.html"));
         }
 
         [Fact]

@@ -49,7 +49,7 @@ namespace SmartBank.Infrastructure.Services
                 return Fail<StandingOrderDto>("InvalidFrequency", "Frequency must be Daily, Weekly or Monthly.");
             }
 
-            var sourceNumber = orderDto.SourceAccountNumber?.Trim() ?? string.Empty;
+            var sourceNumber = NormalizeAccountNumber(orderDto.SourceAccountNumber);
             var source = await _context.Accounts.AsNoTracking().FirstOrDefaultAsync(a => a.AccountNumber == sourceNumber && a.UserId == userId);
             if (source == null)
             {
@@ -76,7 +76,7 @@ namespace SmartBank.Infrastructure.Services
                 if (invalid != null) return Fail<StandingOrderDto>(invalid.Value.Key, invalid.Value.Message);
                 amount = orderDto.Amount.Value;
 
-                destinationNumber = orderDto.DestinationAccountNumber?.Trim();
+                destinationNumber = NormalizeAccountNumber(orderDto.DestinationAccountNumber);
                 if (string.IsNullOrEmpty(destinationNumber))
                 {
                     return Fail<StandingOrderDto>("DestinationAccountNotFound", "A transfer order needs a destination account.");
@@ -96,6 +96,16 @@ namespace SmartBank.Infrastructure.Services
                 if (destination.Currency != source.Currency)
                 {
                     return Fail<StandingOrderDto>("CurrencyMismatch", "A standing order can only move money between accounts of the same currency.");
+                }
+
+                // A standing order runs later, with nobody typing a code. It may therefore not move an amount for which a normal
+                // transfer would ask for one (the customer's two-factor threshold, the limit of a new account, far above the
+                // usual transfer); otherwise a stolen access token could set up what it could not send directly.
+                var challenge = await RetryReadAsync(() => CheckStepUpAsync(userId, source, destination, amount.Value, includeDuplicateRule: false));
+                if (challenge != null)
+                {
+                    return Fail<StandingOrderDto>("StandingOrderNeedsVerification",
+                        "This amount needs a verification code, which a standing order cannot ask for. Send it as a normal transfer, or use a smaller amount.");
                 }
             }
             else
@@ -167,7 +177,7 @@ namespace SmartBank.Infrastructure.Services
 
         public async Task<ServiceResult<SavedContactDto>> SaveContactAsync(Guid userId, CreateSavedContactDto contactDto)
         {
-            var accountNumber = contactDto.AccountNumber?.Trim() ?? string.Empty;
+            var accountNumber = NormalizeAccountNumber(contactDto.AccountNumber);
             var alias = contactDto.Alias?.Trim() ?? string.Empty;
             if (accountNumber.Length < 10 || accountNumber.Length > 30)
             {
@@ -221,7 +231,15 @@ namespace SmartBank.Infrastructure.Services
             }
 
             _context.SavedContacts.Remove(contact);
-            await _context.SaveChangesAsync();
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // A double click or a second tab removed it first: the wanted state (it is gone) is reached either way.
+                _context.ChangeTracker.Clear();
+            }
 
             return ServiceResult<bool>.Success(true);
         }

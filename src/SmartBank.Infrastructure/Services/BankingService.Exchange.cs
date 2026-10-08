@@ -151,11 +151,13 @@ namespace SmartBank.Infrastructure.Services
             await _context.SaveChangesAsync();
 
             var ownerName = await _context.Users.AsNoTracking().Where(u => u.Id == userId).Select(u => u.FullName).FirstOrDefaultAsync();
-            return ServiceResult<TransactionDto>.Success(new TransactionDto
+            return ServiceResult<TransactionDto>.Success(BankingMappers.WithSides(new TransactionDto
             {
                 Id = transaction.Id,
                 SourceAccountNumber = sourceAcc.AccountNumber,
                 DestinationAccountNumber = targetAcc.AccountNumber,
+                SourceCurrency = sourceAcc.Currency,
+                DestinationCurrency = targetAcc.Currency,
                 SourceAccountOwnerName = ownerName,
                 DestinationAccountOwnerName = ownerName,
                 Amount = transaction.Amount,
@@ -163,7 +165,7 @@ namespace SmartBank.Infrastructure.Services
                 Type = transaction.Type.ToString(),
                 Category = transaction.Category,
                 CreatedAt = transaction.CreatedAt
-            });
+            }));
         }
 
         private Task<Account?> FindDemandAccountAsync(Guid userId, string currency) =>
@@ -174,7 +176,8 @@ namespace SmartBank.Infrastructure.Services
 
         /// <summary>
         /// Converts an amount between two currencies through TRY at the bank's rates (what the bank pays for the source, what
-        /// it charges for the target), rounded once. A currency without a live rate cannot be converted: there is no 1:1 guess.
+        /// it charges for the target), rounded once toward zero: the result is credited to the customer, and rounding up would turn
+        /// a few lira into 0.01 of a precious metal worth far more (close a TRY account into an XAU account, then sell). A currency without a live rate cannot be converted: there is no 1:1 guess.
         /// </summary>
         private async Task<(decimal? Amount, string? ErrorKey)> ConvertAsync(decimal amount, string from, string to)
         {
@@ -200,11 +203,11 @@ namespace SmartBank.Infrastructure.Services
                 tryValue = amount * sourceRate.Buy;
             }
 
-            if (to == Currencies.Try) return (Money.Round(tryValue), null);
+            if (to == Currencies.Try) return (Money.Truncate(tryValue), null);
 
             var targetRate = Live(to);
             if (targetRate == null || targetRate.Sell <= 0m) return (null, "RateUnavailable");
-            return (Money.Round(tryValue / targetRate.Sell), null);
+            return (Money.Truncate(tryValue / targetRate.Sell), null);
         }
     }
 }

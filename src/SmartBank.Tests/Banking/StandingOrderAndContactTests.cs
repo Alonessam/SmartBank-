@@ -34,6 +34,22 @@ namespace SmartBank.Tests.Banking
         // ---- creating ----------------------------------------------------------------------------------------
 
         [Fact]
+        public async Task A_transfer_order_may_not_be_set_up_for_an_amount_that_a_transfer_would_need_a_code_for()
+        {
+            var user = await _h.AddUserAsync(twoFactor: true);
+            var source = await _h.AddAccountAsync(user, "TR0000000000000001", 5000m);
+            var destination = await _h.AddAccountAsync(user, "TR0000000000000002", 0m);
+
+            var big = await _h.Service.CreateStandingOrderAsync(user.Id, Order(source.AccountNumber, destination.AccountNumber, 1500m));
+            var small = await _h.Service.CreateStandingOrderAsync(user.Id, Order(source.AccountNumber, destination.AccountNumber, 500m));
+
+            Assert.False(big.IsSuccess);
+            Assert.Equal("StandingOrderNeedsVerification", big.ErrorKey);
+            Assert.True(small.IsSuccess, small.ErrorKey);
+            Assert.Single(await _h.Context.StandingOrders.ToListAsync());
+        }
+
+        [Fact]
         public async Task A_transfer_order_is_stored_active_and_due_now_with_a_one_year_life()
         {
             var (user, source, destination) = await SeedAsync();
@@ -142,10 +158,19 @@ namespace SmartBank.Tests.Banking
         }
 
         [Fact]
-        public async Task The_largest_allowed_amount_is_accepted()
+        public async Task The_largest_allowed_amount_passes_validation_and_is_then_held_by_the_verification_rule()
         {
             var (user, source, destination) = await SeedAsync();
 
+            var result = await _h.Service.CreateStandingOrderAsync(user.Id, Order(source.AccountNumber, destination.AccountNumber, 1_000_000m));
+            Assert.Equal("StandingOrderNeedsVerification", result.ErrorKey); // not an amount error: only a code could approve this much
+
+            // A customer with a transfer history that makes the amount usual can set it up.
+            await using (var context = _h.NewContext())
+            {
+                context.Transactions.Add(new Transaction { SourceAccountId = source.Id, DestinationAccountId = destination.Id, Amount = 900_000m, Type = TransactionType.Transfer, Description = "history", CreatedAt = _h.Clock.UtcNow.AddDays(-2) });
+                await context.SaveChangesAsync();
+            }
             Assert.True((await _h.Service.CreateStandingOrderAsync(user.Id, Order(source.AccountNumber, destination.AccountNumber, 1_000_000m))).IsSuccess);
         }
 
