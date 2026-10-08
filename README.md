@@ -65,6 +65,7 @@ Then serve `src/SmartBank.Web` with any static server (VS Code *Live Server*, or
 
 ## What is new
 
+* **1.3.2**: second full review: API contract fixes (`sessionId` on every chat message, per-side exchange amounts), chat rate limit, a safer registration and session transaction, frontend fixes (chat reconnect, history, mobile support panel) and a PostgreSQL upgrade script. Details in [`CHANGELOG.md`](CHANGELOG.md).
 * **1.3.1** (hotfix): registration failed on the live site right after 1.3 because the hand-made production tables have a foreign key that the test databases did not; fixed, with real-database tests that add such a constraint, and `schema-check.sql` now lists foreign keys too. Details in [`CHANGELOG.md`](CHANGELOG.md).
 * **1.3** (audit pass): money-correctness fixes, security hardening, frontend fixes, and repository, CI and Docker polish (CodeQL, SQL Server and Docker jobs in CI, a baseline PostgreSQL schema, docker-compose, community files). Details in [`CHANGELOG.md`](CHANGELOG.md).
 * **1.2**: stored-XSS fix and a Content-Security-Policy, 15-minute access tokens with rotating refresh tokens, e-mail through Brevo's HTTPS API, support-chat limits and forged-transfer-card protection, API security headers, T.C. Kimlik No check digits, production schema fixes.
@@ -126,7 +127,7 @@ Layers: `SmartBank.Core` (entities, DTOs, interfaces and the pure security rules
 4. **Global exception middleware (RFC 7807-style problem details).** Unhandled exceptions become problem-details JSON (`type`, `title`, `status`, `detail`, `instance`) plus a `traceId`. Outside Development the `detail` is generic and the real exception goes to the log.
 5. **Validation (FluentValidation).** `RegisterDtoValidator` and `TransferRequestDtoValidator` hold the request rules (T.C. Kimlik No check digits, 6-digit PIN, amount range) apart from the business logic.
 6. **Concurrency-safe money movement (optimistic concurrency).** `Account` and `CreditCard` carry an integer `Version`; every update is `WHERE Id = @id AND Version = @read`. If the row changed in between, nothing is written and the operation is repeated from fresh reads (up to 10 times, with a short random back-off; a foreign-key error is retried only 3 times). SQL Server deadlock victims and PostgreSQL serialization failures are retried the same way. A plain integer behaves the same on both databases, unlike `rowversion` or `xmin`. Before v1.1 this race created money out of thin air.
-7. **Automated tests** (xUnit, Moq, WebApplicationFactory, SignalR client; several hundred tests):
+7. **Automated tests** (xUnit, Moq, WebApplicationFactory, SignalR client; about 1,000 tests):
    * *Unit tests:* pure rules (one-time codes, lockout, encryption, CORS policy, error middleware) and services against EF Core's in-memory provider.
    * *Real-database tests:* concurrent transfers, deposits and card charges, the standing-order worker and the PostgreSQL upgrade scripts run against PostgreSQL and/or SQL Server (the in-memory provider cannot reproduce races). CI runs them on both.
    * *Integration tests:* the whole application is started in memory and driven over HTTP and SignalR: roles, chat endpoints, the hub and cross-customer access to accounts and cards (IDOR).
@@ -158,7 +159,8 @@ The production tables were created by hand, so the application does **not** migr
 
 1. [`v1.1-postgres-upgrade.sql`](docs/deploy/v1.1-postgres-upgrade.sql): card hardening (the CVV is no longer stored; card numbers stored by v1.0 cannot be decrypted under the new key), lockout and one-time-code columns, concurrency versions, roles.
 2. [`v1.2-postgres-upgrade.sql`](docs/deploy/v1.2-postgres-upgrade.sql): the `RefreshTokens` table and schema fixes (`ChatSessions.IsActive`, nullable `StandingOrders.Amount`, `timestamptz` columns).
-3. [`v1.3-postgres-upgrade.sql`](docs/deploy/v1.3-postgres-upgrade.sql): the v1.3 changes.
+3. [`v1.3-postgres-upgrade.sql`](docs/deploy/v1.3-postgres-upgrade.sql): the v1.3 changes (refresh-token and concurrency columns, unique indexes, duplicate cleanup that keeps the oldest row).
+4. [`v1.3.2-postgres-upgrade.sql`](docs/deploy/v1.3.2-postgres-upgrade.sql): drops `NOT NULL` on hand-made columns the code writes as NULL, drops old `ChatMessages` sender `CHECK` constraints, and widens narrow `varchar` columns. Safe to run more than once.
 
 [`schema-check.sql`](docs/deploy/schema-check.sql) lists every production column so you can compare it with what the code expects. A **fresh** database is created from the baseline script instead and needs none of the upgrade scripts. Each release's steps are in [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -284,7 +286,7 @@ The API listens on `http://localhost:5038`. On Windows, `baslat.bat` in the repo
 ### 4. Run the client portal
 Serve `src/SmartBank.Web` from a local web server, for example VS Code's **Live Server** (right-click `index.html`, *Open with Live Server*, usually `http://127.0.0.1:5500`) or `npx serve src/SmartBank.Web -l 5500`.
 
-> **Do not open `index.html` straight from disk.** A page opened from a file has no host name, so `app.js` then talks to the live Render API instead of your local one (it only uses `http://localhost:5038` when the page itself is served from `localhost` or `127.0.0.1`).
+> **Do not open `index.html` straight from disk.** A page opened from a file has no host name, so `app.js` then talks to the live Render API instead of your local one (it uses `http://localhost:5038` when the page itself is served from `localhost`, `127.0.0.1` or `[::1]`; a private LAN address assumes the API on that same host at port 5038, which also needs that host in the page's `connect-src`).
 
 ### 5. Run the tests
 

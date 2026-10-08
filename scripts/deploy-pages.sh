@@ -58,6 +58,14 @@ trap cleanup EXIT
 git -C "$repo" fetch --quiet origin gh-pages
 git -C "$repo" worktree add --detach "$worktree" origin/gh-pages >/dev/null
 
+# Gitignored or untracked files (.env, *.log, *.bak ...) in the Web folder would be copied into the public site: refuse.
+stray="$(git -C "$repo" status --porcelain --ignored -- src/SmartBank.Web | grep -E '^(!!|\?\?) ' || true)"
+if [ -n "$stray" ]; then
+  echo "Untracked or ignored files in src/SmartBank.Web would be published; remove them first:" >&2
+  echo "$stray" >&2
+  exit 1
+fi
+
 # The site is exactly the contents of the Web folder: start from an empty tree so removed files disappear.
 find "$worktree" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
 cp -R "$repo/src/SmartBank.Web/." "$worktree/"

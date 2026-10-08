@@ -56,6 +56,12 @@ if (-not $Force) {
     }
 }
 
+# Gitignored or untracked files (.env, *.log, *.bak ...) in the Web folder would be copied into the public site: refuse.
+$stray = @(Invoke-Git -C $repo status --porcelain --ignored -- src/SmartBank.Web | Where-Object { $_ -match '^(!!|\?\?) ' })
+if ($stray.Count -gt 0) {
+    throw "Untracked or ignored files in src/SmartBank.Web would be published; remove them first:`n$($stray -join "`n")"
+}
+
 # --- Version -----------------------------------------------------------------------------------------------------
 if ([string]::IsNullOrWhiteSpace($Version)) {
     & git -C $repo describe --tags --abbrev=0 2>$null | ForEach-Object {

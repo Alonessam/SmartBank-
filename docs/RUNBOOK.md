@@ -40,7 +40,7 @@ Docker runtime, built from the root `Dockerfile`. Health check path: `/health`.
 
 ## 3. Database (Supabase)
 
-- **Run the SQL scripts in order, once each, before deploying the matching API version**: `v1.1`, `v1.2`, `v1.3`
+- **Run the SQL scripts in order, once each, before deploying the matching API version**: `v1.1`, `v1.2`, `v1.3`, `v1.3.2`
   (README, "Upgrading a PostgreSQL deployment"). A fresh database uses `00-baseline-postgres.sql` only. Paste the file
   into the Supabase SQL editor and run it. Afterwards run `schema-check.sql` and compare with the model if anything is
   odd (it also lists the production foreign keys).
