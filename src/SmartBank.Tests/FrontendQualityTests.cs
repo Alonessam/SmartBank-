@@ -355,7 +355,7 @@ namespace SmartBank.Tests
             Assert.Contains("function scheduleTokenReconnect()", chat);
             // No script talks to the connection directly except the group re-join inside the connect routine.
             Assert.DoesNotMatch(@"signalRConnection\.invoke\(", app);
-            Assert.Equal(1, Regex.Matches(chat, @"connection\.invoke\(""RegisterAgentAsync""").Count);
+            Assert.Single(Regex.Matches(chat, @"connection\.invoke\(""RegisterAgentAsync"""));
         }
 
         [Fact]
