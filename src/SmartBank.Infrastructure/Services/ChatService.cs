@@ -136,6 +136,9 @@ namespace SmartBank.Infrastructure.Services
         public Task<bool> IsSessionOwnerAsync(Guid sessionId, Guid userId, CancellationToken cancellationToken = default) =>
             _context.ChatSessions.AsNoTracking().AnyAsync(s => s.Id == sessionId && s.UserId == userId, cancellationToken);
 
+        public Task<bool> IsSessionOpenAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            _context.ChatSessions.AsNoTracking().AnyAsync(s => s.Id == sessionId && s.IsActive, cancellationToken);
+
         public async Task<ServiceResult<List<ChatMessageDto>>> GetSessionMessagesForOwnerAsync(Guid sessionId, Guid userId, int take = 500, CancellationToken cancellationToken = default)
         {
             var session = await _context.ChatSessions.AsNoTracking()

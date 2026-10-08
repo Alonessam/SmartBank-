@@ -28,6 +28,14 @@ A second full review (backend, frontend, docs, CI) and the fixes it found. Inclu
 ### Fixed
 
 - Registration and login session creation run in one explicit transaction.
+- **Closing an account into one of another currency could create money.** The converted amount was rounded to the nearest
+  cent, so 50 TRY became 0.02 XAU (worth about 62 TRY); closing a few small accounts into a gold account and selling the gold
+  turned 1,000 TRY into 1,114 TRY. The credited amount is now rounded toward zero (an amount that rounds to nothing is refused).
+- Sending the same transfer several times at the same moment let all of them through the "same transfer within 30 seconds"
+  check. The step that moves the money now asks again on fresh reads.
+- SQL Server could answer a transfer with a 500 when the database chose it as a deadlock victim (error 1205) in one of the
+  checks before the money moves; those reads, and the one-time-code steps, are now repeated like the money step.
+- A transfer could be confirmed from a chat conversation that was already closed (the money moved and nothing told the customer).
 - Race when two requests close the last account of a user (now guarded through `User.Version`).
 - Rule B (daily limit) counts only same-currency transfers.
 - CORS headers survive the global exception handler, so browsers show the real error instead of a CORS failure.

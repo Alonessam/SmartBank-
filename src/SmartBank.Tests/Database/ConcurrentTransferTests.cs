@@ -99,6 +99,50 @@ namespace SmartBank.Tests.Database
 
         [DatabaseTheory]
         [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
+        public async Task The_same_transfer_sent_several_times_at_once_goes_through_only_once(TestProvider provider)
+        {
+            await using var db = await TestDatabase.CreateAsync(provider);
+            var seed = await SeedAsync(db, balanceA: 1000m, balanceB: 0m);
+
+            // "The same transfer again within 30 seconds" is decided before the money moves; requests that arrive together all
+            // pass that check, so the step that moves the money asks again.
+            var operations = Enumerable.Range(0, 8)
+                .Select(_ => (Func<Task<ServiceResult>>)(() => TransferAsync(db, seed.UserA, AccountA, AccountB, 50m)))
+                .ToList();
+
+            var results = await ConcurrencyHarness.RunTogetherAsync(operations);
+
+            Assert.Single(results, r => r.IsSuccess);
+            Assert.All(results.Where(r => !r.IsSuccess), r => Assert.Contains(r.ErrorKey, new[] { "SuspectedFraudDuplicate", "ConcurrentModification" }));
+            await using var context = db.NewContext();
+            Assert.Equal(950m, (await context.Accounts.AsNoTracking().SingleAsync(x => x.AccountNumber == AccountA)).Balance);
+        }
+
+        [DatabaseTheory]
+        [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
+        public async Task Repeated_bursts_of_transfers_never_surface_a_deadlock_as_an_error(TestProvider provider)
+        {
+            await using var db = await TestDatabase.CreateAsync(provider);
+            var seed = await SeedAsync(db, balanceA: 100000m, balanceB: 0m);
+
+            // SQL Server picks a deadlock victim among readers and writers of the same rows (error 1205); that must be retried,
+            // not returned as a 500. A transfer that does fail may only fail the way a collision is allowed to.
+            var all = new List<ServiceResult>();
+            for (var round = 0; round < 4; round++)
+            {
+                var operations = Enumerable.Range(0, 30)
+                    .Select(i => 1m + round * 0.5m + i / 100m)
+                    .Select(amount => (Func<Task<ServiceResult>>)(() => TransferAsync(db, seed.UserA, AccountA, AccountB, amount)))
+                    .ToList();
+                all.AddRange(await ConcurrencyHarness.RunTogetherAsync(operations));
+            }
+
+            await AssertMoneyIsConservedAsync(db, expectedTotal: 100000m, all.ToArray());
+            Assert.True(all.Count(r => r.IsSuccess) > 60, "most transfers should succeed");
+        }
+
+        [DatabaseTheory]
+        [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
         public async Task Transfers_in_opposite_directions_at_the_same_time_neither_deadlock_nor_lose_money(TestProvider provider)
         {
             await using var db = await TestDatabase.CreateAsync(provider);
