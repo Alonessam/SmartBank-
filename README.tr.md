@@ -65,6 +65,7 @@ Sonra `src/SmartBank.Web` klasörünü herhangi bir statik sunucuyla (VS Code *L
 
 ## Yenilikler
 
+* **1.3.2**: ikinci tam inceleme: API sözleşmesi düzeltmeleri (her sohbet mesajında `sessionId`, döviz işleminde iki taraflı tutarlar), sohbet hız sınırı, daha güvenli kayıt ve oturum transaction'ı, arayüz düzeltmeleri (sohbet yeniden bağlanma, geçmiş, mobil destek paneli) ve bir PostgreSQL yükseltme betiği. Ayrıntılar [`CHANGELOG.md`](CHANGELOG.md) içinde.
 * **1.3.1** (acil düzeltme): 1.3'ten hemen sonra canlı sitede kayıt başarısız oluyordu, çünkü elle oluşturulan üretim tablolarında test veritabanlarında olmayan bir yabancı anahtar vardı; düzeltildi, böyle bir kısıtı ekleyen gerçek veritabanı testleriyle birlikte; `schema-check.sql` artık yabancı anahtarları da listeler. Ayrıntılar [`CHANGELOG.md`](CHANGELOG.md) içinde.
 * **1.3** (denetim turu): para doğruluğu düzeltmeleri, güvenlik sertleştirmeleri, arayüz düzeltmeleri ve depo, CI ile Docker iyileştirmeleri (CodeQL, CI'da SQL Server ve Docker işleri, temel PostgreSQL şeması, docker-compose, topluluk dosyaları). Ayrıntılar [`CHANGELOG.md`](CHANGELOG.md) içinde.
 * **1.2**: saklı XSS düzeltmesi ve Content-Security-Policy, dönen yenileme token'lı 15 dakikalık erişim token'ları, Brevo HTTPS API'siyle e-posta, destek sohbeti sınırları ve sahte transfer kartı koruması, API güvenlik başlıkları, T.C. Kimlik No kontrol basamakları, üretim şeması düzeltmeleri.
@@ -126,7 +127,7 @@ Katmanlar: `SmartBank.Core` (varlıklar, DTO'lar, arayüzler ve tek kullanımlı
 4. **Global hata yakalama (RFC 7807 tarzı problem details).** Beklenmeyen hatalar `traceId` ile birlikte problem-details JSON'u olarak dönülür (`type`, `title`, `status`, `detail`, `instance`). Geliştirme dışında `detail` geneldir ve gerçek istisna loga gider.
 5. **Doğrulama (FluentValidation).** `RegisterDtoValidator` ve `TransferRequestDtoValidator`, istek kurallarını (T.C. Kimlik No kontrol basamakları, 6 haneli PIN, tutar aralığı) iş mantığından ayrı tutar.
 6. **Eşzamanlılığa dayanıklı para hareketleri (iyimser eşzamanlılık).** `Account` ve `CreditCard` tamsayı bir `Version` taşır; her güncelleme `WHERE Id = @id AND Version = @okunan` ile yapılır. Satır arada değiştiyse hiçbir şey yazılmaz ve işlem taze okumalarla yeniden yapılır (en fazla 10 kez, kısa rastgele bekleme ile; yabancı anahtar hatası yalnızca 3 kez yeniden denenir). SQL Server deadlock kurbanları ve PostgreSQL serileştirme hataları da aynı yolla yeniden denenir. Düz bir tamsayı, `rowversion` veya `xmin`'in aksine iki veritabanında da aynı davranır. v1.1'den önce bu yarış yoktan para üretiyordu.
-7. **Otomasyonlu testler** (xUnit, Moq, WebApplicationFactory, SignalR istemcisi; birkaç yüz test):
+7. **Otomasyonlu testler** (xUnit, Moq, WebApplicationFactory, SignalR istemcisi; yaklaşık 1.000 test):
    * *Birim testler:* saf kurallar (tek kullanımlık kodlar, kilit, şifreleme, CORS politikası, hata ara katmanı) ve EF Core InMemory'ye karşı servisler.
    * *Gerçek veritabanı testleri:* eşzamanlı transfer, yatırma ve kart harcaması, talimat işçisi ve PostgreSQL yükseltme betikleri PostgreSQL ve/veya SQL Server'a karşı çalışır (InMemory yarışları yeniden üretemez). CI ikisinde de çalıştırır.
    * *Entegrasyon testleri:* uygulamanın tamamı bellekte başlatılıp HTTP ve SignalR üzerinden sürülür: roller, sohbet uçları, hub, hesaplara ve kartlara müşteriler arası erişim (IDOR).
@@ -158,7 +159,8 @@ Kendi kopyanızı yayınlamak için: boş bir PostgreSQL veritabanı oluşturup 
 
 1. [`v1.1-postgres-upgrade.sql`](docs/deploy/v1.1-postgres-upgrade.sql): kart verisi sertleştirmesi (CVV artık saklanmaz; v1.0'ın sakladığı kart numaraları yeni anahtarla çözülemez), kilit ve tek kullanımlık kod sütunları, eşzamanlılık sürümleri, roller.
 2. [`v1.2-postgres-upgrade.sql`](docs/deploy/v1.2-postgres-upgrade.sql): `RefreshTokens` tablosu ve şema düzeltmeleri (`ChatSessions.IsActive`, boş olabilen `StandingOrders.Amount`, `timestamptz` sütunları).
-3. [`v1.3-postgres-upgrade.sql`](docs/deploy/v1.3-postgres-upgrade.sql): v1.3 değişiklikleri.
+3. [`v1.3-postgres-upgrade.sql`](docs/deploy/v1.3-postgres-upgrade.sql): v1.3 değişiklikleri (yenileme token'ı ve eşzamanlılık sütunları, benzersiz indeksler, en eski satırı koruyan yinelenen kayıt temizliği).
+4. [`v1.3.2-postgres-upgrade.sql`](docs/deploy/v1.3.2-postgres-upgrade.sql): elle oluşturulmuş tablolarda kodun NULL yazdığı sütunlardaki `NOT NULL`'ı kaldırır, eski `ChatMessages` gönderen `CHECK` kısıtlarını siler ve dar `varchar` sütunlarını genişletir. Birden fazla kez çalıştırılabilir.
 
 [`schema-check.sql`](docs/deploy/schema-check.sql), üretimdeki her sütunu listeler; kodun beklediğiyle karşılaştırabilirsiniz. **Yeni** bir veritabanı bunun yerine temel (baseline) betikle oluşturulur ve yükseltme betiklerine ihtiyaç duymaz. Her sürümün adımları [`CHANGELOG.md`](CHANGELOG.md) içindedir.
 
@@ -264,6 +266,7 @@ Bu betik `JwtSettings:Key` ve `Encryption:Key` için rastgele değerler üretir 
 | `RateLimiting__Banking__PermitLimit` | Bankacılık uçları için kullanıcı başına sınır (kullanıcı belli değilse IP başına; varsayılan dakikada 60) |
 | `RateLimiting__Transfer__PermitLimit` | Para hareketi yapan çağrılar (transfer, döviz, para yatırma, kart ödemesi) için kullanıcı başına sınır (varsayılan dakikada 10); bu çağrılarda bankacılık sınırının yerine geçer |
 | `RateLimiting__Market__PermitLimit` | Herkese açık piyasa kurları ucu için IP başına sınır (varsayılan dakikada 60) |
+| `RateLimiting__Chat__PermitLimit`, `__WindowSeconds` | Sohbet REST uçları için kullanıcı başına sınır (varsayılan dakikada 60) |
 | `Chat__MessagesPerMinute`, `Chat__MessagesPerHour`, `Chat__SessionsPerHour`, `Chat__TransfersPerMinute` | Kullanıcı başına destek sohbeti sınırları (varsayılanlar 10, 100, 10 ve 5; temsilciler dakikalık hakkın üç katını alır). 1 ile 100000 arası tam sayılar |
 | `Cors__AllowedOrigins__0`, `__1`, ... | API'yi çağırabilecek tarayıcı origin'leri (varsayılan `https://alonessam.github.io`). Başka her şey reddedilir. Geliştirme modunda diskten açılan sayfalar ve `localhost` da kabul edilir |
 | `AllowedHosts` | API'nin yanıt verdiği Host başlıkları (varsayılan `*`). Üretimde `*` iken API bir uyarı loglar; API'nin ana makine adına ayarlayın (birden fazlası için noktalı virgülle), sonra platformun sağlık kontrolünün hâlâ geçtiğini doğrulayın |

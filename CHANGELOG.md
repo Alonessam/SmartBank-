@@ -13,7 +13,8 @@ A second full review (backend, frontend, docs, CI) and the fixes it found. Inclu
 1. **Run `docs/deploy/v1.3.2-postgres-upgrade.sql` first** in the Supabase SQL editor. It is idempotent: it drops `NOT NULL` on
    columns the code writes as NULL, drops old `CHECK` constraints on `ChatMessages` that mention `Sender`, and widens narrow
    `varchar` columns. `docs/deploy/schema-check.sql` now also lists the production foreign keys.
-2. Deploy the API (Render Manual Deploy), then the web app (`deploy-pages` script).
+2. Deploy the API (Render Manual Deploy).
+3. Tag the release (`git tag -a v1.3.2 -m "v1.3.2"` and `git push origin v1.3.2`) **before** running `scripts/deploy-pages.ps1 -Push`: the script takes the cache-buster for the scripts and styles from the latest tag, and a stale one would let browsers keep the old JavaScript.
 
 ### Changed
 
@@ -338,8 +339,9 @@ v1.1 needed configuration and a database change. Deploying it without them made 
 
 Initial portfolio release (first commit 2026-06-27).
 
-[1.3.2]: https://github.com/Alonessam/SmartBank-/compare/v1.3.0...main
+[1.3.2]: https://github.com/Alonessam/SmartBank-/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/Alonessam/SmartBank-/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/Alonessam/SmartBank-/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/Alonessam/SmartBank-/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Alonessam/SmartBank-/releases/tag/v1.1.0
+[1.0.0]: https://github.com/Alonessam/SmartBank-/releases/tag/v1.0.0

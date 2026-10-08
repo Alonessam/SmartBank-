@@ -5,7 +5,11 @@
 set -euo pipefail
 
 rotate=0
-[ "${1:-}" = "--rotate" ] && rotate=1
+case "${1:-}" in
+  "") ;;
+  --rotate) rotate=1 ;;
+  *) echo "Unknown argument '$1'. Usage: dev-secrets.sh [--rotate]" >&2; exit 2 ;;
+esac
 
 project="$(cd "$(dirname "$0")/.." && pwd)/src/SmartBank.API/SmartBank.API.csproj"
 existing="$(dotnet user-secrets list --project "$project" || true)"

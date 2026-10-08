@@ -2,7 +2,7 @@
 
 Her değişiklik için aynı düzen: **sorun**, **ne yaptım**, **neden bu seçim (ve eledikler)**, **bilinen sınırlamalar**.
 Bölüm numaraları (T1, T2, ...) bu dosyaya özgüdür; `CHANGELOG.md` bu numaralara atıfta bulunur.
-Test sayıları, ilgili görev bittiği andaki sayılardır; güncel paket birkaç yüz test içerir.
+Test sayıları, ilgili görev bittiği andaki sayılardır; güncel paket yaklaşık 1.000 test içerir.
 
 > **English summary.** This file is the engineering record of the v1.1 and v1.2 releases, written in Turkish; the last section, "v1.3 engineering notes (English)", covers five findings of the v1.3 audit in English. Where a later release changed a statement in the Turkish sections, it is marked "(v1.3: ...)". Each section follows the same
 > pattern: the problem found, what was changed, why (and which alternatives were rejected), and the known limitations that remain.
