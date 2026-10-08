@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using SmartBank.Core.DTOs;
 using SmartBank.Core.Entities;
 using SmartBank.Tests.Support;
@@ -138,6 +138,42 @@ namespace SmartBank.Tests.Database
             Assert.Equal(1, await verify.Accounts.CountAsync()); // never zero
             Assert.Equal(1, results.Count(r => r.IsSuccess));
             Assert.Contains(results, r => r.ErrorKey == "CannotDeleteLastAccount");
+        }
+
+        [DatabaseTheory]
+        [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
+        public async Task Two_accounts_closed_at_the_same_moment_never_leave_the_customer_without_an_account_round_after_round(TestProvider provider)
+        {
+            // The race is a matter of microseconds (one request reads the customer just after the other has committed), so a single
+            // attempt proves little. Many rounds, each with its own customer.
+            await using var db = await TestDatabase.CreateAsync(provider);
+
+            for (var round = 0; round < 40; round++)
+            {
+                User customer;
+                await using (var context = db.NewContext())
+                {
+                    customer = new User
+                    {
+                        Username = "round" + round, Tckn = TestTckn.Next(), Email = $"round{round}@test.example", FirstName = "Round", LastName = "Tester",
+                        FullName = "Round Tester", PasswordHash = "x"
+                    };
+                    context.Users.Add(customer);
+                    await context.SaveChangesAsync();
+                }
+
+                var first = await AddAccountAsync(db, customer, $"TR0000000000{round:D4}01", 0m);
+                var second = await AddAccountAsync(db, customer, $"TR0000000000{round:D4}02", 0m);
+
+                await ConcurrencyHarness.RunTogetherAsync(new[]
+                {
+                    new Func<Task<SmartBank.Core.Common.ServiceResult<bool>>>(() => ConcurrencyHarness.InNewRequestAsync(db, s => s.DeleteAccountAsync(customer.Id, first.Id))),
+                    new Func<Task<SmartBank.Core.Common.ServiceResult<bool>>>(() => ConcurrencyHarness.InNewRequestAsync(db, s => s.DeleteAccountAsync(customer.Id, second.Id)))
+                });
+
+                await using var verify = db.NewContext();
+                Assert.True(await verify.Accounts.CountAsync(a => a.UserId == customer.Id) == 1, $"round {round}: the customer was left with no account");
+            }
         }
     }
 }
