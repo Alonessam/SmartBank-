@@ -66,6 +66,19 @@ namespace SmartBank.Tests
         }
 
         [Fact]
+        public void After_Too_Many_Wrong_Guesses_A_New_Code_Is_Not_Available_Right_Away()
+        {
+            var user = new User();
+            OtpManager.Issue(user, OtpPurpose.PasswordReset, Now);
+            for (var i = 0; i < OtpManager.MaxFailedAttempts; i++) OtpManager.Verify(user, OtpPurpose.PasswordReset, "000000", Now);
+
+            // Without this, "ask for a new code" would give a fresh set of five guesses with every request.
+            Assert.True(OtpManager.IsCoolingDown(user, OtpPurpose.PasswordReset, Now.AddSeconds(30), TimeSpan.FromSeconds(60)));
+            Assert.False(OtpManager.IsCoolingDown(user, OtpPurpose.PasswordReset, Now.AddSeconds(61), TimeSpan.FromSeconds(60)));
+            Assert.Equal(OtpCheckResult.NoPendingCode, OtpManager.Verify(user, OtpPurpose.PasswordReset, "123456", Now.AddSeconds(5)));
+        }
+
+        [Fact]
         public void An_Expired_Code_Is_Rejected_And_Removed()
         {
             var user = new User();

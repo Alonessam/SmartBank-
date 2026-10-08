@@ -397,13 +397,13 @@ namespace SmartBank.Infrastructure.Services
         /// any amount above 1000 TRY for a customer who turned two-factor on. Amounts in another currency are compared by
         /// their TRY value; when that value cannot be trusted (no live rate) the amount counts as above every limit.
         /// </summary>
-        private async Task<(string Key, string Message)?> CheckStepUpAsync(Guid userId, Account source, Account destination, decimal amount)
+        private async Task<(string Key, string Message)?> CheckStepUpAsync(Guid userId, Account source, Account destination, decimal amount, bool includeDuplicateRule = true)
         {
             var now = UtcNow;
             var tryAmount = await ToTryEquivalentAsync(amount, source.Currency);
 
             // Rule A: the same transfer again within 30 seconds.
-            if (await IsDuplicateTransferAsync(source.Id, destination.Id, amount))
+            if (includeDuplicateRule && await IsDuplicateTransferAsync(source.Id, destination.Id, amount))
             {
                 return (DuplicateTransferKey, DuplicateTransferMessage);
             }

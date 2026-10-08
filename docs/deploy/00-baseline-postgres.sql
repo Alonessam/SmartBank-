@@ -275,5 +275,7 @@ CREATE UNIQUE INDEX "IX_Users_Tckn" ON "Users" ("Tckn");
 
 
 CREATE UNIQUE INDEX "IX_Users_Username" ON "Users" ("Username");
+-- Case-insensitive twin (the application compares user names without regard to case; the EF model cannot declare it).
+CREATE UNIQUE INDEX "IX_Users_Username_Lower" ON "Users" (lower("Username"));
 
 COMMIT;

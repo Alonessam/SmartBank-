@@ -97,6 +97,16 @@ namespace SmartBank.Infrastructure.Services
                 {
                     return Fail<StandingOrderDto>("CurrencyMismatch", "A standing order can only move money between accounts of the same currency.");
                 }
+
+                // A standing order runs later, with nobody typing a code. It may therefore not move an amount for which a normal
+                // transfer would ask for one (the customer's two-factor threshold, the limit of a new account, far above the
+                // usual transfer); otherwise a stolen access token could set up what it could not send directly.
+                var challenge = await RetryReadAsync(() => CheckStepUpAsync(userId, source, destination, amount.Value, includeDuplicateRule: false));
+                if (challenge != null)
+                {
+                    return Fail<StandingOrderDto>("StandingOrderNeedsVerification",
+                        "This amount needs a verification code, which a standing order cannot ask for. Send it as a normal transfer, or use a smaller amount.");
+                }
             }
             else
             {

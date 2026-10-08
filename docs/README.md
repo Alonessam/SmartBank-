@@ -18,7 +18,7 @@
 | [`deploy/v1.1-postgres-upgrade.sql`](deploy/v1.1-postgres-upgrade.sql) | Upgrading an existing production database from v1.0 to v1.1 (card hardening, lockout, versions, roles). |
 | [`deploy/v1.2-postgres-upgrade.sql`](deploy/v1.2-postgres-upgrade.sql) | v1.1 to v1.2: refresh tokens and schema fixes. |
 | [`deploy/v1.3-postgres-upgrade.sql`](deploy/v1.3-postgres-upgrade.sql) | v1.2 to v1.3. |
-| [`deploy/v1.3.2-postgres-upgrade.sql`](deploy/v1.3.2-postgres-upgrade.sql) | v1.3 to v1.3.2: relaxes hand-made `NOT NULL` columns, drops old `ChatMessages` sender checks, widens narrow `varchar` columns. |
+| [`deploy/v1.3.2-postgres-upgrade.sql`](deploy/v1.3.2-postgres-upgrade.sql) | v1.3 to v1.3.2: relaxes hand-made `NOT NULL` columns, drops old `ChatMessages` sender checks, widens narrow `varchar` columns, adds a case-insensitive unique index on user names. |
 | [`deploy/schema-check.sql`](deploy/schema-check.sql) | Listing the production columns to compare with what the code expects. |
 
 Apply the upgrade scripts **in order**, once each, before deploying the matching API version. Never run them on a database

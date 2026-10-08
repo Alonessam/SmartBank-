@@ -40,6 +40,7 @@ namespace SmartBank.Tests.Database
             SELECT tablename || ' ' || indexname || ' ' || indexdef
             FROM pg_indexes
             WHERE schemaname = 'public'
+              AND indexname <> 'IX_Users_Username_Lower' -- the baseline's one extra index (see below); the EF model cannot declare it
             ORDER BY tablename, indexname";
 
         private const string ConstraintSql = @"
@@ -103,6 +104,9 @@ namespace SmartBank.Tests.Database
                 var modelIndexes = await ListAsync(modelConnection, IndexSql);
                 var baselineIndexes = await ListAsync(baselineConnection, IndexSql);
                 Assert.True(modelIndexes.SequenceEqual(baselineIndexes), Describe("Indexes", modelIndexes, baselineIndexes));
+
+                // Case-insensitive user names: the application checks them that way, so the database must too (PostgreSQL's plain index is not).
+                Assert.Single(await ListAsync(baselineConnection, "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'IX_Users_Username_Lower' AND indexdef LIKE 'CREATE UNIQUE INDEX%lower(%'"));
 
                 var modelConstraints = await ListAsync(modelConnection, ConstraintSql);
                 var baselineConstraints = await ListAsync(baselineConnection, ConstraintSql);

@@ -160,7 +160,7 @@ The production tables were created by hand, so the application does **not** migr
 1. [`v1.1-postgres-upgrade.sql`](docs/deploy/v1.1-postgres-upgrade.sql): card hardening (the CVV is no longer stored; card numbers stored by v1.0 cannot be decrypted under the new key), lockout and one-time-code columns, concurrency versions, roles.
 2. [`v1.2-postgres-upgrade.sql`](docs/deploy/v1.2-postgres-upgrade.sql): the `RefreshTokens` table and schema fixes (`ChatSessions.IsActive`, nullable `StandingOrders.Amount`, `timestamptz` columns).
 3. [`v1.3-postgres-upgrade.sql`](docs/deploy/v1.3-postgres-upgrade.sql): the v1.3 changes (refresh-token and concurrency columns, unique indexes, duplicate cleanup that keeps the oldest row).
-4. [`v1.3.2-postgres-upgrade.sql`](docs/deploy/v1.3.2-postgres-upgrade.sql): drops `NOT NULL` on hand-made columns the code writes as NULL, drops old `ChatMessages` sender `CHECK` constraints, and widens narrow `varchar` columns. Safe to run more than once.
+4. [`v1.3.2-postgres-upgrade.sql`](docs/deploy/v1.3.2-postgres-upgrade.sql): drops `NOT NULL` on hand-made columns the code writes as NULL, drops old `ChatMessages` sender `CHECK` constraints, and widens narrow `varchar` columns, and adds a unique index on `lower("Username")` (skipped with a notice when names that differ only in case already exist). Safe to run more than once.
 
 [`schema-check.sql`](docs/deploy/schema-check.sql) lists every production column so you can compare it with what the code expects. A **fresh** database is created from the baseline script instead and needs none of the upgrade scripts. Each release's steps are in [`CHANGELOG.md`](CHANGELOG.md).
 

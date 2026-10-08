@@ -385,7 +385,7 @@ namespace SmartBank.Tests.Banking
 
             await _h.Service.DeleteAccountAsync(user.Id, closing.Id, target.Id);
 
-            Assert.Equal(32.26m, await _h.BalanceAsync(target.AccountNumber)); // 1000 / 31.00 = 32.258...
+            Assert.Equal(32.25m, await _h.BalanceAsync(target.AccountNumber)); // 1000 / 31.00 = 32.258..., credited rounded toward zero
         }
 
         [Fact]
@@ -395,7 +395,7 @@ namespace SmartBank.Tests.Banking
 
             await _h.Service.DeleteAccountAsync(user.Id, closing.Id, target.Id);
 
-            Assert.Equal(10.97m, await _h.BalanceAsync(target.AccountNumber)); // 10 x 34.00 / 31.00 = 10.9677
+            Assert.Equal(10.96m, await _h.BalanceAsync(target.AccountNumber)); // 10 x 34.00 / 31.00 = 10.9677, credited rounded toward zero
         }
 
         [Fact]

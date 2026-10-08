@@ -51,7 +51,9 @@ namespace SmartBank.Core.Security
         /// </summary>
         public static bool IsCoolingDown(User user, OtpPurpose purpose, DateTime utcNow, TimeSpan cooldown)
         {
-            if (user.PendingOtpPurpose != purpose || !user.TwoFactorExpiry.HasValue || string.IsNullOrEmpty(user.TwoFactorSecret))
+            // Also while the code is gone after too many wrong guesses (see Verify): asking for a new one right away would
+            // hand out a fresh budget of guesses with every request.
+            if (user.PendingOtpPurpose != purpose || !user.TwoFactorExpiry.HasValue)
             {
                 return false;
             }
@@ -101,6 +103,10 @@ namespace SmartBank.Core.Security
             if (user.OtpFailedCount >= MaxFailedAttempts)
             {
                 Clear(user);
+
+                // The code is destroyed, but "when was a code issued" is kept (as of now): the cooldown for the next one starts here.
+                user.PendingOtpPurpose = purpose;
+                user.TwoFactorExpiry = utcNow + Lifetime;
                 return OtpCheckResult.TooManyAttempts;
             }
 

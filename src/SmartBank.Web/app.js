@@ -1495,6 +1495,7 @@ const i18n = {
         "err.InvalidDescription": "The description is not valid (at most 200 characters).",
         "err.PaymentExceedsDebt": "The payment cannot be more than the current card debt.",
         "err.StandingOrderLimitReached": "You have reached the maximum number of active standing orders.",
+        "err.StandingOrderNeedsVerification": "This amount needs a verification code, which a standing order cannot ask for. Send it as a normal transfer or use a smaller amount.",
         "err.UnauthorizedSessionAccess": "You do not have access to this chat session."
     },
     tr: {
@@ -2031,6 +2032,7 @@ const i18n = {
         "err.InvalidDescription": "Açıklama geçerli değil (en fazla 200 karakter).",
         "err.PaymentExceedsDebt": "Ödeme, mevcut kart borcundan fazla olamaz.",
         "err.StandingOrderLimitReached": "Etkin düzenli talimat sınırına ulaştınız.",
+        "err.StandingOrderNeedsVerification": "Bu tutar için doğrulama kodu gerekir, düzenli talimat ise kod soramaz. Normal transfer olarak gönderin ya da daha küçük bir tutar girin.",
         "err.UnauthorizedSessionAccess": "Bu destek odasına erişim yetkiniz yok."
     }
 };
