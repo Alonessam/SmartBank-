@@ -35,6 +35,8 @@ A second full review (backend, frontend, docs, CI) and the fixes it found. Inclu
   check. The step that moves the money now asks again on fresh reads.
 - SQL Server could answer a transfer with a 500 when the database chose it as a deadlock victim (error 1205) in one of the
   checks before the money moves; those reads, and the one-time-code steps, are now repeated like the money step.
+- Closing two accounts of one customer at the same moment could, in a narrow window, close both (the customer's row was read after the
+  accounts were counted, so a close that had just committed went unnoticed). It is read first now; found by one red CI run.
 - **A standing order could move what a transfer needs a code for.** With two-factor on, a transfer above 1,000 TRY asks for a
   code, but a standing order for 4,000 TRY ran without one. A transfer order is now refused (`StandingOrderNeedsVerification`)
   when the same amount would need a code as a normal transfer.

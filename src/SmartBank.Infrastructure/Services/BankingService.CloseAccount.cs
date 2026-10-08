@@ -26,6 +26,12 @@ namespace SmartBank.Infrastructure.Services
                 return Fail<bool>("AccountNotFound", "Hesap bulunamadı.");
             }
 
+            // The customer's row is read BEFORE the accounts are counted, and its version is checked when this close is saved.
+            // Read after the count (as it used to be), a request could count two accounts, then find the other close already
+            // committed, read the row at its new version and close the second account too: the customer ended up with none.
+            // Read first, a close that commits in between changes the version this one saved against and this one starts over.
+            var owner = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId);
+
             if (await _context.Accounts.CountAsync(a => a.UserId == userId) <= 1)
             {
                 return Fail<bool>("CannotDeleteLastAccount", "Daima en az bir aktif hesabınız bulunmalıdır.");
@@ -68,9 +74,8 @@ namespace SmartBank.Infrastructure.Services
             try
             {
                 // "A customer keeps at least one account" is checked by counting, and two parallel closes of two different accounts
-                // would both count two. The customer's own row is bumped in the same transaction, so the second of two simultaneous
-                // closes collides on it (a version conflict, retried from fresh reads, where the count is right).
-                var owner = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId);
+                // would both count two. The customer's own row (read above, before the count) is bumped in the same transaction, so the
+                // second of two simultaneous closes collides on it (a version conflict, retried from fresh reads, where the count is right).
                 if (owner != null)
                 {
                     _context.Entry(owner).Property(u => u.Version).IsModified = true;
