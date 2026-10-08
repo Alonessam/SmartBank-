@@ -195,6 +195,14 @@ namespace SmartBank.Infrastructure.Services
             return ServiceResult<AuthResponseDto>.Success(session);
         }
 
+        /// <summary>
+        /// A correct PIN changes nothing on a user whose failure counter is already zero, so no UPDATE would run and the row's
+        /// version would not move. Parallel guesses that read the user before any failure was saved would then all see "not
+        /// locked", and the right one would be accepted although the budget was spent. Writing the row makes such a request collide
+        /// with the saved failures and start over from fresh reads, where the lockout is visible.
+        /// </summary>
+        private void ForceRowWrite(User user) => _context.Entry(user).Property(u => u.FailedLoginCount).IsModified = true;
+
         // ---- login --------------------------------------------------------------------------------------------
 
         public Task<ServiceResult<AuthResponseDto>> LoginAsync(LoginDto loginDto, string? ipAddress = null) =>
@@ -228,6 +236,7 @@ namespace SmartBank.Infrastructure.Services
             }
 
             LoginLockout.Reset(user);
+            ForceRowWrite(user); // see ForceRowWrite
 
             if (user.TwoFactorEnabled)
             {
@@ -347,6 +356,7 @@ namespace SmartBank.Infrastructure.Services
             }
 
             LoginLockout.Reset(user);
+            ForceRowWrite(user);
             user.TwoFactorEnabled = enable;
             _context.AuditLogs.Add(NewAuditLog(user.Id, enable ? "TwoFactorEnabled" : "TwoFactorDisabled",
                 enable ? "Two-factor sign-in was turned on." : "Two-factor sign-in was turned off.", ipAddress));

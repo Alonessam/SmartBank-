@@ -35,6 +35,20 @@ A second full review (backend, frontend, docs, CI) and the fixes it found. Inclu
   check. The step that moves the money now asks again on fresh reads.
 - SQL Server could answer a transfer with a 500 when the database chose it as a deadlock victim (error 1205) in one of the
   checks before the money moves; those reads, and the one-time-code steps, are now repeated like the money step.
+- **A standing order could move what a transfer needs a code for.** With two-factor on, a transfer above 1,000 TRY asks for a
+  code, but a standing order for 4,000 TRY ran without one. A transfer order is now refused (`StandingOrderNeedsVerification`)
+  when the same amount would need a code as a normal transfer.
+- **The PIN lockout could be raced.** A correct PIN changed nothing on the user row, so requests sent together with many wrong PINs
+  were all judged "not locked" and the right one was accepted although the five-guess budget was spent. A successful sign-in now
+  writes the row, so it collides with the saved failures and re-reads the lockout.
+- After five wrong guesses on a password-reset code a new code could be requested at once (a fresh set of five guesses with every
+  request); the 60-second cooldown now also applies after the guesses ran out.
+- PostgreSQL treated user names as case-sensitive when two registrations arrived together (`Ali` and `ali` both got in). The
+  v1.3.2 script and the baseline add a unique index on `lower("Username")` (the script skips it with a notice if case-only
+  duplicates already exist).
+- A text with the NUL character was a 500 on PostgreSQL (and stored on SQL Server); it is now a 400 everywhere, for request bodies and
+  hub messages. Non-ASCII digits (for example Arabic-Indic) are no longer accepted in a PIN or T.C. number. A request body that is
+  not the expected JSON shape no longer echoes internal type names. `Retry-After` is exposed to browsers on a 429.
 - A transfer could be confirmed from a chat conversation that was already closed (the money moved and nothing told the customer).
 - Race when two requests close the last account of a user (now guarded through `User.Version`).
 - Rule B (daily limit) counts only same-currency transfers.

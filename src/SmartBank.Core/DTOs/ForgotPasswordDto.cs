@@ -6,7 +6,7 @@ namespace SmartBank.Core.DTOs
     public class ForgotPasswordDto
     {
         [Required(ErrorMessage = "T.C. Kimlik Numarası is required.")]
-        [RegularExpression(@"^\d{11}$", ErrorMessage = "T.C. Kimlik Numarası must be exactly 11 digits.")]
+        [RegularExpression(@"^[0-9]{11}$", ErrorMessage = "T.C. Kimlik Numarası must be exactly 11 digits.")]
         public string Tckn { get; set; } = string.Empty;
     }
 
@@ -14,15 +14,15 @@ namespace SmartBank.Core.DTOs
     public class ResetPasswordDto
     {
         [Required(ErrorMessage = "T.C. Kimlik Numarası is required.")]
-        [RegularExpression(@"^\d{11}$", ErrorMessage = "T.C. Kimlik Numarası must be exactly 11 digits.")]
+        [RegularExpression(@"^[0-9]{11}$", ErrorMessage = "T.C. Kimlik Numarası must be exactly 11 digits.")]
         public string Tckn { get; set; } = string.Empty;
 
         [Required(ErrorMessage = "Verification code is required.")]
-        [RegularExpression(@"^\d{6}$", ErrorMessage = "Verification code must be exactly 6 digits.")]
+        [RegularExpression(@"^[0-9]{6}$", ErrorMessage = "Verification code must be exactly 6 digits.")]
         public string Code { get; set; } = string.Empty;
 
         [Required(ErrorMessage = "New Password is required.")]
-        [RegularExpression(@"^\d{6}$", ErrorMessage = "Password must be exactly 6 digits.")]
+        [RegularExpression(@"^[0-9]{6}$", ErrorMessage = "Password must be exactly 6 digits.")]
         public string NewPassword { get; set; } = string.Empty;
     }
 }

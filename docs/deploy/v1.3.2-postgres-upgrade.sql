@@ -93,6 +93,19 @@ BEGIN
     END LOOP;
 END $$;
 
+-- 4. User names are unique regardless of case ---------------------------------------------------------------------------------
+-- The application compares user names without regard to case, but the unique index on "Username" is case-sensitive in PostgreSQL:
+-- two registrations "Ali" and "ali" that arrive together both got in. This index closes that gap. If case-only duplicates already
+-- exist the index cannot be built: the script then says so and leaves the data alone (rename one of each pair, run it again).
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM "Users" GROUP BY lower("Username") HAVING count(*) > 1) THEN
+        RAISE NOTICE 'IX_Users_Username_Lower was NOT created: user names that differ only in case exist. Find them with: select lower("Username"), count(*) from "Users" group by 1 having count(*) > 1;';
+    ELSE
+        CREATE UNIQUE INDEX IF NOT EXISTS "IX_Users_Username_Lower" ON "Users" (lower("Username"));
+    END IF;
+END $$;
+
 COMMIT;
 
 -- Deploy the v1.3.2 API after this script. Rolling back to v1.3.1 afterwards is safe: it only relaxed constraints.

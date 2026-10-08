@@ -141,8 +141,15 @@ builder.Services.AddScoped<SupportAiResponder>();
 builder.Services.AddHostedService<StandingOrderExecutionWorker>();
 builder.Services.AddValidatorsFromAssemblyContaining<RegisterDtoValidator>();
 
+// The JSON binder's own messages ("The JSON value could not be converted to SmartBank.Core.DTOs.LoginDto. Path: $ | LineNumber: 0 ...")
+// name internal types and byte positions; the messages written for the DTOs (attributes, validators) never contain these.
+static bool LooksLikeBinderText(string? message) =>
+    message != null && (message.Contains("SmartBank.", StringComparison.Ordinal) || message.Contains("LineNumber", StringComparison.Ordinal) ||
+                        message.Contains("JSON value", StringComparison.Ordinal) || message.Contains("Path: $", StringComparison.Ordinal));
+
 // Add services to the container.
 builder.Services.AddControllers()
+    .AddJsonOptions(options => options.JsonSerializerOptions.Converters.Add(new SmartBank.API.Json.NoNulStringConverter()))
     .ConfigureApiBehaviorOptions(options =>
     {
         // A request that fails the attribute checks on its DTO (length, range, pattern, decimals) gets the same body shape as
@@ -151,7 +158,10 @@ builder.Services.AddControllers()
         {
             var errors = context.ModelState
                 .Where(e => e.Value is { Errors.Count: > 0 })
-                .ToDictionary(e => e.Key, e => e.Value!.Errors.Select(x => string.IsNullOrEmpty(x.ErrorMessage) ? "The value is not valid." : x.ErrorMessage).ToArray());
+                .ToDictionary(e => e.Key, e => e.Value!.Errors.Select(x =>
+                    // A body the JSON binder could not read names internal types and byte positions: say only that it is not valid.
+                    x.Exception != null || LooksLikeBinderText(x.ErrorMessage) ? "The request body is not valid."
+                    : string.IsNullOrEmpty(x.ErrorMessage) ? "The value is not valid." : x.ErrorMessage).ToArray());
 
             return new BadRequestObjectResult(new
             {
@@ -170,7 +180,8 @@ builder.Services.AddSignalR(options =>
 {
     options.MaximumReceiveMessageSize = 16 * 1024;
     options.AddFilter<HubTokenExpiryFilter>();
-});
+})
+.AddJsonProtocol(options => options.PayloadSerializerOptions.Converters.Add(new SmartBank.API.Json.NoNulStringConverter()));
 builder.Services.AddSingleton(ChatSettings.From(builder.Configuration));
 builder.Services.AddSingleton<ChatRateLimiter>();
 
@@ -233,6 +244,7 @@ builder.Services.AddCors(options =>
         policy.AllowAnyHeader()
               .AllowAnyMethod()
               .SetIsOriginAllowed(origin => CorsOriginPolicy.IsAllowed(origin, allowedOrigins, isDevelopment))
+              .WithExposedHeaders("Retry-After") // so a browser can read how long a 429 asks it to wait
               .AllowCredentials();
     });
 });
