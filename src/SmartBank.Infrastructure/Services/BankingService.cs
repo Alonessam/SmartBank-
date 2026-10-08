@@ -91,6 +91,26 @@ namespace SmartBank.Infrastructure.Services
         private Task<ServiceResult<T>> RunWithConcurrencyRetryAsync<T>(Func<Task<ServiceResult<T>>> operation) =>
             ConcurrencyRetry.RunAsync(_context, operation, "The account was changed by another operation at the same time. Please try again.");
 
+        /// <summary>
+        /// Runs a read-only step again when the database picked it as a deadlock victim (SQL Server 1205, PostgreSQL 40P01) or
+        /// asked for a retry. Reads take shared locks under SQL Server's default isolation, so a read can lose to a writer.
+        /// The step must not change anything.
+        /// </summary>
+        private static async Task<T> RetryReadAsync<T>(Func<Task<T>> read)
+        {
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    return await read();
+                }
+                catch (Exception ex) when (DatabaseConflict.IsRetryable(ex) && attempt < ConcurrencyRetry.MaxAttempts)
+                {
+                    await Task.Delay(SecureRandom.Next(2, 20 * attempt));
+                }
+            }
+        }
+
         // ---- accounts -----------------------------------------------------------------------------------------
 
         public async Task<ServiceResult<List<AccountDto>>> GetAccountsAsync(Guid userId, CancellationToken cancellationToken = default)
@@ -293,13 +313,13 @@ namespace SmartBank.Infrastructure.Services
 
             // 1. The source must exist and belong to the caller. "Not found" and "not yours" give the same answer, so this
             //    cannot be used to find out which account numbers exist.
-            var source = await _context.Accounts.AsNoTracking().FirstOrDefaultAsync(a => a.AccountNumber == sourceNumber);
+            var source = await RetryReadAsync(() => _context.Accounts.AsNoTracking().FirstOrDefaultAsync(a => a.AccountNumber == sourceNumber));
             if (source == null || source.UserId != userId)
             {
                 return Fail<TransactionDto>("SourceAccountNotFound", "Source account was not found.");
             }
 
-            var destination = await _context.Accounts.AsNoTracking().FirstOrDefaultAsync(a => a.AccountNumber == destinationNumber);
+            var destination = await RetryReadAsync(() => _context.Accounts.AsNoTracking().FirstOrDefaultAsync(a => a.AccountNumber == destinationNumber));
             if (destination == null)
             {
                 return Fail<TransactionDto>("DestinationAccountNotFound", "Destination account was not found.");
@@ -343,7 +363,7 @@ namespace SmartBank.Infrastructure.Services
 
             if (!approvedByCode)
             {
-                var challenge = await CheckStepUpAsync(userId, source, destination, transferRequest.Amount);
+                var challenge = await RetryReadAsync(() => CheckStepUpAsync(userId, source, destination, transferRequest.Amount));
                 if (challenge != null)
                 {
                     // One-time code, valid for 5 minutes, bound to this exact transfer.
@@ -368,7 +388,7 @@ namespace SmartBank.Infrastructure.Services
 
             // Everything above only decides whether this transfer is allowed. The money itself moves below, in a
             // step that is safe to repeat if another request touches the same accounts at the same moment.
-            return await RunWithConcurrencyRetryAsync(() => ExecuteTransferAsync(userId, transferRequest));
+            return await RunWithConcurrencyRetryAsync(() => ExecuteTransferAsync(userId, transferRequest, rejectDuplicate: !approvedByCode));
         }
 
         /// <summary>
@@ -383,15 +403,9 @@ namespace SmartBank.Infrastructure.Services
             var tryAmount = await ToTryEquivalentAsync(amount, source.Currency);
 
             // Rule A: the same transfer again within 30 seconds.
-            var duplicateSince = now.AddSeconds(-DuplicateWindowSeconds);
-            var isDuplicate = await _context.Transactions.AsNoTracking()
-                .AnyAsync(t => t.SourceAccountId == source.Id &&
-                               t.DestinationAccountId == destination.Id &&
-                               t.Amount == amount &&
-                               t.CreatedAt >= duplicateSince);
-            if (isDuplicate)
+            if (await IsDuplicateTransferAsync(source.Id, destination.Id, amount))
             {
-                return ("SuspectedFraudDuplicate", "Şüpheli işlem: Son 30 saniye içerisinde aynı hesaba aynı miktarda transfer denemesi.");
+                return (DuplicateTransferKey, DuplicateTransferMessage);
             }
 
             // Rule B: far above the usual outgoing transfer. Only real outgoing transfers count: a deposit has the account on both
@@ -433,6 +447,19 @@ namespace SmartBank.Infrastructure.Services
             return null;
         }
 
+        private const string DuplicateTransferKey = "SuspectedFraudDuplicate";
+        private const string DuplicateTransferMessage = "Şüpheli işlem: Son 30 saniye içerisinde aynı hesaba aynı miktarda transfer denemesi.";
+
+        private async Task<bool> IsDuplicateTransferAsync(Guid sourceId, Guid destinationId, decimal amount)
+        {
+            var duplicateSince = UtcNow.AddSeconds(-DuplicateWindowSeconds);
+            return await _context.Transactions.AsNoTracking()
+                .AnyAsync(t => t.SourceAccountId == sourceId &&
+                               t.DestinationAccountId == destinationId &&
+                               t.Amount == amount &&
+                               t.CreatedAt >= duplicateSince);
+        }
+
         /// <summary>The TRY value of an amount, or null when it cannot be determined from a live (non-stand-in) rate.</summary>
         private async Task<decimal?> ToTryEquivalentAsync(decimal amount, string currency)
         {
@@ -465,7 +492,7 @@ namespace SmartBank.Infrastructure.Services
                     await _context.SaveChangesAsync(); // persists the failed-attempt counter, or the cleared code on success
                     return result;
                 }
-                catch (DbUpdateConcurrencyException)
+                catch (Exception ex) when (DatabaseConflict.IsRetryable(ex))
                 {
                     _context.ChangeTracker.Clear();
                     await Task.Delay(SecureRandom.Next(2, 20 * attempt));
@@ -491,7 +518,7 @@ namespace SmartBank.Infrastructure.Services
                     await _context.SaveChangesAsync();
                     return (code, user);
                 }
-                catch (DbUpdateConcurrencyException)
+                catch (Exception ex) when (DatabaseConflict.IsRetryable(ex))
                 {
                     _context.ChangeTracker.Clear();
                     await Task.Delay(SecureRandom.Next(2, 20 * attempt));
@@ -501,7 +528,7 @@ namespace SmartBank.Infrastructure.Services
             return null;
         }
 
-        private async Task<ServiceResult<TransactionDto>> ExecuteTransferAsync(Guid userId, TransferRequestDto transferRequest)
+        private async Task<ServiceResult<TransactionDto>> ExecuteTransferAsync(Guid userId, TransferRequestDto transferRequest, bool rejectDuplicate)
         {
             // Fresh reads on every attempt (the context was cleared first), so balances are current.
             var sourceAccount = await _context.Accounts.FirstOrDefaultAsync(a => a.AccountNumber == transferRequest.SourceAccountNumber);
@@ -520,6 +547,14 @@ namespace SmartBank.Infrastructure.Services
             if (sourceAccount.Balance < transferRequest.Amount)
             {
                 return Fail<TransactionDto>("InsufficientFunds", "Insufficient funds in the source account.");
+            }
+
+            // "The same transfer again within 30 seconds" was decided before this step; two identical requests that arrive together
+            // both pass that check. Asked again here, on fresh reads: the second one collides with the first on the account version,
+            // starts over, and now finds the first transfer.
+            if (rejectDuplicate && await IsDuplicateTransferAsync(sourceAccount.Id, destinationAccount.Id, transferRequest.Amount))
+            {
+                return Fail<TransactionDto>(DuplicateTransferKey, DuplicateTransferMessage);
             }
 
             // Using a DB transaction to guarantee atomicity of the money transfer

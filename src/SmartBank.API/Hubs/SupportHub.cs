@@ -178,6 +178,13 @@ namespace SmartBank.API.Hubs
                 return;
             }
 
+            // A closed conversation cannot be answered ("transfer done" would have nowhere to go), so nothing is moved from it.
+            if (!await _chatService.IsSessionOpenAsync(sessionId))
+            {
+                await Clients.Caller.SendAsync("Error", "This chat session has been closed.");
+                return;
+            }
+
             var request = new TransferRequestDto
             {
                 SourceAccountNumber = source ?? string.Empty,
