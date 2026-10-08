@@ -1,10 +1,10 @@
-# SmartBank — Mühendislik Notları (v1.1–v1.2)
+# SmartBank — Mühendislik Notları (v1.1–v1.3)
 
 Her değişiklik için aynı düzen: **sorun**, **ne yaptım**, **neden bu seçim (ve eledikler)**, **bilinen sınırlamalar**.
 Bölüm numaraları (T1, T2, ...) bu dosyaya özgüdür; `CHANGELOG.md` bu numaralara atıfta bulunur.
-Test sayıları, ilgili görev bittiği andaki sayılardır; güncel paket birkaç yüz test içerir.
+Test sayıları, ilgili görev bittiği andaki sayılardır; güncel paket yaklaşık 1.000 test içerir.
 
-> **English summary.** This file is the engineering record of the v1.1 and v1.2 releases, written in Turkish. Each section follows the same
+> **English summary.** This file is the engineering record of the v1.1 and v1.2 releases, written in Turkish; the last section, "v1.3 engineering notes (English)", covers five findings of the v1.3 audit in English. Where a later release changed a statement in the Turkish sections, it is marked "(v1.3: ...)". Each section follows the same
 > pattern: the problem found, what was changed, why (and which alternatives were rejected), and the known limitations that remain.
 > The sections: T1 secrets out of the repository, T2 CI and dependency audit, T3 secure randomness, T4 card encryption (AES-GCM, no CVV),
 > T5 account takeover and brute force, T6 concurrent money movements (optimistic concurrency), T7 clean-up and hardening, T8 role-based
@@ -42,7 +42,7 @@ Test sayıları, ilgili görev bittiği andaki sayılardır; güncel paket birka
 
 **Ne yaptım.**
 - GitHub Actions workflow'u (`.github/workflows/ci.yml`): restore, build, test (kapsam raporuyla) ve ayrı bir **bağımlılık denetimi** işi. Denetim `dotnet list package --vulnerable --include-transitive` çıktısında açık bulursa işi başarısız yapıyor. (Komut açık bulsa bile 0 döndüğü için çıktıyı `grep` ile kontrol ediyorum.)
-- `Microsoft.OpenApi` için API projesine açık `2.7.5` referansı ekledim. Açık paket `Microsoft.AspNetCore.OpenApi`'nin geçişli (transitive) bağımlılığıydı, doğrudan sürüm vermek geçişli sürümü ezer.
+- `Microsoft.OpenApi` için API projesine açık `2.7.5` referansı ekledim. Açık paket `Microsoft.AspNetCore.OpenApi`'nin geçişli (transitive) bağımlılığıydı, doğrudan sürüm vermek geçişli sürümü ezer. *(v1.3: bu sabitleme kaldırıldı; paketler 10.0.12'ye hizalandı ve yeni OpenApi paketi düzeltilmiş sürümü kendisi getiriyor.)*
 - Dependabot: NuGet ve GitHub Actions için haftalık güncelleme PR'ları.
 - CI rozeti README'de.
 
@@ -111,7 +111,7 @@ Test sayıları, ilgili görev bittiği andaki sayılardır; güncel paket birka
 ## T5 — Hesap ele geçirme ve kaba kuvvet koruması
 
 **Sorun.** Planda "kaba kuvvet" diye başlayan bu görev, kodu okurken üç katı daha ciddi açık çıkardı:
-1. **Parola sıfırlama kimlik doğrulamasızdı.** `forgot-password` yalnızca T.C. Kimlik Numarası + yeni PIN alıp parolayı doğrudan değiştiriyordu. TCKN'yi bilen herkes hesabı ele geçirebilirdi. Kaba kuvvet gerekmiyordu bile.
+1. **Parola sıfırlama kimlik doğrulamasızdı.** `forgot-password` yalnızca T.C. Kimlik No + yeni PIN alıp parolayı doğrudan değiştiriyordu. TCKN'yi bilen herkes hesabı ele geçirebilirdi. Kaba kuvvet gerekmiyordu bile.
 2. **2FA kodu istemciye geri veriliyordu.** Giriş ve transfer yanıtlarının mesajına `|OTP:123456` ekleniyor, ayrıca sunucu konsoluna yazılıyordu. PIN'i bilen biri ikinci faktörü de yanıtın içinden okuyordu: 2FA fiilen yoktu.
 3. **Transfer kodu işleme bağlı değildi.** Bir transfer için üretilen kod, 5 dakika içinde *başka bir tutar veya alıcı* için de geçerliydi.
 4. Kaba kuvvet: PIN 6 haneli (1.000.000 olasılık), OTP 6 haneli, deneme sınırı yok. BCrypt her denemeyi yavaşlatır ama saldırganı durdurmaz.
@@ -140,14 +140,14 @@ Test sayıları, ilgili görev bittiği andaki sayılardır; güncel paket birka
 - `BankingService`'teki denetim kayıtları hâlâ sabit `127.0.0.1` yazıyor.
 - Herkese açık demo'da (`Demo:ExposeOtp=true`) giriş/transfer 2FA'sı fiilen PIN'e düşer. Bu bilinçli bir demo tavizi, bayrakla kontrol ediliyor ve README'de uyarı var.
 
-**Nasıl kanıtladım.** 100 birim test (OTP: yaşam döngüsü, amaç, bağlama, deneme sınırı, bekleme; kilit: eşik, süre sonu, sıfırlama; servis: giriş, kilit, 2FA, iki adımlı sıfırlama, transfer onayı). Bağlama kontrolünü kasıtlı bozunca 4 test düştü (mutasyon kontrolü). LocalDB'de tüm migration'larla çalışan API'ye karşı: 2FA yanıtında kod yok, 5 yanlış PIN sonrası `AccountLocked`, bilinmeyen TCKN ile yanlış PIN aynı yanıt, parola sıfırlama kodsuz başarısız ve yanıtta kod yok, denetim kaydında gerçek IP, hız sınırı IP başına (3 izin, sonra 429 + `Retry-After`, başka IP ayrı kova, auth dışı endpoint etkilenmiyor).
+**Nasıl kanıtladım.** 100 birim test (OTP: yaşam döngüsü, amaç, bağlama, deneme sınırı, bekleme; kilit: eşik, süre sonu, sıfırlama; servis: giriş, kilit, 2FA, iki adımlı sıfırlama, transfer onayı). Bağlama kontrolünü kasıtlı bozunca 4 test düştü (mutasyon kontrolü). LocalDB'de tüm migration'larla çalışan API'ye karşı: 2FA yanıtında kod yok, 5 yanlış PIN sonrası `AccountLocked` *(v1.3: kilitli hesap artık yanlış PIN'le aynı `InvalidCredentials` yanıtını alır, kilidin kendisi belli olmaz)*, bilinmeyen TCKN ile yanlış PIN aynı yanıt, parola sıfırlama kodsuz başarısız ve yanıtta kod yok, denetim kaydında gerçek IP, hız sınırı IP başına (3 izin, sonra 429 + `Retry-After`, başka IP ayrı kova, auth dışı endpoint etkilenmiyor).
 
 
 ---
 
 ## T6 — Eşzamanlı para hareketleri (yarış durumu)
 
-**Sorun.** Bakiye değiştiren her akış "oku → kontrol et → hesapla → yaz" şeklindeydi, arada kilit veya sürüm kontrolü yoktu. İki istek aynı anda aynı bakiyeyi okuyup ikisi de kendi hesabını mutlak değer olarak yazıyordu (**kayıp güncelleme**). Bu gerçek bir veritabanında ölçüldü: önce **testi yazıp düzeltmeden çalıştırdım ve başarısız olduğunu gördüm**; SQL Server ve PostgreSQL'de, toplam para 1000 TL iken 1019,94 / 1211,03 / 1362,10 TL'ye çıktı. Yani sistem **yoktan para üretiyordu** (aynı yarış, bakiyeden fazla harcamaya da izin verir).
+**Sorun.** Bakiye değiştiren her akış "oku → kontrol et → hesapla → yaz" şeklindeydi, arada kilit veya sürüm kontrolü yoktu. İki istek aynı anda aynı bakiyeyi okuyup ikisi de kendi hesabını mutlak değer olarak yazıyordu (**kayıp güncelleme**). Bu gerçek bir veritabanında ölçüldü: önce **testi yazıp düzeltmeden çalıştırdım ve başarısız olduğunu gördüm**; SQL Server ve PostgreSQL'de, toplam para 1000 TRY iken 1019,94 / 1211,03 / 1362,10 TRY'ye çıktı. Yani sistem **yoktan para üretiyordu** (aynı yarış, bakiyeden fazla harcamaya da izin verir).
 Kod okurken aynı sınıftan başka sorunlar da çıktı:
 - Kredi kartı limitinde aynı yarış: iki eşzamanlı harcama, birlikte limiti aşabiliyordu.
 - Hesap kapatma: bakiye okunduktan sonra değişirse, eski bakiye aktarılıp hesap siliniyordu (para kaybı).
@@ -171,10 +171,10 @@ Kod okurken aynı sınıftan başka sorunlar da çıktı:
 **Bilinen sınırlamalar.**
 - Çok yoğun tek-satır yarışta 10 deneme yetmeyebilir; bu durumda `ConcurrentModification` ("tekrar deneyin") döner, para yine korunur.
 - Döviz alımı sırasında kur okuması ile yazma arasında kur değişebilir (kur sabitlenmiyor).
-- `DeleteAccount` ve `Exchange` içinde audit kaydı ayrı bir `SaveChanges` ile yazılıyor; ikisi tek işlemde değil (bakiye/işlem yazımı yine tek atomik adımda).
+- `DeleteAccount` ve `Exchange` içinde audit kaydı ayrı bir `SaveChanges` ile yazılıyor; ikisi tek işlemde değil (bakiye/işlem yazımı yine tek atomik adımda). *(v1.3: giderildi; döviz işleminde bakiyeler, defter satırı ve denetim kaydı tek `SaveChanges` içinde, hesap kapatma tek veritabanı transaction'ında.)*
 - Uygulama içi sürüm yalnızca bu uygulamanın EF yolundan korur. Veritabanına doğrudan SQL ile yazan bir araç sürümü artırmazsa çakışma tespiti devre dışı kalır.
 
-**Nasıl kanıtladım.** (1) Gerçek veritabanı testleri: 40 eşzamanlı transfer (toplam bakiyeyi aşan), zıt yönlü transferler, yatırma + transfer karışımı, 30 eşzamanlı kart harcaması (limit aşılmıyor), 4 işçinin aynı talimatı aynı anda çalıştırması (tek kez icra), hatalı talimatın temiz kapanması, kart otomatik ödemesi. Değişmezler: toplam para sabit, hiçbir bakiye eksiye düşmüyor, her başarılı işlem tam bir kez kayıtlı, başarısızlıklar yalnızca beklenen iş sonuçları. Düzeltmeden önce başarısız (yukarıdaki rakamlar), sonra SQL Server (LocalDB) ve PostgreSQL 16'da tekrarlı çalıştırmalarda geçiyor. Deadlock'u bu testler ortaya çıkardı. (2) Gerçek API'ye karşı HTTP: 40 paralel transfer, 33 başarılı, 7 yetersiz bakiye, 0 pes, toplam tam 2000 TL, hesap sürümleri (v33) başarılı transfer sayısına eşit. (3) PostgreSQL yükseltme betiği: eski şema → modelle aynı sütunlar, ikinci çalıştırma değişiklik yapmıyor, unique indeks mevcut. CI, PostgreSQL servisiyle bu testleri her push'ta çalıştırır. Veritabanı bağlantısı yoksa bu testler "atlandı" olarak görünür (sessizce geçmez).
+**Nasıl kanıtladım.** (1) Gerçek veritabanı testleri: 40 eşzamanlı transfer (toplam bakiyeyi aşan), zıt yönlü transferler, yatırma + transfer karışımı, 30 eşzamanlı kart harcaması (limit aşılmıyor), 4 işçinin aynı talimatı aynı anda çalıştırması (tek kez icra), hatalı talimatın temiz kapanması, kart otomatik ödemesi. Değişmezler: toplam para sabit, hiçbir bakiye eksiye düşmüyor, her başarılı işlem tam bir kez kayıtlı, başarısızlıklar yalnızca beklenen iş sonuçları. Düzeltmeden önce başarısız (yukarıdaki rakamlar), sonra SQL Server (LocalDB) ve PostgreSQL 16'da tekrarlı çalıştırmalarda geçiyor. Deadlock'u bu testler ortaya çıkardı. (2) Gerçek API'ye karşı HTTP: 40 paralel transfer, 33 başarılı, 7 yetersiz bakiye, 0 pes, toplam tam 2000 TRY, hesap sürümleri (v33) başarılı transfer sayısına eşit. (3) PostgreSQL yükseltme betiği: eski şema → modelle aynı sütunlar, ikinci çalıştırma değişiklik yapmıyor, unique indeks mevcut. CI, PostgreSQL servisiyle bu testleri her push'ta çalıştırır. Veritabanı bağlantısı yoksa bu testler "atlandı" olarak görünür (sessizce geçmez).
 
 
 ---
@@ -245,7 +245,7 @@ Kod okurken aynı sınıftan başka sorunlar da çıktı:
 **Bilinen sınırlamalar.**
 - Rol token'da taşınıyor ve token ömrü 7 gün: bir temsilcinin yetkisi alındığında, token süresi dolana kadar eski token çalışmaya devam eder. Çözüm (kısa ömürlü token + yenileme ya da her istekte rol doğrulama) bu sürümün kapsamı dışındaydı. *(v1.2'de T12 ile token ömrü 15 dakikaya indi; rol değişikliği bir sonraki yenilemede etkili olur.)*
 - Mevcut canlı veritabanında adında "agent" geçen hesaplar yükseltme sonrası müşteri olur; gerçek personelin README'deki SQL ile terfi ettirilip yeniden giriş yapması gerekir.
-- `deposit` ucu bir demo "para yükleme" musluğudur: giriş yapan herkes kendi hesabına 10.000.000 TL'ye kadar ekleyebilir. Gerçek bir sistemde olmaz, README'de belirtilecek.
+- `deposit` ucu bir demo "para yükleme" musluğudur: giriş yapan herkes kendi hesabına 10.000.000 TRY'ye kadar ekleyebilir. Gerçek bir sistemde olmaz, README'de belirtilecek.
 - Sohbetteki AI yanıtı, oturum sahibinin hesap bilgilerini kullanabiliyor olabilir. Bunun doğrulaması ve istem enjeksiyonu riski bu sürümde incelenmedi.
 
 **Nasıl kanıtladım.** Paket o gün 185 testten oluşuyordu (sayı sonraki sürümlerde arttı; 46'sı bu göreve ait entegrasyon testi). **Mutasyon kontrolü:** düzeltmeleri geçici olarak eski haline (kullanıcı adı kuralı, rol yok, odaya serbest giriş) getirince **14 test düştü**, geri alınca geçti. Entegrasyon testleri art arda üç çalıştırmada kararlı. Tüm paket SQL Server (LocalDB) ve PostgreSQL 16 ile geçiyor.
@@ -282,14 +282,16 @@ Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çe
 
 ## T10 — Saklı XSS (v1.2): başka bir kullanıcının metni sayfada çalışıyordu
 
-**Sorun.** Ön yüz HTML'i `innerHTML` ve şablon dizeleriyle üretiyordu ve başka bir kullanıcıdan gelen metni olduğu gibi içine koyuyordu. En açık örnek havale açıklamasıydı: saldırgan, kurbana 1 TL gönderirken açıklamaya `<img src=x onerror="...">` yazıyor, kurban işlem geçmişini açtığı anda bu kod **kurbanın tarayıcısında, kurbanın oturumuyla** çalışıyordu. Token `localStorage`'da olduğu için `localStorage.getItem('token')` ile okunabiliyordu (yerelde kanıtladım: yük çalıştı, token okundu). Aynı desen kayıtlı alıcı takma adında, sohbet mesajlarında, destek oturumu başlığında, kredi kartı ekstre satırlarında ve borsa adlarında da vardı.
+**Sorun.** Ön yüz HTML'i `innerHTML` ve şablon dizeleriyle üretiyordu ve başka bir kullanıcıdan gelen metni olduğu gibi içine koyuyordu. En açık örnek havale açıklamasıydı: saldırgan, kurbana 1 TRY gönderirken açıklamaya `<img src=x onerror="...">` yazıyor, kurban işlem geçmişini açtığı anda bu kod **kurbanın tarayıcısında, kurbanın oturumuyla** çalışıyordu. Token `localStorage`'da olduğu için `localStorage.getItem('token')` ile okunabiliyordu (yerelde kanıtladım: yük çalıştı, token okundu). Aynı desen kayıtlı alıcı takma adında, sohbet mesajlarında, destek oturumu başlığında, kredi kartı ekstre satırlarında ve borsa adlarında da vardı.
 
 **Neden bu kadar ciddi.** Bu bir "saklı" (stored) XSS: kurbanın bir bağlantıya tıklaması gerekmiyor, sadece kendi hesabına bakması yeterli. Saldırgan, kurban adına istediği API çağrısını yapabilir (para transferi dahil).
+
+> *Güncelleme (v1.3.2): `esc()` yardımcısı ve `APP_VERSION` kaldırıldı; render kodu artık DOM API'si (`h()` ve `textContent`) kullanıyor. Aşağıdaki anlatım v1.2 dönemini tarif eder.*
 
 **Ne yaptım.**
 - `app.js` içine `esc()` yardımcısı ekledim (`& < > " ' \`` karakterlerini kaçırır). Özellikle tırnakları da kaçırıyor, çünkü `data-alias="${c.alias}"` gibi öznitelik bağlamlarında `"` ile öznitelikten çıkıp yeni bir `onmouseover=` eklemek mümkündü.
 - Sunucudan veya başka kullanıcıdan gelen **her** şablon enterpolasyonunu `esc(...)` ile sardım (`app.js` ve `chat.js`). Sayılar `toFixed()` ile üretildiği, sabit metinler kodun içinde olduğu için onlara dokunmadım.
-- İkinci katman olarak üç sayfaya da **Content-Security-Policy** (`<meta>`) ekledim: `script-src` yalnızca kendi dosyalarımıza ve üç CDN'e izin verir, `unsafe-inline` ve `unsafe-eval` yok, `object-src 'none'`, `base-uri 'self'`. Bunun için `dashboard.html` içindeki yedi satır içi `onclick`/`onsubmit` özniteliğini `addEventListener`'a taşıdım; aksi halde katı bir CSP sayfayı bozardı.
+- İkinci katman olarak üç sayfaya da **Content-Security-Policy** (`<meta>`) ekledim: `script-src` yalnızca kendi dosyalarımıza ve üç CDN'e izin verir *(v1.3: üçüncü taraf betikler Subresource Integrity ile sabitlendi, her sayfanın CSP'si yalnızca o sayfanın yüklediklerini listeler, Chart.js kaldırıldı)*, `unsafe-inline` ve `unsafe-eval` yok, `object-src 'none'`, `base-uri 'self'`. Bunun için `dashboard.html` içindeki yedi satır içi `onclick`/`onsubmit` özniteliğini `addEventListener`'a taşıdım; aksi halde katı bir CSP sayfayı bozardı.
 - Aynı saldırıyı yeniden denedim: yük artık işlem satırında düz metin olarak görünüyor, hiçbir `<img>` oluşmuyor, bayrak ve token okuması çalışmıyor.
 - `FrontendXssGuardTests`: bilinen tehlikeli enterpolasyonların (`${tx.description`, `${msg.content}`, `${c.alias}` …) ham halde bulunmamasını, `esc()` yardımcısının tırnakları kaçırdığını, her sayfada `unsafe-inline` içermeyen bir CSP olduğunu ve HTML'de satır içi betik/olay özniteliği bulunmadığını doğrular.
 
@@ -341,7 +343,7 @@ Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çe
 - Her girişte ayrıca **yenileme (refresh) token'ı** veriliyor: 256 bit rastgele, ömrü 7 gün, **tek kullanımlık**. `POST /api/auth/refresh` onu yeni bir erişim token'ı ve **yeni** bir yenileme token'ıyla değiştiriyor (rotasyon).
 - Veritabanında token'ın kendisi değil **SHA-256 özeti** duruyor (`RefreshTokens` tablosu). Veritabanı sızsa bile çalışan token çıkmaz. Token zaten 256 bit rastgele olduğu için tuzlu/yavaş özet gerekmez (PIN'in aksine).
 - Aynı girişten türeyen tüm token'lar bir **aile** (`FamilyId`) oluşturuyor. Kullanılmış bir token **tekrar** gelirse bir kopya dolaşıyor demektir: ailenin tamamı iptal edilir (hem hırsız hem gerçek kullanıcı oturumunu kaybeder, kullanıcı yeniden girer). Denetim günlüğüne `RefreshTokenReuse` yazılır.
-- **Çıkış** (`POST /api/auth/logout`), **şifre sıfırlama** ve **hesap kilitlenmesi** oturumları sunucuda iptal ediyor. Aynı anda iki istek aynı token'ı kullanırsa iyimser eşzamanlılık (`Version`, T6'daki desen) yüzünden yalnızca biri kazanıyor; bunu iki veritabanında da gerçek eşzamanlı testle doğruladım (8 istek, tam 1 başarı).
+- **Çıkış** (`POST /api/auth/logout`), **şifre sıfırlama** ve **hesap kilitlenmesi** oturumları sunucuda iptal ediyor *(v1.3: düzeltme: hesap kilitlenmesi ve başarısız girişler artık oturumları iptal etmez, çünkü bir T.C. numarasını bilen herkes sahibini sürekli çıkışa zorlayabilirdi. Çıkış yalnızca o oturumu, şifre sıfırlama hepsini iptal eder)*. Aynı anda iki istek aynı token'ı kullanırsa iyimser eşzamanlılık (`Version`, T6'daki desen) yüzünden yalnızca biri kazanıyor; bunu iki veritabanında da gerçek eşzamanlı testle doğruladım (8 istek, tam 1 başarı).
 - 10 saniyelik tolerans: iki sekme aynı anda yenilerse kaybeden sekme **hırsız sayılmaz**, yalnızca reddedilir; ön yüz diğer sekmenin yazdığı yeni token'ı alıp devam eder.
 - Ön yüz: `fetch` sarmalayıcısı süre dolmadan 30 saniye önce sessizce yeniliyor, 401 gelirse bir kez yenileyip isteği tekrarlıyor, yenileme de reddedilirse çıkış yaptırıyor. Aynı anda gelen 5 istek **tek** yenileme yaptırıyor (tarayıcıda doğruladım). SignalR bağlantısı `accessTokenFactory` ile her bağlanışta güncel token alıyor; token artık URL'ye elle yazılmıyor.
 - Süreler yapılandırılabilir (`JwtSettings__AccessTokenMinutes`, `RefreshTokenDays`) ve aralık dışı değer uygulamanın başlamasını engelliyor.
@@ -355,7 +357,7 @@ Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çe
 - Çalınan bir **erişim** token'ı süresi dolana kadar (en çok 15 dk) geçerli kalır; çıkış yapmak onu anında öldürmez.
 - Token'lar hâlâ `localStorage`'da: bir XSS hatası hem erişim hem yenileme token'ını okuyabilir. Rotasyon sayesinde hırsız ile kullanıcıdan biri ailenin tamamını düşürür, ama saldırgan kısa süre kullanabilir.
 - Rol değişikliği (SQL ile elle) bir sonraki yenilemede etkili olur, anında değil.
-- Açık bir SignalR bağlantısı token süresi dolsa da bağlı kalır; token yalnızca bağlanırken denetlenir.
+- Açık bir SignalR bağlantısı token süresi dolsa da bağlı kalır; token yalnızca bağlanırken denetlenir. *(v1.3: `HubTokenExpiryFilter` süresi dolmuş token'la yapılan hub çağrılarını `Session expired` ile reddeder; web arayüzü yeni token'la yeniden bağlanır.)*
 - Temizlik bir arka plan işi değil: kullanıcının süresi bir günden fazla geçmiş token'ları bir sonraki girişte siliniyor.
 
 
@@ -391,7 +393,7 @@ Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çe
 
 **Bilinen sınırlamalar (dürüst liste).**
 - Sayaçlar bellekte ve örnek başına: yeniden başlatmada sıfırlanır, birden fazla örnekte paylaşılmaz.
-- `ConfirmTransferFromChatAsync` bir AI önerisine bağlı değil: kullanıcı, kendi hesabından, sohbet açıkken herhangi bir transferi hub üzerinden tetikleyebilir (REST ucuyla aynı yetki; ek bir yetki kazanılmıyor).
+- `ConfirmTransferFromChatAsync` bir AI önerisine bağlı değil: kullanıcı, kendi hesabından, sohbet açıkken herhangi bir transferi hub üzerinden tetikleyebilir (REST ucuyla aynı yetki; ek bir yetki kazanılmıyor). *(v1.3: yalnızca sohbetin sahibi için çalışır; sahibi olmayan bir oturum müşteri tarafından okunamaz ve yazılamaz.)*
 - AI yanıt süresi/maliyeti için günlük üst sınır yok (dakika/saat sınırları dolaylı olarak sınırlıyor).
 
 
@@ -417,7 +419,7 @@ Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çe
 
 **Bilinen sınırlamalar (dürüst liste).**
 - Şema kontrolü elle yapılıyor (Supabase'de sorguyu çalıştırıp çıktıyı karşılaştırmak); otomatik değil. Sürümler arası şema kayması için gerçek çözüm EF migration'larını üretimde de uygulamak.
-- Eski `MarketRates` tablosu hâlâ modelden farklı (`Id` uuid, fazladan `Name`/`NameEn`/`Change`). Tablo boş kalırsa başlangıçtaki tohum ekleme başarısız olur (şu an dolu).
+- Eski `MarketRates` tablosu hâlâ modelden farklı (`Id` uuid, fazladan `Name`/`NameEn`/`Change`). Tablo boş kalırsa başlangıçtaki tohum ekleme başarısız olur (şu an dolu). *(v1.3: artık hiçbir şey `MarketRates` tablosunu okumaz veya doldurmaz, kurlar canlı kaynaktan gelir; temel betik tabloyu yine de modelle aynı oluşturur.)*
 - Betik, tabloları kısa süre kilitler (küçük tablolar; demo için sorun değil).
 
 
@@ -426,22 +428,81 @@ Düzeltme: bozuk dizileri karakter kodlarıyla (kodlamadan bağımsız) geri çe
 
 ## T15 — Küçük sertleştirmeler (v1.2): log gürültüsü, güvenlik başlıkları, T.C. kontrol basamakları
 
-(`CHANGELOG.md` içindeki "SQL komutları artık loga yazılmıyor", "API güvenlik başlıkları" ve "T.C. Kimlik Numarası kontrol basamakları" maddeleri bu bölümden gelir.)
+(`CHANGELOG.md` içindeki "SQL komutları artık loga yazılmıyor", "API güvenlik başlıkları" ve "T.C. Kimlik No kontrol basamakları" maddeleri bu bölümden gelir.)
 
 Üç küçük iş, hepsi "sorun büyük değil ama bir gözden geçirenin ilk bakacağı yerler".
 
 ### 1) Üretim logu SQL ile doluydu
-**Sorun.** Varsayılan log seviyesi `Information` olduğu için EF Core her SQL komutunu yazıyordu; kalıcı emir işçisi (standing-order worker) 30 saniyede bir sorgu çalıştırdığından Render logunun çoğu `Executed DbCommand` satırıydı. Gerçek hata satırlarını bulmak zorlaşıyor; üstelik SQL parametreleri logda dolaşıyor.
+**Sorun.** Varsayılan log seviyesi `Information` olduğu için EF Core her SQL komutunu yazıyordu; düzenli talimat işçisi (standing-order worker) 30 saniyede bir sorgu çalıştırdığından Render logunun çoğu `Executed DbCommand` satırıydı. Gerçek hata satırlarını bulmak zorlaşıyor; üstelik SQL parametreleri logda dolaşıyor.
 **Ne yaptım.** `Microsoft.EntityFrameworkCore.Database.Command` için seviye `Warning`; bizim kendi `Information` mesajlarımız görünür kalıyor. Yerelde ayrıntı gerekirse `Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command=Information` ortam değişkeniyle açılır. Testi: `LoggingConfigurationTests`.
 
 ### 2) API yanıtlarında güvenlik başlığı yoktu
 **Ne yaptım.** `SecurityHeadersMiddleware` her yanıta (hata yanıtları dahil, çünkü `OnStarting` kullanıyor) şunları ekler: `X-Content-Type-Options: nosniff` (tarayıcı JSON'u HTML sanmasın), `X-Frame-Options: DENY` ve `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` (API hiçbir zaman bir sayfa/çerçeve içeriği değil), `Referrer-Policy: no-referrer`, ve `/api` ile `/hubs` yanıtlarında `Cache-Control: no-store` (bakiye ve işlemler tarayıcı/ara önbellekte kalmasın). **HSTS**: yalnızca üretimde ve yalnızca HTTPS isteklerinde, 180 gün, `includeSubDomains` yok (onrender.com paylaşımlı).
 **Neden bu seçim.** Web arayüzünün kendi başlıkları (GitHub Pages özel başlık eklemeye izin vermez) CSP `<meta>` etiketiyle veriliyor (T10); bu middleware yalnızca API tarafını kapsar.
-**Sınırlamalar.** HSTS'in `preload` listesine eklenmedi (geri alınması zor bir taahhüt). HSTS, Render proxy'sinin `X-Forwarded-Proto` başlığını doğru taşımasına bağlı (Dockerfile'daki `ASPNETCORE_FORWARDEDHEADERS_ENABLED`); canlıda `curl -I` ile görülmeli. ASP.NET, `localhost` için HSTS göndermez, bu yüzden test başka bir ana makine adı kullanır.
+**Sınırlamalar.** HSTS'in `preload` listesine eklenmedi (geri alınması zor bir taahhüt). HSTS, Render proxy'sinin `X-Forwarded-Proto` başlığını doğru taşımasına bağlı (Dockerfile'daki `ASPNETCORE_FORWARDEDHEADERS_ENABLED`); canlıda `curl -I` ile görülmeli. *Sonuç (canlı API'de 2026-10-07 tarihinde doğrulandı): `strict-transport-security: max-age=15552000`, `x-content-type-options: nosniff`, `x-frame-options: DENY`, `content-security-policy: default-src 'none'; frame-ancestors 'none'`.* ASP.NET, `localhost` için HSTS göndermez, bu yüzden test başka bir ana makine adı kullanır.
 
-### 3) T.C. Kimlik Numarası kontrol basamakları
+### 3) T.C. Kimlik No kontrol basamakları
 **Sorun.** Kayıt, 11 hane olan her rakam dizisini kabul ediyordu (`99999999999` dahil): yazım hatası kayda girer, "şifremi unuttum" hiç gelmeyen e-postaya giderdi.
 **Ne yaptım.** Gerçek algoritma: ilk hane 0 olamaz; 10. hane `((d1+d3+d5+d7+d9)·7 − (d2+d4+d6+d8)) mod 10`, 11. hane ilk 10 hanenin toplamının `mod 10`'u. `TcKimlikNo.IsValid` (sunucu, FluentValidation kuralı) ve aynı kural tarayıcıda (kayıt formunda anında geri bildirim). Testler: bilinen geçerli/geçersiz örnekler ve **geçerli bir numaranın herhangi bir hanesi değiştirilince her seferinde reddedildiği** (110 tek-hane yazım hatası).
 **Önemli sınır (dürüst).** Bu **kimlik doğrulama değildir**: numaranın o kişiye ait olduğunu yalnızca resmi MERNİS servisi söyler. Rastgele 11 haneli dizilerin çoğunu eler (yaklaşık 100'de 1'i geçer) ve yazım hatalarını yakalar; birinin gerçek bir numarayı kullanmasını engellemez. Demo için örnek geçerli numaralar: `11111111110`, `10000000146` (kimseye ait değil). Eski `11111111111` gibi sahte numaralarla **yeni kayıt yapılamaz**; zaten kayıtlı hesaplar giriş yapmaya devam eder (kontrol yalnızca kayıtta).
 **Neden bu seçim.** Girişte aynı kuralı uygulamak, kuraldan önce açılmış hesapları kilitlerdi.
 
+---
+
+## v1.3 engineering notes (English)
+
+v1.3 was an audit pass: the code and the running app were read for bugs, and each finding was reproduced with a test before it was fixed. The complete list is in [`CHANGELOG.md`](../CHANGELOG.md) (1.3.0 and 1.3.1). These five are the most instructive. Same structure as above: problem, change, why (and what was rejected), limits. The tests named here are in `src/SmartBank.Tests`.
+
+### V1. Sub-cent trades could create money
+
+**Problem.** Exchange and the other money endpoints accepted amounts with more than two decimals, while the balance columns hold two. A value such as `amount x rate` was rounded only when it was stored, so the amount that was debited, the amount that was credited and the amount in the ledger row could differ by a fraction of a cent, and repeating small trades turned that difference into free money. The same endpoint accepted any currency code, created an empty target account before it had looked up a rate, and opened a second wallet for `usd` next to `USD`.
+
+**Change.** An amount must have at most two decimals (`MoneyScale` validation attribute, error key `InvalidAmountScale`). A computed value is rounded once, away from zero (`Money`), and that one value goes into both balances, the ledger row and the response. Currencies are an allow-list (USD, EUR, XAU, XAG; TRY for accounts), compared case-insensitively; the rate is looked up before anything is created. Tests: `Banking/ExchangeTests.cs`, `CoreRulesTests.cs`.
+
+**Why.** Validating at the edge means no layer has to guess; rounding once means the three records cannot disagree. Rejected: rounding each side separately (the sides can still differ) and widening the balance columns to four decimals (it changes every production script and hides the problem instead of removing it).
+
+**Limits.** The ledger keeps one amount per row, it is not a double-entry journal. Money-moving calls have no idempotency key. The rate can still move between reading and writing (see T6).
+
+### V2. A standing order debited the source before it checked the destination
+
+**Problem.** The worker took the money from the source account first and only then looked for the destination. If the destination no longer existed, the money was gone. It also moved money between accounts of different currencies one to one, and ignored the maturity date.
+
+**Change.** An order is validated when it is created (same currency for transfers, the caller's own accounts, amount range, at most 20 active orders) and validated again by the worker, which now checks first and then debits and credits in one database transaction with a single ledger row. It honours the maturity date, retries transient errors (a collision with a customer's transfer) on the next cycle and deactivates an order only for a permanent reason, with an audit entry. Tests: `Worker/StandingOrderWorkerTests.cs`, `Database/StandingOrderWorkerTests.cs` (real databases).
+
+**Why.** "Validate, then act, inside one transaction" removes the half-done state. Rejected: a compensating credit after a failed lookup (more states, more ways to lose money) and trusting the creation-time check alone (accounts can be closed afterwards).
+
+**Limits.** Standing orders skip the one-time-code step (they run with the permission the customer gave when creating them). The worker is part of the API process, so on a free Render instance it only runs while the instance is awake; orders run late, not never.
+
+### V3. Closing an account converted one to one and could fail on a foreign key
+
+**Problem.** Closing an account that still held money converted it to the destination currency one to one when no rate was available, and the closing step could then fail on a foreign key (old transaction rows point at the closed account), after the money had already moved.
+
+**Change.** Closing is one database transaction: closing row, credit to the destination, detaching the old rows, switching off the standing orders, removing the saved recipients and the audit entry. Without a live rate the call is refused (`RateUnavailable`); stand-in prices are flagged and never used to move money. A foreign-key violation while saving a money movement is retried at most three times (v1.3.1 lowered it from ten) and then fails cleanly. Tests: `Database/SecurityAndClosingDatabaseTests.cs`, `Banking/AccountTests.cs`.
+
+**Why.** All or nothing; refusing a conversion is better than converting at a made-up rate. The retry cap exists because a constraint the code does not expect is not a transient error: ten retries with growing pauses made it fail after 18 seconds on the live site.
+
+**Limits.** Concurrency is controlled with the row `Version` and retries, not with locks; a very busy single row can still run out of attempts and answer "try again" (money stays correct).
+
+### V4. The production schema was not the schema of the model
+
+**Problem.** The production tables were created by hand in Supabase. Over three releases that produced four bugs that no test could see, because the test databases are built from the EF model:
+- `ChatSessions` had no `IsActive` column, so starting a support chat failed on the server (found in v1.2);
+- `StandingOrders.Amount` was `NOT NULL` while a card auto-pay order stores `NULL`;
+- all time columns were `timestamp without time zone`, so the API sent times without a `Z` and browsers showed them three hours early in Turkey;
+- after the v1.3 release, registration failed for everybody (409 `ConcurrentModification` after 18 seconds): the audit row was saved in the same `SaveChanges` as the new user, EF may insert it first, and the production table has a foreign key `AuditLogs.UserId -> Users` that the model does not declare. Fixed in v1.3.1.
+
+**Change.** Each release has a PostgreSQL upgrade script that is idempotent and tested on a real PostgreSQL (`PostgresUpgradeScriptTests`: rebuild the old shape, run the script, compare with the model, run it again). A baseline script creates a fresh database, and `BaselineSchemaTests` compares what it creates (columns, indexes, constraints) with what EF builds from the model, so it cannot silently fall behind. `docs/deploy/schema-check.sql` lists every column and foreign key of the production database for a manual comparison. `HandMadeSchemaTests` add the hand-made foreign key to the test databases and run registration and sign-in against them (they fail without the fix). Registration now saves the user first and the audit row afterwards.
+
+**Why.** Production cannot be made equal to the model overnight, so the tests are made to look more like production. Rejected: running EF migrations in production (the session pooler and the hand-made tables make it risky, see T14) and reverse-engineering the whole production schema into the model.
+
+**Limits.** `schema-check.sql` is a manual step; the tests only encode the differences that are known; real-database tests need a database and are skipped without one (CI runs them). The durable answer is one schema owner, for example applying the EF migrations to production too.
+
+### V5. The in-memory provider hid a query EF could not translate
+
+**Problem.** Registration with an e-mail address that was already taken checked for the duplicate with `ToLowerInvariant()` inside an EF query. EF cannot translate that to SQL, so on a real database every registration would have thrown. All unit tests passed, because the in-memory provider runs the query in .NET.
+
+**Change.** The query uses `ToLower()`, which EF translates to `LOWER()`; the stored address is lower-cased outside the query with the invariant culture. Real-database tests (PostgreSQL and SQL Server) exercise registration, and the culture tests run the same logic under `tr-TR` and `de-DE`, because the Turkish `I` had already caused one bug (T13). Tests: `Database/SecurityAndClosingDatabaseTests.cs` and `Database/HandMadeSchemaTests.cs` (registration on real databases), `CultureTests.cs`, `Api/RegistrationTests.cs`.
+
+**Why.** The lesson is about the test setup, not about one call: the in-memory provider is fine for rules and flows, but anything that depends on SQL translation, constraints, transactions or concurrency needs a real database. That is why the suite has two layers and why CI starts PostgreSQL and SQL Server.
+
+**Limits.** Calling `ToLower()` in a query uses the database's collation rules, not .NET's; for the e-mail addresses a user can type this is equivalent, but it is not a general text-normalisation strategy.

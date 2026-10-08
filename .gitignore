@@ -46,6 +46,10 @@ coverage*/
 appsettings.Local.json
 appsettings.Development.json
 
+# Output of the schema regeneration commands in docs/deploy (see the headers of the SQL files)
+baseline.sql
+expected.sql
+
 # Backups and repository bundles
 *.bak
 *.bundle

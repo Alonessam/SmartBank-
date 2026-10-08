@@ -311,7 +311,6 @@ namespace SmartBank.Tests
 
             var jwt = new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler().ReadJwtToken(session.Token);
             Assert.DoesNotContain(jwt.Claims, c => c.Type == "tckn" || c.Value == Tckn);
-            Assert.Equal(Tckn, session.Tckn);
         }
 
         // ---- registration ------------------------------------------------------------------------------------

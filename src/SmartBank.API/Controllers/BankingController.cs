@@ -39,6 +39,9 @@ namespace SmartBank.API.Controllers
         /// <summary>Is the credit-card charge / advance-period simulation switched on? (Demo:EnableSimulationEndpoints, default true.)</summary>
         private bool SimulationEnabled => _configuration.GetValue("Demo:EnableSimulationEndpoints", true);
 
+        private IActionResult SimulationDisabled() =>
+            ErrorResult("SimulationDisabled", "This demo simulation is switched off on this server (Demo:EnableSimulationEndpoints).");
+
         /// <summary>The caller's accounts, oldest first, with the (decrypted) debit card numbers.</summary>
         [HttpGet("accounts")]
         [ProducesResponseType(typeof(List<AccountDto>), StatusCodes.Status200OK)]
@@ -131,7 +134,7 @@ namespace SmartBank.API.Controllers
             [FromQuery, Range(0.01, 10000000.00), MoneyScale] decimal amount,
             [FromQuery, StringLength(200)] string description = "")
         {
-            if (!SimulationEnabled) return NotFound();
+            if (!SimulationEnabled) return SimulationDisabled();
 
             return ToActionResult(await _bankingService.ChargeCreditCardAsync(GetUserId(), cardId, amount, description));
         }
@@ -145,7 +148,7 @@ namespace SmartBank.API.Controllers
         [ProducesResponseType(StatusCodes.Status404NotFound)]
         public async Task<IActionResult> AdvancePeriod(Guid cardId)
         {
-            if (!SimulationEnabled) return NotFound();
+            if (!SimulationEnabled) return SimulationDisabled();
 
             return ToActionResult(await _bankingService.AdvanceStatementPeriodAsync(GetUserId(), cardId));
         }

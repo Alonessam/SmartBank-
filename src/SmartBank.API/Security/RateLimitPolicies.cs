@@ -15,6 +15,9 @@ namespace SmartBank.API.Security
         /// <summary>Money-moving endpoints (transfer, exchange, deposit, card payment): 10 a minute by default. Replaces "banking" on those actions.</summary>
         public const string Transfer = "transfer";
 
+        /// <summary>The support-chat HTTP endpoints (history, agent dashboard, AI suggestion): per user, 60 a minute by default.</summary>
+        public const string Chat = "chat";
+
         /// <summary>The public rates list: per address, 60 a minute by default.</summary>
         public const string Market = "market";
     }

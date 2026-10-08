@@ -23,6 +23,10 @@ using FluentValidation;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Every request body of this API is a small JSON document; the Kestrel default of 30 MB would let an anonymous caller make the
+// server read and parse that much on /api/auth/login. (SignalR messages have their own limit below.)
+builder.WebHost.ConfigureKestrel(kestrel => kestrel.Limits.MaxRequestBodySize = 64 * 1024);
+
 // Card-data encryption key (base64, 32 bytes) comes from user-secrets / Encryption__Key, never from the repo.
 EncryptionHelper.Configure(builder.Configuration["Encryption:Key"]);
 
@@ -44,7 +48,9 @@ builder.Services.AddDbContext<SmartBankDbContext>(options =>
         options.UseSqlServer(connectionString);
     }
 
-    // Ignore EF Core 9+ pending model changes warning to allow database migrations to run smoothly on startup
+    // The app never migrates the database itself (production is changed by hand with the scripts in docs/deploy, local
+    // development with "dotnet ef database update"). Without this line EF Core 9+ would throw at the first query when the model
+    // and the last migration differ; CI checks that case separately ("dotnet ef migrations has-pending-model-changes").
     options.ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning));
 });
 
@@ -135,8 +141,15 @@ builder.Services.AddScoped<SupportAiResponder>();
 builder.Services.AddHostedService<StandingOrderExecutionWorker>();
 builder.Services.AddValidatorsFromAssemblyContaining<RegisterDtoValidator>();
 
+// The JSON binder's own messages ("The JSON value could not be converted to SmartBank.Core.DTOs.LoginDto. Path: $ | LineNumber: 0 ...")
+// name internal types and byte positions; the messages written for the DTOs (attributes, validators) never contain these.
+static bool LooksLikeBinderText(string? message) =>
+    message != null && (message.Contains("SmartBank.", StringComparison.Ordinal) || message.Contains("LineNumber", StringComparison.Ordinal) ||
+                        message.Contains("JSON value", StringComparison.Ordinal) || message.Contains("Path: $", StringComparison.Ordinal));
+
 // Add services to the container.
 builder.Services.AddControllers()
+    .AddJsonOptions(options => options.JsonSerializerOptions.Converters.Add(new SmartBank.API.Json.NoNulStringConverter()))
     .ConfigureApiBehaviorOptions(options =>
     {
         // A request that fails the attribute checks on its DTO (length, range, pattern, decimals) gets the same body shape as
@@ -145,7 +158,10 @@ builder.Services.AddControllers()
         {
             var errors = context.ModelState
                 .Where(e => e.Value is { Errors.Count: > 0 })
-                .ToDictionary(e => e.Key, e => e.Value!.Errors.Select(x => string.IsNullOrEmpty(x.ErrorMessage) ? "The value is not valid." : x.ErrorMessage).ToArray());
+                .ToDictionary(e => e.Key, e => e.Value!.Errors.Select(x =>
+                    // A body the JSON binder could not read names internal types and byte positions: say only that it is not valid.
+                    x.Exception != null || LooksLikeBinderText(x.ErrorMessage) ? "The request body is not valid."
+                    : string.IsNullOrEmpty(x.ErrorMessage) ? "The value is not valid." : x.ErrorMessage).ToArray());
 
             return new BadRequestObjectResult(new
             {
@@ -164,7 +180,8 @@ builder.Services.AddSignalR(options =>
 {
     options.MaximumReceiveMessageSize = 16 * 1024;
     options.AddFilter<HubTokenExpiryFilter>();
-});
+})
+.AddJsonProtocol(options => options.PayloadSerializerOptions.Converters.Add(new SmartBank.API.Json.NoNulStringConverter()));
 builder.Services.AddSingleton(ChatSettings.From(builder.Configuration));
 builder.Services.AddSingleton<ChatRateLimiter>();
 
@@ -196,6 +213,7 @@ builder.Services.AddRateLimiter(options =>
     options.AddPolicy(RateLimitPolicies.Refresh, http => RateLimitPartition.GetFixedWindowLimiter(ClientKey(http), _ => Window("Refresh", 60, 60)));
     options.AddPolicy(RateLimitPolicies.Banking, http => RateLimitPartition.GetFixedWindowLimiter(UserOrClientKey(http), _ => Window("Banking", 60, 60)));
     options.AddPolicy(RateLimitPolicies.Transfer, http => RateLimitPartition.GetFixedWindowLimiter("transfer:" + UserOrClientKey(http), _ => Window("Transfer", 10, 60)));
+    options.AddPolicy(RateLimitPolicies.Chat, http => RateLimitPartition.GetFixedWindowLimiter(UserOrClientKey(http), _ => Window("Chat", 60, 60)));
     options.AddPolicy(RateLimitPolicies.Market, http => RateLimitPartition.GetFixedWindowLimiter(ClientKey(http), _ => Window("Market", 60, 60)));
 
     options.OnRejected = async (context, cancellationToken) =>
@@ -226,6 +244,7 @@ builder.Services.AddCors(options =>
         policy.AllowAnyHeader()
               .AllowAnyMethod()
               .SetIsOriginAllowed(origin => CorsOriginPolicy.IsAllowed(origin, allowedOrigins, isDevelopment))
+              .WithExposedHeaders("Retry-After") // so a browser can read how long a 429 asks it to wait
               .AllowCredentials();
     });
 });
@@ -257,6 +276,11 @@ var allowedHosts = app.Configuration["AllowedHosts"];
 if (app.Environment.IsProduction() && (string.IsNullOrWhiteSpace(allowedHosts) || allowedHosts == "*"))
 {
     app.Logger.LogWarning("AllowedHosts is \"*\": the API answers to any Host header. Set the AllowedHosts environment variable to this API's host name(s).");
+}
+
+if (app.Environment.IsProduction() && app.Configuration.GetValue("Demo:ExposeOtp", false))
+{
+    app.Logger.LogWarning("Demo:ExposeOtp is ON in Production: one-time codes are returned in API responses and written to the log. This removes the second factor; turn it off wherever real data lives.");
 }
 
 app.UseMiddleware<GlobalExceptionMiddleware>();

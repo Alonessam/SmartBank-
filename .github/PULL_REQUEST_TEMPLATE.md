@@ -13,3 +13,4 @@
 - [ ] No secrets or personal data in the diff
 - [ ] README / CHANGELOG / docs updated if behaviour or configuration changed
 - [ ] Database change? The EF migration and the PostgreSQL script in `docs/deploy` both exist
+- [ ] Model change? `docs/deploy/00-baseline-postgres.sql` is regenerated (the command is in its header; `BaselineSchemaTests` fails otherwise)

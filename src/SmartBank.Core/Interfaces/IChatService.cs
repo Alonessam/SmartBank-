@@ -23,6 +23,9 @@ namespace SmartBank.Core.Interfaces
         /// <summary>True only when the session exists and was started by this user. Sessions without an owner belong to nobody.</summary>
         Task<bool> IsSessionOwnerAsync(Guid sessionId, Guid userId, CancellationToken cancellationToken = default);
 
+        /// <summary>True while the session exists and has not been closed (a closed conversation accepts no messages and no transfer confirmations).</summary>
+        Task<bool> IsSessionOpenAsync(Guid sessionId, CancellationToken cancellationToken = default);
+
         /// <summary>Messages of a session the caller owns (SessionNotFound or UnauthorizedSessionAccess otherwise). Newest <paramref name="take"/>, oldest first.</summary>
         Task<ServiceResult<List<ChatMessageDto>>> GetSessionMessagesForOwnerAsync(Guid sessionId, Guid userId, int take = 500, CancellationToken cancellationToken = default);
 

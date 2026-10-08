@@ -36,7 +36,8 @@ namespace SmartBank.Core.Common
             if (string.IsNullOrEmpty(description)) description = DefaultDescription;
             if (description.Length > MaxDescriptionLength) description = description[..MaxDescriptionLength];
 
-            if (source.Length == 0 || destination.Length == 0) return null;
+            // The values end up inside the bracketed card the web app parses: no marker characters, and account-number sized.
+            if (!IsPlainAccountText(source) || !IsPlainAccountText(destination)) return null;
             if (!TryParseAmount(CleanValue(Group(AmountPattern, text)), out var amount)) return null;
 
             return new TransferProposal(source, destination, amount, ChatMarkers.Neutralize(description));
@@ -74,7 +75,8 @@ namespace SmartBank.Core.Common
                 var count = s.Count(c => c == separator);
                 var digitsAfter = s.Length - s.LastIndexOf(separator) - 1;
 
-                if (count > 1 || digitsAfter == 3)
+                // A zero in front ("0,500") is half a lira written with three decimals, not five hundred.
+                if (count > 1 || (digitsAfter == 3 && s[0] != '0'))
                 {
                     s = s.Replace(separator.ToString(), string.Empty); // grouping
                 }
@@ -90,6 +92,10 @@ namespace SmartBank.Core.Common
             amount = value;
             return true;
         }
+
+        private static readonly Regex PlainAccountText = new(@"^[^\[\]=:,;\r\n]{1,30}$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+        private static bool IsPlainAccountText(string value) => PlainAccountText.IsMatch(value);
 
         private static string Group(Regex pattern, string text)
         {

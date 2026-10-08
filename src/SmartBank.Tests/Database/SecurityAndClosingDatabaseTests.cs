@@ -388,6 +388,52 @@ namespace SmartBank.Tests.Database
 
         [DatabaseTheory]
         [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
+        public async Task Parallel_wrong_pins_cannot_hide_from_a_correct_pin_sent_at_the_same_moment(TestProvider provider)
+        {
+            await using var db = await TestDatabase.CreateAsync(provider);
+            var accepted = 0;
+            const int rounds = 5;
+
+            // Every request reads the user before any failure is saved, so each one sees "not locked". A correct PIN used to change
+            // nothing on the row, so it was accepted no matter how many guesses had already been spent. Now it has to collide with
+            // the saved failures and read the row again, where the lockout is visible: with 25 wrong guesses racing it, it cannot
+            // be accepted every time.
+            for (var round = 0; round < rounds; round++)
+            {
+                var user = await AddUserAsync(db, "victim" + round);
+                await using (var slow = db.NewContext())
+                {
+                    // A real-strength hash: each verification takes long enough that every request has read the user before the first one finishes.
+                    var row = await slow.Users.SingleAsync(u => u.Id == user.Id);
+                    row.PasswordHash = BCrypt.Net.BCrypt.HashPassword(Pin, 10);
+                    await slow.SaveChangesAsync();
+                }
+
+                var operations = Enumerable.Range(0, 25)
+                    .Select(i => (Func<Task<bool>>)(async () =>
+                    {
+                        await using var context = db.NewContext();
+                        return (await NewAuth(context).LoginAsync(new LoginDto { Tckn = user.Tckn, Password = "99" + (1000 + i) })).IsSuccess;
+                    }))
+                    .Append(async () =>
+                    {
+                        await using var context = db.NewContext();
+                        return (await NewAuth(context).LoginAsync(new LoginDto { Tckn = user.Tckn, Password = Pin })).IsSuccess;
+                    })
+                    .ToList();
+
+                var results = await ConcurrencyHarness.RunTogetherAsync(operations);
+                if (results[^1]) accepted++;
+
+                await using var verify = db.NewContext();
+                Assert.NotNull((await verify.Users.AsNoTracking().SingleAsync(u => u.Id == user.Id)).LockoutEnd);
+            }
+
+            Assert.True(accepted < rounds, $"the correct PIN got through in all {rounds} rounds");
+        }
+
+        [DatabaseTheory]
+        [MemberData(nameof(TestDatabase.Providers), MemberType = typeof(TestDatabase))]
         public async Task The_sign_in_housekeeping_deletes_old_used_tokens_with_a_bulk_delete(TestProvider provider)
         {
             await using var db = await TestDatabase.CreateAsync(provider);

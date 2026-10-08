@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Primitives;
 
 namespace SmartBank.API.Middlewares
 {
@@ -33,6 +34,21 @@ namespace SmartBank.API.Middlewares
                     context.Response.StatusCode = ClientClosedRequest;
                 }
             }
+            catch (BadHttpRequestException bad)
+            {
+                // The client sent something the server refuses to read (body too large, malformed framing): its own status
+                // (400, 413, 408...), not a 500 and not an error in the log.
+                _logger.LogWarning("Request {TraceId} was refused: {Reason}", context.TraceIdentifier, bad.Message);
+                if (context.Response.HasStarted)
+                {
+                    context.Abort();
+                    return;
+                }
+
+                context.Response.StatusCode = bad.StatusCode;
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync("{\"isSuccess\":false,\"errorKey\":\"BadRequest\",\"message\":\"The request could not be read.\"}");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Unhandled exception for request {TraceId}.", context.TraceIdentifier);
@@ -51,7 +67,17 @@ namespace SmartBank.API.Middlewares
 
         private async Task HandleExceptionAsync(HttpContext context, Exception exception)
         {
+            // The CORS middleware adds its headers BEFORE the request reaches the endpoint, and Clear() would drop them with
+            // everything else. Without them the browser reports a 500 from the web app (another origin) as a CORS failure and the
+            // page cannot even read the error. Keep them (and Vary, which tells caches the answer depends on the Origin).
+            var kept = context.Response.Headers
+                .Where(h => h.Key.StartsWith("Access-Control-", StringComparison.OrdinalIgnoreCase) || h.Key.Equals("Vary", StringComparison.OrdinalIgnoreCase))
+                .Select(h => new KeyValuePair<string, StringValues>(h.Key, h.Value))
+                .ToList();
+
             context.Response.Clear();
+            foreach (var header in kept) context.Response.Headers[header.Key] = header.Value;
+
             context.Response.ContentType = "application/problem+json";
             context.Response.StatusCode = StatusCodes.Status500InternalServerError;
 

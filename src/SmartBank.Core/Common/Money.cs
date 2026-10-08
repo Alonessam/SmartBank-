@@ -28,6 +28,9 @@ namespace SmartBank.Core.Common
         /// <summary>The rounding used for every computed amount.</summary>
         public static decimal Round(decimal amount) => decimal.Round(amount, Decimals, MidpointRounding.AwayFromZero);
 
+        /// <summary>Two decimals, rounded toward zero: for an amount the bank credits after a conversion (never in the customer's favour by rounding).</summary>
+        public static decimal Truncate(decimal amount) => decimal.Round(amount, Decimals, MidpointRounding.ToZero);
+
         /// <summary>Two decimals, dot separator, whatever the machine culture: for audit text, descriptions and OTP bindings.</summary>
         public static string Format(decimal amount) => amount.ToString("0.00", CultureInfo.InvariantCulture);
     }
