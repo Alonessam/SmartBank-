@@ -12,6 +12,17 @@ A simulated digital bank: an **ASP.NET Core (.NET 10) Web API** with a vanilla H
 
 **Live demo:** <https://alonessam.github.io/SmartBank-/> (frontend on GitHub Pages). The API runs on a free tier, so the **first request after a quiet period takes about a minute** while the service wakes up.
 
+## Screenshots
+
+All screens show made-up demo data (the web app in English; it also speaks Turkish).
+
+| | |
+|---|---|
+| ![Sign-in page with live market rates](docs/img/01-login.png)<br>**Sign in** with the live market panel | ![Accounts in four currencies and the transaction history](docs/img/02-dashboard.png)<br>**Accounts** in TRY, USD, EUR and gold, with history |
+| ![Buying US dollars at the live rate](docs/img/03-exchange.png)<br>**Exchange** with a live rate preview | ![Credit card with statement, minimum payment and due date](docs/img/04-credit-card.png)<br>**Credit card** statements, interest and payments |
+| ![Standing orders: automatic statement payment and a monthly transfer](docs/img/05-standing-orders.png)<br>**Standing orders** (monthly transfer, automatic card payment) | ![Customer chat widget with an agent's answer](docs/img/06-support-chat.png)<br>**Live support chat** (customer side, SignalR) |
+| ![Support agent panel](docs/img/07-support-agent.png)<br>**Agent panel** for answering chats | ![Phone layout of the dashboard](docs/img/08-mobile.png)<br>**Mobile** layout |
+
 ## Engineering highlights
 
 * **Money stays correct under concurrency.** Every balance and card update is an optimistic-concurrency write (`WHERE Version = @read`) with a retry; real-database tests on PostgreSQL and SQL Server fire parallel transfers, deposits and card charges at the same rows ([`ConcurrentTransferTests`](src/SmartBank.Tests/Database/ConcurrentTransferTests.cs)). The bug that created money before v1.1 is told in [`docs/DEFENSE.md`](docs/DEFENSE.md) (T6).

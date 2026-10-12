@@ -12,6 +12,17 @@ Simüle edilmiş bir dijital banka: **ASP.NET Core (.NET 10) Web API** ve Vanill
 
 **Canlı demo:** <https://alonessam.github.io/SmartBank-/> (arayüz GitHub Pages üzerinde). API ücretsiz katmanda çalışıyor, bu yüzden **sessiz bir dönemden sonraki ilk istek yaklaşık bir dakika sürer**; servis uyanırken beklemeniz gerekir.
 
+## Ekran görüntüleri
+
+Tüm ekranlarda uydurma demo verileri var (arayüz burada İngilizce; Türkçe de destekliyor).
+
+| | |
+|---|---|
+| ![Canlı piyasa kurlarıyla giriş sayfası](docs/img/01-login.png)<br>Canlı piyasa paneliyle **giriş** | ![Dört para biriminde hesaplar ve işlem geçmişi](docs/img/02-dashboard.png)<br>TRY, USD, EUR ve altın **hesapları** ve geçmiş |
+| ![Canlı kurla dolar alımı](docs/img/03-exchange.png)<br>Canlı kur önizlemeli **döviz** | ![Ekstre, asgari ödeme ve son ödeme tarihli kredi kartı](docs/img/04-credit-card.png)<br>**Kredi kartı** ekstresi, faiz ve ödeme |
+| ![Düzenli talimatlar: otomatik ekstre ödemesi ve aylık transfer](docs/img/05-standing-orders.png)<br>**Düzenli talimatlar** (aylık transfer, otomatik kart ödemesi) | ![Müşteri sohbet penceresi ve temsilci cevabı](docs/img/06-support-chat.png)<br>**Canlı destek sohbeti** (müşteri tarafı, SignalR) |
+| ![Destek temsilcisi paneli](docs/img/07-support-agent.png)<br>Sohbetleri yanıtlamak için **temsilci paneli** | ![Panonun telefon görünümü](docs/img/08-mobile.png)<br>**Mobil** görünüm |
+
 ## Mühendislik öne çıkanları
 
 * **Para, eşzamanlılık altında doğru kalır.** Her bakiye ve kart güncellemesi yeniden denemeli bir iyimser eşzamanlılık yazımıdır (`WHERE Version = @okunan`); PostgreSQL ve SQL Server üzerindeki gerçek veritabanı testleri aynı satırlara paralel transfer, yatırma ve kart harcaması gönderir ([`ConcurrentTransferTests`](src/SmartBank.Tests/Database/ConcurrentTransferTests.cs)). v1.1'den önce yoktan para üreten hatanın hikâyesi [`docs/DEFENSE.md`](docs/DEFENSE.md) içinde (T6).
