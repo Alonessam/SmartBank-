@@ -11,7 +11,7 @@
 # These credentials are for a throw-away local container only. Never reuse them anywhere else.
 services:
   db:
-    image: postgres:16
+    image: postgres:18
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
